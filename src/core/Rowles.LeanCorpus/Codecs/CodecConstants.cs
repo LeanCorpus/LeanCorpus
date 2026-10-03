@@ -10,17 +10,20 @@ namespace Rowles.LeanCorpus.Codecs;
 internal static class CodecConstants
 {
     // v2 -> v3 bumps for streaming trailer: postings, norms, stored fields, term vectors.
+    // v3 -> v4 gives stored fields byte-bounded variable document grouping.
+    // v4 -> v5 stores segment field names once and encodes document fields by ID.
     // v1 -> v2 bumps for streaming trailer: all DocValues, field lengths, Int64 variants.
+    // v2 -> v3 keeps missing-value placeholders out of the sorted DocValues term table.
     public const byte TermDictionaryVersion = 1;
     public const byte PostingsVersion = 4;
     public const byte NormsVersion = 3;
     public const byte VectorVersion = 1;
     public const byte QuantisedVectorVersion = 1;
     public const byte HnswVersion = 1;
-    public const byte StoredFieldsVersion = 3;
+    public const byte StoredFieldsVersion = 5;
     public const byte TermVectorsVersion = 3;
     public const byte NumericDocValuesVersion = 2;
-    public const byte SortedDocValuesVersion = 2;
+    public const byte SortedDocValuesVersion = 3;
     public const byte SortedSetDocValuesVersion = 2;
     public const byte SortedNumericDocValuesVersion = 2;
     public const byte BinaryDocValuesVersion = 2;

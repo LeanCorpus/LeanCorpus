@@ -106,6 +106,82 @@ public class CrashRecoveryTests : IDisposable
         Assert.Equal(1, results.TotalHits);
     }
 
+    [Fact(DisplayName = "Corrupt Latest Deletion Commit: Fallback Restores Previous Deletion State")]
+    public void CorruptLatestDeletionCommit_FallbackRestoresPreviousDeletionState()
+    {
+        var config = new IndexWriterConfig
+        {
+            DeletionPolicy = new KeepLastNCommitsPolicy(2),
+            MergePolicy = NoMergePolicy.Instance,
+            MaxBufferedDocs = 100,
+            MergeThreshold = 100
+        };
+        using (var writer = new IndexWriter(new MMapDirectory(_dir), config))
+        {
+            writer.AddDocument(CreateDocument("survivor"));
+            writer.AddDocument(CreateDocument("target"));
+            writer.Commit();
+
+            writer.DeleteDocuments(new TermQuery("body", "target"));
+            writer.Commit();
+        }
+
+        File.WriteAllText(Path.Combine(_dir, "segments_2"), "NOT_VALID_JSON{{{");
+
+        var recovery = IndexRecovery.RecoverLatestCommit(_dir, cleanupOrphans: false);
+        Assert.NotNull(recovery);
+        Assert.True(recovery.WasFallback);
+        Assert.Equal(1, recovery.Generation);
+
+        using var searcher = new IndexSearcher(new MMapDirectory(_dir));
+        Assert.Equal(1, searcher.Search(new TermQuery("body", "target"), 10, TestContext.Current.CancellationToken).TotalHits);
+        Assert.Equal(2, searcher.Stats.LiveDocCount);
+    }
+
+    [Fact(DisplayName = "Recovery: missing selected deletion file rejects latest commit")]
+    public void RecoverLatestCommit_MissingSelectedDeletionFile_FallsBackToPriorValidCommit()
+    {
+        var config = new IndexWriterConfig
+        {
+            DeletionPolicy = new KeepLastNCommitsPolicy(3),
+            MergePolicy = NoMergePolicy.Instance,
+            MaxBufferedDocs = 1,
+            MergeThreshold = 100,
+        };
+        using (var writer = new IndexWriter(new MMapDirectory(_dir), config))
+        {
+            writer.AddDocument(CreateDocument("first generation"));
+            writer.Commit();
+
+            writer.AddDocument(CreateDocument("later victim"));
+            writer.Commit();
+
+            writer.DeleteDocuments(new TermQuery("body", "victim"));
+            writer.Commit();
+        }
+
+        SegmentInfo deletedSegment = IndexRecovery.RecoverLatestCommit(_dir, cleanupOrphans: false)!
+            .SegmentInfos
+            .Single(static segment => segment.LiveDocCount < segment.DocCount);
+        int deletionGeneration = deletedSegment.DelGeneration
+            ?? throw new InvalidOperationException("The latest commit did not select a deletion generation.");
+        string selectedDeletionPath = Path.Combine(
+            _dir,
+            $"{deletedSegment.SegmentId}_gen_{deletionGeneration}.del");
+        Assert.True(File.Exists(selectedDeletionPath));
+        File.Delete(selectedDeletionPath);
+
+        IndexRecovery.RecoveryResult recovery = IndexRecovery.RecoverLatestCommit(_dir, cleanupOrphans: false)
+            ?? throw new InvalidOperationException("Expected the earlier valid commit to remain recoverable.");
+
+        Assert.True(recovery.WasFallback);
+        Assert.Equal(2, recovery.Generation);
+        Assert.Equal(2, recovery.SegmentIds.Count);
+
+        using var fallbackSearcher = new IndexSearcher(new MMapDirectory(_dir));
+        Assert.Equal(1, fallbackSearcher.Search(new TermQuery("body", "victim"), 10, TestContext.Current.CancellationToken).TotalHits);
+    }
+
     [Fact(DisplayName = "Recovery: corrupt optional codec file falls back and reports fallback")]
     public void RecoverLatestCommit_CorruptOptionalCodecFile_FallsBackAndReportsFallback()
     {
@@ -341,12 +417,12 @@ public class CrashRecoveryTests : IDisposable
             "Example custom data",
             CodecFileMatcher.Extension(".custom"),
             currentFormatVersion: null,
-            temporaryFileMatchers: [CodecFileMatcher.ExtensionWithTrailingSuffix(".custom", ".tmp")]);
+            temporaryFileMatchers: [CodecFileMatcher.ExtensionWithTrailingSuffix(".custom", ".codec.staging")]);
         var catalog = new CodecCatalogBuilder()
             .AddBuiltIns()
             .Add(new CodecFamilyDescriptor("example.custom", "Example custom", [customDescriptor]))
             .Build();
-        string temporaryPath = Path.Combine(_dir, "segment.custom.tmp");
+        string temporaryPath = Path.Combine(_dir, "segment.custom.codec.staging");
         File.WriteAllText(temporaryPath, "partial");
 
         var recovery = IndexRecovery.RecoverLatestCommit(_dir, catalog: catalog);

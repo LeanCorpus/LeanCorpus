@@ -11,6 +11,18 @@ namespace Rowles.LeanCorpus.Tests.Core.Search;
 [Area(TestArea.Search)]
 public sealed class QueryModelTests
 {
+    [Theory(DisplayName = "Query: Boost rejects non-finite values")]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    [InlineData(float.NegativeInfinity)]
+    public void Query_Boost_RejectsNonFiniteValues(float boost)
+    {
+        var query = new TermQuery("body", "hello");
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => query.Boost = boost);
+        Assert.Equal(1.0f, query.Boost);
+    }
+
     // ── DisjunctionMaxQuery ──────────────────────────────────────────────────
 
     /// <summary>
@@ -169,6 +181,16 @@ public sealed class QueryModelTests
     public void ConstantScoreQuery_Constructor_ThrowsOnNullInner()
     {
         Assert.Throws<ArgumentNullException>(() => new ConstantScoreQuery(null!));
+    }
+
+    [Theory(DisplayName = "ConstantScoreQuery: Constructor rejects non-finite scores")]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    [InlineData(float.NegativeInfinity)]
+    public void ConstantScoreQuery_Constructor_RejectsNonFiniteScore(float score)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new ConstantScoreQuery(new TermQuery("body", "hello"), score));
     }
 
     /// <summary>
@@ -689,6 +711,18 @@ public sealed class QueryModelTests
     }
 
     /// <summary>
+    /// Verifies the Query Builder: Fuzzy Rejects Unsupported Edit Distance scenario.
+    /// </summary>
+    [Fact(DisplayName = "Query Builder: Fuzzy Rejects Unsupported Edit Distance")]
+    public void QueryBuilder_Fuzzy_UnsupportedMaxEdits_Throws()
+    {
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(
+            () => QueryBuilder.Fuzzy("body", "hello", maxEdits: 3));
+
+        Assert.Equal("maxEdits", exception.ParamName);
+    }
+
+    /// <summary>
     /// Verifies the Query Builder: Wildcard Creates Wildcard Query scenario.
     /// </summary>
     [Fact(DisplayName = "Query Builder: Wildcard Creates Wildcard Query")]
@@ -789,9 +823,9 @@ public sealed class QueryModelTests
     {
         var q = QueryBuilder.Bool(b =>
         {
-            b.Must(new TermQuery("f", "x"));
-            b.Should(new TermQuery("f", "y"));
-            b.MinimumShouldMatch(1);
+            b.Add(new TermQuery("f", "x"), Occur.Must);
+            b.Add(new TermQuery("f", "y"), Occur.Should);
+            b.SetMinimumNumberShouldMatch(1);
         });
 
         Assert.IsType<BooleanQuery>(q);

@@ -1095,13 +1095,13 @@ public sealed partial class IndexSearcher
                 string? incompatibleSegment = null;
                 foreach (var reader in readers)
                 {
-                    bool readerHasSorted = reader.GetSortedDocValueTerms(field) is not null;
-                    bool readerHasSortedSet = reader.GetSortedSetDocValueTerms(field) is not null;
+                    bool readerHasSorted = reader.GetSortedDocValueTermsView(field) is not null;
+                    bool readerHasSortedSet = reader.GetSortedSetDocValueTermsView(field) is not null;
                     hasSorted |= readerHasSorted;
                     hasSortedSet |= readerHasSortedSet;
                     hasSortedOnly |= readerHasSorted && !readerHasSortedSet;
                     hasSortedSetOnly |= readerHasSortedSet && !readerHasSorted;
-                    bool readerHasBinary = reader.GetBinaryDocValues(field) is not null;
+                    bool readerHasBinary = reader.HasBinaryDocValues(field);
                     bool readerHasField = reader.Info.FieldNames.Contains(field, StringComparer.Ordinal);
                     fieldPresent |= readerHasField;
                     if (!readerHasSorted && !readerHasSortedSet && (readerHasBinary || readerHasField))
@@ -1123,8 +1123,8 @@ public sealed partial class IndexSearcher
                 for (int i = 0; i < readers.Count; i++)
                 {
                     sourceTerms[i] = (sortedSet
-                        ? readers[i].GetSortedSetDocValueTerms(field)
-                        : readers[i].GetSortedDocValueTerms(field)) ?? Array.Empty<string>();
+                        ? readers[i].GetSortedSetDocValueTermsView(field)
+                        : readers[i].GetSortedDocValueTermsView(field)) ?? Array.Empty<string>();
                 }
 
                 var plan = new FlatFacetOrdinalPlan(field, sortedSet, OrdinalMap.Build(sourceTerms), hasSorted || hasSortedSet);
@@ -1455,13 +1455,13 @@ public sealed partial class IndexSearcher
             var plan = _flatOrdinalPlans[facetField];
             int readerIndex = _readerIndexes[reader];
             bool hasValue = false;
-            if (plan.SortedSet && reader.TryGetSortedSetDocValues(facetField, localDocId, out var setValues))
+            if (plan.SortedSet && reader.TryGetSortedSetDocOrdinals(facetField, localDocId, out var setOrdinals))
             {
                 int lastOrdinal = -1;
-                foreach (var value in setValues)
+                foreach (int localOrdinal in setOrdinals)
                 {
-                    if (plan.OrdinalMap.TryGetGlobalOrdinal(readerIndex, value, out int globalOrdinal)
-                        && globalOrdinal != lastOrdinal)
+                    int globalOrdinal = plan.OrdinalMap.GetGlobalOrdinal(readerIndex, localOrdinal);
+                    if (globalOrdinal != lastOrdinal)
                     {
                         _facetsCollector.CollectFlatDocumentOrdinal(requestIndex, globalOrdinal);
                         lastOrdinal = globalOrdinal;
@@ -1469,13 +1469,11 @@ public sealed partial class IndexSearcher
                     }
                 }
             }
-            else if (!plan.SortedSet && reader.TryGetSortedDocValue(facetField, localDocId, out string val))
+            else if (!plan.SortedSet && reader.TryGetSortedDocOrdinal(facetField, localDocId, out int localOrdinal))
             {
-                if (plan.OrdinalMap.TryGetGlobalOrdinal(readerIndex, val, out int globalOrdinal))
-                {
-                    _facetsCollector.CollectFlatDocumentOrdinal(requestIndex, globalOrdinal);
-                    hasValue = true;
-                }
+                int globalOrdinal = plan.OrdinalMap.GetGlobalOrdinal(readerIndex, localOrdinal);
+                _facetsCollector.CollectFlatDocumentOrdinal(requestIndex, globalOrdinal);
+                hasValue = true;
             }
             return hasValue;
         }

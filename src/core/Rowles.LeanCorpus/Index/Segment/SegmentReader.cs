@@ -1,8 +1,10 @@
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using Rowles.LeanCorpus.Diagnostics;
 using Rowles.LeanCorpus.Codecs.DocValues;
 using Rowles.LeanCorpus.Codecs.Hnsw;
+using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Codecs.StoredFields;
 using Rowles.LeanCorpus.Codecs.Vectors;
 using Rowles.LeanCorpus.Codecs.TermVectors;
@@ -17,7 +19,8 @@ namespace Rowles.LeanCorpus.Index.Segment;
 internal sealed partial class SegmentReaderState : IDisposable
 {
     private readonly MMapDirectory _directory;
-    private readonly SegmentInfo _info;
+    private readonly SegmentDescriptor _info;
+    private readonly CodecCatalog _codecCatalog;
     private readonly SegmentFileAccess _files;
     private TermDictionaryReader? _dictionaryReader;
     private IndexInput? _postingsInput;
@@ -25,11 +28,11 @@ internal sealed partial class SegmentReaderState : IDisposable
     private bool _storedReaderLoaded;
     private NormState? _normState;
     private readonly Dictionary<string, string> _vectorPaths = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, VectorReader> _vectorReaders = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, QuantisedVectorReader> _quantisedVectorReaders = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VectorQuantisation> _vectorQuantisation = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, HnswGraph?> _hnswGraphs = new(StringComparer.Ordinal);
-    private readonly object _hnswLoadLock = new();
+    private readonly Dictionary<string, VectorFieldState> _vectorFieldStates = new(StringComparer.Ordinal);
+    private readonly List<IndexInput> _docValuesInputs = [];
+    private readonly Dictionary<string, long> _fileLengthCache = new(StringComparer.Ordinal);
+    private readonly Lock _fileLengthCacheLock = new();
     private LiveDocs? _liveDocuments;
     private bool _liveDocumentsLoaded;
 
@@ -38,9 +41,18 @@ internal sealed partial class SegmentReaderState : IDisposable
 
     private static readonly QualifiedTermCache s_qualifiedTermCache = new();
 
+    internal static CacheMetricsSnapshot QualifiedTermCacheMetrics => s_qualifiedTermCache.Metrics;
+
     // Lazy-loaded Stage 2 features (thread-safe via LazyInitializer)
     private Dictionary<string, Dictionary<int, double>>? _numericIndex;
     private Dictionary<string, Dictionary<int, long>>? _int64Index;
+    private Dictionary<string, NumericDocValuesColumn>? _numericDocValueColumns;
+    private Dictionary<string, Int64DocValuesColumn>? _int64DocValueColumns;
+    private Dictionary<string, SortedDocValuesColumn>? _sortedDocValueColumns;
+    private Dictionary<string, SortedSetDocValuesColumn>? _sortedSetDocValueColumns;
+    private Dictionary<string, SortedNumericDocValuesColumn>? _sortedNumericDocValueColumns;
+    private Dictionary<string, Int64SortedNumericDocValuesColumn>? _int64SortedDocValueColumns;
+    private Dictionary<string, BinaryDocValuesColumn>? _binaryDocValueColumns;
     private Dictionary<string, double[]>? _numericDocValues;
     private Dictionary<string, Util.RoaringBitmap?>? _numericDocValuesPresence;
     private Dictionary<string, long[]>? _int64DocValues;
@@ -68,7 +80,7 @@ internal sealed partial class SegmentReaderState : IDisposable
     public int DocBase { get; set; }
 
     /// <summary>Gets the segment metadata for this reader.</summary>
-    public SegmentInfo Info => _info;
+    public SegmentDescriptor Info => _info;
 
     /// <summary>Gets the directory this reader was opened from.</summary>
     internal MMapDirectory Directory => _directory;
@@ -88,12 +100,17 @@ internal sealed partial class SegmentReaderState : IDisposable
     /// </summary>
     /// <param name="directory">The directory containing the segment files.</param>
     /// <param name="info">The segment metadata.</param>
+    /// <param name="codecCatalog">The immutable codec catalogue for stored-field compression.</param>
     /// <exception cref="FileNotFoundException">Thrown if required segment files are missing.</exception>
     /// <exception cref="InvalidDataException">Thrown if segment files contain corrupted or incompatible data.</exception>
-    internal SegmentReaderState(MMapDirectory directory, SegmentInfo info)
+    internal SegmentReaderState(
+        MMapDirectory directory,
+        SegmentDescriptor info,
+        CodecCatalog? codecCatalog = null)
     {
         _directory = directory;
         _info = info;
+        _codecCatalog = codecCatalog ?? CodecCatalog.Default;
         _basePath = Path.Combine(directory.DirectoryPath, info.SegmentId);
         _files = SegmentFileAccess.Open(directory, info);
 
@@ -111,6 +128,7 @@ internal sealed partial class SegmentReaderState : IDisposable
                     {
                         _vectorPaths[vf.FieldName] = vqName[info.SegmentId.Length..];
                         _vectorQuantisation[vf.FieldName] = vf.Quantisation;
+                        _vectorFieldStates[vf.FieldName] = new VectorFieldState();
                     }
                 }
                 else
@@ -118,7 +136,10 @@ internal sealed partial class SegmentReaderState : IDisposable
                     var perFieldVecPath = VectorFilePaths.VectorFile(_basePath, vf.FieldName);
                     string vectorName = Path.GetFileName(perFieldVecPath);
                     if (_files.Exists(vectorName[info.SegmentId.Length..]))
+                    {
                         _vectorPaths[vf.FieldName] = vectorName[info.SegmentId.Length..];
+                        _vectorFieldStates[vf.FieldName] = new VectorFieldState();
+                    }
                 }
             }
         }
@@ -126,7 +147,10 @@ internal sealed partial class SegmentReaderState : IDisposable
         {
             // Legacy single-vector segment: pre-multi-vector layout.
             if (_files.Exists(".vec"))
+            {
                 _vectorPaths[string.Empty] = ".vec";
+                _vectorFieldStates[string.Empty] = new VectorFieldState();
+            }
         }
 
         // DocValues and numeric indexes remain genuinely on demand. The searcher's
@@ -179,7 +203,10 @@ internal sealed partial class SegmentReaderState : IDisposable
             {
                 if (_storedReaderLoaded) return _storedReader;
                 if (_files.Exists(".fdt") && _files.Exists(".fdx"))
-                    _storedReader = StoredFieldsReader.Open(_files.OpenInput(".fdt"), _files.OpenInput(".fdx"));
+                    _storedReader = StoredFieldsReader.Open(
+                        _files.OpenInput(".fdt"),
+                        _files.OpenInput(".fdx"),
+                        _codecCatalog);
                 Volatile.Write(ref _storedReaderLoaded, true);
                 return _storedReader;
             }
@@ -195,11 +222,7 @@ internal sealed partial class SegmentReaderState : IDisposable
             lock (lockObj)
             {
                 if (_liveDocumentsLoaded) return _liveDocuments;
-                var delPath = _info.DelGeneration.HasValue
-                    ? _basePath + $"_gen_{_info.DelGeneration.Value}.del"
-                    : _basePath + ".del";
-                if (FileOpenRetry.FileExists(delPath))
-                    _liveDocuments = LiveDocs.Deserialise(delPath, _info.DocCount);
+                _liveDocuments = DeletionStateValidator.RequireValid(_basePath, _info);
                 Volatile.Write(ref _liveDocumentsLoaded, true);
                 return _liveDocuments;
             }
@@ -488,25 +511,243 @@ internal sealed partial class SegmentReaderState : IDisposable
 
     internal long TermOffsetCacheHits => _termOffsetCache.Hits;
 
+    internal SegmentReaderCacheResourceUsage GetRetainedResourceUsage()
+    {
+        long postingsAndTermsBytes = 0;
+        long normsAndLengthsBytes = 0;
+        long storedFieldsBytes = 0;
+        long termVectorsBytes = 0;
+        long docValuesBytes = 0;
+        long numericIndexesBytes = 0;
+        long spatialIndexesBytes = 0;
+        long vectorsBytes = 0;
+        long liveDocsAndParentsBytes = 0;
+        const long readerShellEstimateBytes = 2_048;
+
+        object lockObj = LazyInitializer.EnsureInitialized(ref _lazyInitLock)!;
+        lock (lockObj)
+        {
+            if (_dictionaryReader is not null)
+                postingsAndTermsBytes += FileBytes(".dic") * 2;
+            if (_postingsInput is not null)
+                postingsAndTermsBytes += FileBytes(".pos");
+            postingsAndTermsBytes += _termOffsetCache.Count * 192L;
+
+            if (_normState is { } norms)
+            {
+                normsAndLengthsBytes += FileBytes(".nrm") + FileBytes(".fln");
+                foreach (byte[] values in norms.Norms.Values)
+                    normsAndLengthsBytes += ArrayBytes(values.LongLength, sizeof(byte));
+                foreach (float[] values in norms.Boosts.Values)
+                    normsAndLengthsBytes += ArrayBytes(values.LongLength, sizeof(float));
+                foreach (int[] values in norms.FieldLengths.Values)
+                    normsAndLengthsBytes += ArrayBytes(values.LongLength, sizeof(int));
+            }
+
+            if (_storedReader is not null)
+                storedFieldsBytes = FileBytes(".fdt") + FileBytes(".fdx");
+            if (_termVectorsReader is not null)
+                termVectorsBytes = FileBytes(".tvd") + FileBytes(".tvx");
+
+            foreach (IndexInput input in _docValuesInputs)
+                docValuesBytes += Math.Max(0, input.Length);
+            docValuesBytes += EstimateMaterialisedDocValues();
+
+            if (_numericIndex is not null)
+                numericIndexesBytes += FileBytes(".num") + EstimateNumericIndex(_numericIndex);
+            if (_int64Index is not null)
+                numericIndexesBytes += FileBytes(".numl") + EstimateNumericIndex(_int64Index);
+
+            if (_bkdReader is not null)
+                spatialIndexesBytes += FileBytes(".bkd") * 2;
+            if (_int64BkdReader is not null)
+                spatialIndexesBytes += FileBytes(".bkdl") * 2;
+            if (_packedBkdReader is not null)
+                spatialIndexesBytes += FileBytes(".pbkd") * 2;
+            if (_shapeDocValuesReader is not null)
+                spatialIndexesBytes += FileBytes(".dvg") * 2;
+
+            if (_liveDocuments is not null)
+                liveDocsAndParentsBytes += FileBytes(".del") * 2;
+            if (_parentBitSet is not null)
+                liveDocsAndParentsBytes += FileBytes(".pbs") * 2;
+        }
+
+        foreach ((string fieldName, VectorFieldState fieldState) in _vectorFieldStates)
+        {
+            lock (fieldState.LoadLock)
+            {
+                if (fieldState.Vector is not null || fieldState.QuantisedVector is not null)
+                    vectorsBytes += FileBytes(_vectorPaths[fieldName]);
+                if (fieldState.Graph is not null)
+                {
+                    string path = VectorFilePaths.HnswFile(_basePath, fieldName);
+                    string extension = Path.GetFileName(path)[_info.SegmentId.Length..];
+                    vectorsBytes += FileBytes(extension) * 2;
+                }
+            }
+        }
+
+        return new SegmentReaderCacheResourceUsage(
+            postingsAndTermsBytes,
+            normsAndLengthsBytes,
+            storedFieldsBytes,
+            termVectorsBytes,
+            docValuesBytes,
+            numericIndexesBytes,
+            spatialIndexesBytes,
+            vectorsBytes,
+            liveDocsAndParentsBytes,
+            readerShellEstimateBytes);
+    }
+
+    private long FileBytes(string extension)
+    {
+        lock (_fileLengthCacheLock)
+        {
+            if (_fileLengthCache.TryGetValue(extension, out long cachedLength))
+                return cachedLength;
+
+            long length = _files.Exists(extension)
+                ? Math.Max(0, _files.GetFileLength(extension))
+                : 0;
+            _fileLengthCache.Add(extension, length);
+            return length;
+        }
+    }
+
+    private long EstimateMaterialisedDocValues()
+    {
+        long bytes = 0;
+        if (_numericDocValues is not null)
+            foreach (double[] values in _numericDocValues.Values)
+                bytes += ArrayBytes(values.LongLength, sizeof(double));
+        if (_int64DocValues is not null)
+            foreach (long[] values in _int64DocValues.Values)
+                bytes += ArrayBytes(values.LongLength, sizeof(long));
+        if (_sortedDocValues is not null)
+            foreach (string[] values in _sortedDocValues.Values)
+                bytes += EstimateStringArray(values);
+        if (_sortedDocValueTerms is not null)
+            foreach (string[] values in _sortedDocValueTerms.Values)
+                bytes += EstimateStringArray(values);
+        if (_sortedSetDocValues is not null)
+            foreach (string[][] values in _sortedSetDocValues.Values)
+            {
+                bytes += ArrayBytes(values.LongLength, IntPtr.Size);
+                foreach (string[] documentValues in values)
+                    bytes += EstimateStringArray(documentValues);
+            }
+        if (_sortedSetDocValueTerms is not null)
+            foreach (string[] values in _sortedSetDocValueTerms.Values)
+                bytes += EstimateStringArray(values);
+        if (_sortedNumericDocValues is not null)
+            foreach (double[][] values in _sortedNumericDocValues.Values)
+            {
+                bytes += ArrayBytes(values.LongLength, IntPtr.Size);
+                foreach (double[] documentValues in values)
+                    bytes += ArrayBytes(documentValues.LongLength, sizeof(double));
+            }
+        if (_int64SortedDocValues is not null)
+            foreach (long[][] values in _int64SortedDocValues.Values)
+            {
+                bytes += ArrayBytes(values.LongLength, IntPtr.Size);
+                foreach (long[] documentValues in values)
+                    bytes += ArrayBytes(documentValues.LongLength, sizeof(long));
+            }
+        if (_binaryDocValues is not null)
+            foreach (byte[][][] values in _binaryDocValues.Values)
+            {
+                bytes += ArrayBytes(values.LongLength, IntPtr.Size);
+                foreach (byte[][] documentValues in values)
+                {
+                    bytes += ArrayBytes(documentValues.LongLength, IntPtr.Size);
+                    foreach (byte[] value in documentValues)
+                        bytes += ArrayBytes(value.LongLength, sizeof(byte));
+                }
+            }
+        return bytes;
+    }
+
+    private static long EstimateStringArray(string[] values)
+    {
+        long bytes = ArrayBytes(values.LongLength, IntPtr.Size);
+        foreach (string value in values)
+            bytes += 24 + value.Length * sizeof(char);
+        return bytes;
+    }
+
+    private static long EstimateNumericIndex<TValue>(Dictionary<string, Dictionary<int, TValue>> values)
+    {
+        long bytes = values.Count * 64L;
+        foreach ((string field, Dictionary<int, TValue> fieldValues) in values)
+            bytes += 48 + field.Length * sizeof(char) + fieldValues.Count * 64L;
+        return bytes;
+    }
+
+    private static long ArrayBytes(long length, int elementSize)
+        => length == 0 ? 0 : 24 + length * elementSize;
+
     /// <inheritdoc/>
     public void Dispose()
     {
         _postingsInput?.Dispose();
         _dictionaryReader?.Dispose();
         _storedReader?.Dispose();
-        foreach (var graph in _hnswGraphs.Values)
-            graph?.Dispose();
-        foreach (var r in _vectorReaders.Values) r.Dispose();
-        _vectorReaders.Clear();
+        for (int inputIndex = _docValuesInputs.Count - 1; inputIndex >= 0; inputIndex--)
+            _docValuesInputs[inputIndex].Dispose();
+        _docValuesInputs.Clear();
+        lock (_fileLengthCacheLock)
+            _fileLengthCache.Clear();
+        foreach (VectorFieldState fieldState in _vectorFieldStates.Values)
+            fieldState.Dispose();
+        _vectorFieldStates.Clear();
         _vectorPaths.Clear();
-        foreach (var r in _quantisedVectorReaders.Values) r.Dispose();
-        _quantisedVectorReaders.Clear();
+        _vectorQuantisation.Clear();
         _termVectorsReader?.Dispose();
         _packedBkdReader?.Dispose();
         _shapeDocValuesReader?.Dispose();
         _bkdReader?.Dispose();
         _int64BkdReader?.Dispose();
         _files.Dispose();
+    }
+
+    private sealed class VectorFieldState : IDisposable
+    {
+        private VectorReader? _vector;
+        private QuantisedVectorReader? _quantisedVector;
+        private HnswGraph? _graph;
+        private int _graphLoaded;
+
+        internal object LoadLock { get; } = new();
+        internal VectorReader? Vector => Volatile.Read(ref _vector);
+        internal QuantisedVectorReader? QuantisedVector => Volatile.Read(ref _quantisedVector);
+        internal HnswGraph? Graph => Volatile.Read(ref _graph);
+        internal bool GraphLoaded => Volatile.Read(ref _graphLoaded) != 0;
+
+        internal void SetVector(VectorReader vector) => Volatile.Write(ref _vector, vector);
+
+        internal void SetQuantisedVector(QuantisedVectorReader vector)
+            => Volatile.Write(ref _quantisedVector, vector);
+
+        internal void SetGraph(HnswGraph? graph)
+        {
+            Volatile.Write(ref _graph, graph);
+            Volatile.Write(ref _graphLoaded, 1);
+        }
+
+        public void Dispose()
+        {
+            lock (LoadLock)
+            {
+                Graph?.Dispose();
+                Vector?.Dispose();
+                QuantisedVector?.Dispose();
+                SetGraph(null);
+                Volatile.Write(ref _vector, null);
+                Volatile.Write(ref _quantisedVector, null);
+            }
+        }
     }
 
     private sealed record NormState(

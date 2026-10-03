@@ -95,6 +95,32 @@ public sealed class BoundedLruCacheTests
         Assert.Equal(1, cache.Count);
     }
 
+    [Fact(DisplayName = "Segment Reader Cache: Weighted Entry Stays Leased Then Evicts Over Budget")]
+    public void Acquire_WeightedEntry_OverBudgetStateWaitsForLastLeaseThenEvicts()
+    {
+        using var cache = new BoundedLruCache<string, TestState>(
+            4,
+            StringComparer.Ordinal,
+            maxRetainedBytes: 100,
+            resourceUsageSelector: static state => new SegmentReaderCacheResourceUsage(
+                0, 0, 0, 0, 0, 0, 0, 0, 0, state.RetainedBytes));
+        var state = new TestState(retainedBytes: 120);
+
+        var lease = cache.Acquire("large", () => state);
+        var whileLeased = cache.Metrics;
+        Assert.Equal(1, whileLeased.EntryCount);
+        Assert.Equal(120, whileLeased.RetainedBytes);
+        Assert.False(state.Disposed);
+
+        lease.Dispose();
+
+        var afterRelease = cache.Metrics;
+        Assert.Equal(0, afterRelease.EntryCount);
+        Assert.Equal(0, afterRelease.RetainedBytes);
+        Assert.Equal(1, afterRelease.EvictionCount);
+        Assert.True(state.Disposed);
+    }
+
     [Fact(DisplayName = "Segment Reader Cache: Concurrent First Load Runs Factory Once")]
     public async Task Acquire_ConcurrentFirstLoad_RunsFactoryOnce()
     {
@@ -134,9 +160,86 @@ public sealed class BoundedLruCacheTests
         Assert.Equal(0, cache.Count);
     }
 
+    [Fact]
+    public void Acquire_EvictionDisposeFailure_DoesNotCancelSuccessfulAcquisition()
+    {
+        var reportedFailures = new List<AggregateException>();
+        using var cache = new BoundedLruCache<string, TestState>(
+            1, StringComparer.Ordinal, reportedFailures.Add);
+        var evicted = new TestState(throwOnDispose: true, name: "evicted");
+        using (cache.Acquire("evicted", () => evicted)) { }
+
+        var loaded = new TestState();
+        using var loadedLease = cache.Acquire("loaded", () => loaded);
+        Assert.Same(loaded, loadedLease.Value);
+        Assert.Equal(1, cache.Count);
+
+        using var cachedLease = cache.Acquire("loaded", static () => throw new InvalidOperationException());
+        Assert.Same(loaded, cachedLease.Value);
+
+        loadedLease.Dispose();
+        var cleanupFailure = Assert.Single(reportedFailures);
+        Assert.Collection(cleanupFailure.InnerExceptions,
+            exception => Assert.Equal("evicted", exception.Message));
+
+        cachedLease.Dispose();
+        Assert.Equal(1, cache.Count);
+    }
+
+    [Fact]
+    public void Dispose_AttemptsEveryValueAndAggregatesFailures()
+    {
+        using var cache = new BoundedLruCache<string, TestState>(3, StringComparer.Ordinal);
+        var first = new TestState(throwOnDispose: true, name: "first");
+        var second = new TestState();
+        var third = new TestState(throwOnDispose: true, name: "third");
+        using (cache.Acquire("first", () => first)) { }
+        using (cache.Acquire("second", () => second)) { }
+        using (cache.Acquire("third", () => third)) { }
+
+        var cleanupFailure = Assert.Throws<AggregateException>(() => cache.Dispose());
+
+        Assert.Equal(2, cleanupFailure.InnerExceptions.Count);
+        Assert.True(first.Disposed);
+        Assert.True(second.Disposed);
+        Assert.True(third.Disposed);
+    }
+
+    [Fact]
+    public void Acquire_FactoryFailureLeavesUnrelatedEntryUsable()
+    {
+        using var cache = new BoundedLruCache<string, TestState>(2, StringComparer.Ordinal);
+        var existing = new TestState();
+        using (cache.Acquire("existing", () => existing)) { }
+
+        Assert.Throws<InvalidOperationException>(() => cache.Acquire(
+            "failed", static () => throw new InvalidOperationException("factory failure")));
+
+        using var lease = cache.Acquire("existing", static () => throw new InvalidOperationException());
+        Assert.Same(existing, lease.Value);
+        Assert.Equal(1, cache.Count);
+    }
+
     private sealed class TestState : IDisposable
     {
+        private readonly bool _throwOnDispose;
+        private readonly string _name;
+
+        internal TestState(bool throwOnDispose = false, string name = "test state", long retainedBytes = 0)
+        {
+            _throwOnDispose = throwOnDispose;
+            _name = name;
+            RetainedBytes = retainedBytes;
+        }
+
         internal bool Disposed { get; private set; }
-        public void Dispose() => Disposed = true;
+        internal long RetainedBytes { get; set; }
+
+        public void Dispose()
+        {
+            Disposed = true;
+            if (_throwOnDispose)
+                throw new InvalidOperationException(_name);
+        }
     }
 }

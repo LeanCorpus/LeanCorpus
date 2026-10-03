@@ -106,6 +106,7 @@ public sealed partial class IndexWriter : IDisposable
         ArgumentNullException.ThrowIfNull(config);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(disposeTimeout, TimeSpan.Zero);
         config.Validate();
+        CompressionCodecRegistry.MarkIndexOpened();
 
         _directory = directory;
         _config = config;
@@ -223,7 +224,8 @@ public sealed partial class IndexWriter : IDisposable
                     // is examined.
                     DeletionApplier.ApplyPendingDeletions(
                         _deleteQueue, _committedSegments,
-                        _directory, _commitGeneration, _config.DurableCommits, _config.Metrics);
+                        _directory, _commitGeneration, _config.DurableCommits, _config.Metrics,
+                        _config.CodecCatalog);
                     enteredCore = true;
                     DwptManager.AddDocument(this, replacement);
                 }
@@ -280,7 +282,8 @@ public sealed partial class IndexWriter : IDisposable
                     // cleared, including segments materialised by this update.
                     DeletionApplier.ApplyPendingDeletions(
                         _deleteQueue, _committedSegments,
-                        _directory, _commitGeneration, _config.DurableCommits, _config.Metrics);
+                        _directory, _commitGeneration, _config.DurableCommits, _config.Metrics,
+                        _config.CodecCatalog);
                     enteredCore = true;
                     DwptManager.AddDocument(this, replacement);
                 }
@@ -370,30 +373,9 @@ public sealed partial class IndexWriter : IDisposable
                 forWriting: false,
                 _config.CodecCatalog);
 
-            var sourceSegments = new List<SegmentInfo>();
-            foreach (var segId in recovery.SegmentIds)
-            {
-                var segPath = Path.Combine(sourceDirectory.DirectoryPath, segId + ".seg");
-                if (!FileOpenRetry.FileExists(segPath))
-                    throw new InvalidDataException($"Segment file not found: {segPath}");
-
-                var seg = SegmentInfo.ReadFrom(segPath);
-                var delPath = seg.DelGeneration.HasValue
-                    ? Path.Combine(sourceDirectory.DirectoryPath, $"{segId}_gen_{seg.DelGeneration.Value}.del")
-                    : Path.Combine(sourceDirectory.DirectoryPath, segId + ".del");
-                if (FileOpenRetry.FileExists(delPath))
-                {
-                    var liveDocs = LiveDocs.Deserialise(delPath, seg.DocCount);
-                    seg.LiveDocCount = liveDocs.LiveCount;
-                    seg.EarliestSoftDeleteTimestamp = liveDocs.EarliestSoftDeleteTimestamp;
-                }
-                else
-                {
-                    seg.LiveDocCount = seg.DocCount;
-                }
-
-                sourceSegments.Add(seg);
-            }
+            var sourceSegments = recovery.SegmentInfos
+                .Select(static segment => segment.DeepCopy())
+                .ToList();
 
             lock (_writeLock)
             {
@@ -402,7 +384,11 @@ public sealed partial class IndexWriter : IDisposable
 
                 var merger = new SegmentMerger(_directory, _config.MergePolicy, _config.PostingsSkipInterval,
                     _config.SoftDeleteRetentionSeconds, _config.HnswBuildConfig,
-                    useCompoundFile: _config.UseCompoundFile);
+                    useCompoundFile: _config.UseCompoundFile,
+                    destinationVectorQuantisation: _config.VectorQuantisation)
+                {
+                    FileCatalog = _config.CodecCatalog
+                };
                 int localOrdinal = ReserveSegmentOrdinalRange(sourceSegments.Count + 8);
 
                 var merged = merger.MergeSegmentsFromDirectory(

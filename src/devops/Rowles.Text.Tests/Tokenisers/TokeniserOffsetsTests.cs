@@ -86,4 +86,29 @@ public class TokeniserOffsetsTests
             Assert.Equal(tokens[i].EndOffset, offsets[i].End);
         }
     }
+
+    /// <summary>
+    /// Verifies that offset-only tokenisation recognises supplementary letters and digits using UTF-16 offsets.
+    /// </summary>
+    [Fact(DisplayName = "Tokenise Offsets: Supplementary Letters And Digits Use UTF-16 Offsets")]
+    public void TokeniseOffsets_SupplementaryLettersAndDigits_UsesUtf16Offsets()
+    {
+        const string input = "A\U00010400B \U0001D7D8 \uD800x\uDC00";
+        var offsets = new List<(int Start, int End)>();
+
+        _tokeniser.TokeniseOffsets(input, offsets);
+
+        Assert.Equal(new[] { (0, 4), (5, 7), (9, 10) }, offsets);
+    }
+
+    [Fact(DisplayName = "Tokenise Offsets: Leading And Trailing Supplementary Letters Use UTF-16 Offsets")]
+    public void TokeniseOffsets_LeadingAndTrailingSupplementaryLetters_UsesUtf16Offsets()
+    {
+        const string input = "\U00010400word\U00010400";
+        var offsets = new List<(int Start, int End)>();
+
+        _tokeniser.TokeniseOffsets(input, offsets);
+
+        Assert.Equal(new[] { (0, input.Length) }, offsets);
+    }
 }

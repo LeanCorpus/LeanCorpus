@@ -1,5 +1,6 @@
 using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Analysers;
+using Rowles.LeanCorpus.Codecs.StoredFields;
 using Rowles.LeanCorpus.Index;
 using Rowles.LeanCorpus.Codecs.Vectors;
 using Rowles.LeanCorpus.Codecs.CodecKit;
@@ -179,6 +180,9 @@ public sealed class IndexWriterConfig
     /// </summary>
     internal Action<string>? PreparedCommitPublicationSync { get; set; }
 
+    /// <summary>Test-only callback invoked after commit contents are prepared and before publication.</summary>
+    internal Action<string>? CommitBeforePublication { get; set; }
+
     /// <summary>Test-only callback invoked after physical-flush admission.</summary>
     internal Action? PhysicalFlushStarted { get; set; }
 
@@ -200,8 +204,8 @@ public sealed class IndexWriterConfig
     public FieldCompressionPolicy CompressionPolicy { get; set; } = FieldCompressionPolicy.Deflate;
 
     /// <summary>
-    /// Number of documents per stored field block. Larger blocks compress better but
-    /// increase random-access cost. Default: 16.
+    /// Maximum documents per stored field block. Blocks can be smaller when the
+    /// 1 MiB raw-byte target is reached. Default: 16.
     /// </summary>
     public int StoredFieldBlockSize { get; set; } = 16;
 
@@ -276,7 +280,8 @@ public sealed class IndexWriterConfig
 
     /// <summary>
     /// Character-level filters applied to text before tokenisation.
-    /// Runs in order before the analyser. Default: empty (no char filters).
+    /// Run in order before the analyser. Their offset maps are composed so indexed UTF-16 token offsets refer
+    /// to the original field value. Default: empty (no char filters).
     /// </summary>
     public IReadOnlyList<ICharFilter> CharFilters { get; set; } = [];
 
@@ -402,8 +407,8 @@ public sealed class IndexWriterConfig
         if (MaxQueuedBytes < 0)
             throw new ArgumentException("MaxQueuedBytes must not be negative.", nameof(MaxQueuedBytes));
 
-        if (StoredFieldBlockSize < 1)
-            throw new ArgumentException("StoredFieldBlockSize must be at least 1.", nameof(StoredFieldBlockSize));
+        StoredFieldsBlockPolicy.ValidateMaximumDocumentCount(
+            StoredFieldBlockSize, nameof(StoredFieldBlockSize));
 
         if (PostingsSkipInterval < 1)
             throw new ArgumentException("PostingsSkipInterval must be at least 1.", nameof(PostingsSkipInterval));
@@ -434,10 +439,10 @@ public sealed class IndexWriterConfig
                 "SoftDeleteRetentionSeconds must be positive when SoftDeletesEnabled is true.",
                 nameof(SoftDeleteRetentionSeconds));
 
-        if (!Codecs.StoredFields.CompressionCodecRegistry.TryGet((byte)CompressionPolicy, out _))
+        if (CodecCatalog is null || !CodecCatalog.TryGetCompressionCodec((byte)CompressionPolicy, out _))
             throw new ArgumentException(
                 $"No compression codec is registered for policy '{CompressionPolicy}'. " +
-                "Install the matching compression package or register a codec before opening the writer.",
+                "Add the matching codec to the writer's immutable CodecCatalog before opening the writer.",
                 nameof(CompressionPolicy));
     }
 }

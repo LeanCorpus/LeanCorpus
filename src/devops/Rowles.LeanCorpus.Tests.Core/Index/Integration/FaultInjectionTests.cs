@@ -1,15 +1,17 @@
+using System.Text.Json;
 using Rowles.LeanCorpus.Document;
 using Rowles.LeanCorpus.Tests.Shared.Fixtures;
 using Rowles.LeanCorpus.Document.Fields;
 using Rowles.LeanCorpus.Index;
 using Rowles.LeanCorpus.Search;
+using Rowles.LeanCorpus.Serialization;
 using Rowles.LeanCorpus.Store;
 
 namespace Rowles.LeanCorpus.Tests.Core.Index;
 
 /// <summary>
 /// Fault-injection tests that simulate crash windows during the deletion commit
-/// sequence. Exercises the boundary cases around <c>.del</c> file writes, segment
+/// sequence. Exercises the boundary cases around <c>.del</c> file writes, commit
 /// metadata updates, and commit file renames to verify the index behaves correctly
 /// or falls back gracefully under each scenario.
 /// </summary>
@@ -30,9 +32,8 @@ public sealed class FaultInjectionTests : IDisposable
 
     /// <summary>
     /// After <see cref="IndexWriter.DeleteDocuments"/> and <see cref="IndexWriter.Commit"/>,
-    /// reopening the index must not resurface the deleted document. This is the direct
-    /// regression test for F2/N3: the <c>.seg</c> file must be rewritten before the
-    /// commit rename so that <c>DelGeneration</c> survives a writer restart.
+    /// reopening the index must not resurface the deleted document. Deletion state is
+    /// now stored in the commit record while <c>.seg</c> remains immutable.
     /// </summary>
     [Fact(DisplayName = "Delete Commit: Reopen Document Remains Deleted")]
     public void DeleteCommit_Reopen_DocumentRemainsDeleted()
@@ -54,10 +55,73 @@ public sealed class FaultInjectionTests : IDisposable
         Assert.Equal(1, searcher.Stats.LiveDocCount);
     }
 
+    [Fact(DisplayName = "Delete Commit: Failure Before Publication Preserves Previous Visibility")]
+    public void DeleteCommit_FailureBeforePublication_PreservesPreviousVisibility()
+    {
+        string path = SubDir("del-prepublication-failure");
+        var config = new IndexWriterConfig();
+        using (var directory = new MMapDirectory(path))
+        using (var writer = new IndexWriter(directory, config))
+        {
+            writer.AddDocument(MakeDoc("survivor"));
+            writer.AddDocument(MakeDoc("target"));
+            writer.Commit();
+
+            writer.DeleteDocuments(new TermQuery("body", "target"));
+            config.CommitBeforePublication = commitPath =>
+            {
+                Assert.True(File.Exists(Path.Combine(path, "seg_0_gen_2.del")));
+                Assert.Equal(Path.Combine(path, "segments_2"), commitPath);
+                throw new IOException("injected before commit publication");
+            };
+
+            Assert.Throws<IOException>(writer.Commit);
+            config.CommitBeforePublication = null;
+
+            Assert.False(File.Exists(Path.Combine(path, "segments_2")));
+            using (var publicationSearcher = new IndexSearcher(new MMapDirectory(path)))
+            {
+                Assert.Equal(1, publicationSearcher.Search(new TermQuery("body", "target"), 10, TestContext.Current.CancellationToken).TotalHits);
+                Assert.Equal(2, publicationSearcher.Stats.LiveDocCount);
+            }
+
+            writer.Commit();
+        }
+
+        using var searcher = new IndexSearcher(new MMapDirectory(path));
+        Assert.Equal(0, searcher.Search(new TermQuery("body", "target"), 10, TestContext.Current.CancellationToken).TotalHits);
+        Assert.Equal(1, searcher.Stats.LiveDocCount);
+    }
+
+    [Fact(DisplayName = "Delete Commit: Searcher During Publication Window Sees Previous Visibility")]
+    public void DeleteCommit_SearcherDuringPublicationWindow_SeesPreviousVisibility()
+    {
+        string path = SubDir("del-prepublication-searcher");
+        var config = new IndexWriterConfig();
+        using var directory = new MMapDirectory(path);
+        using var writer = new IndexWriter(directory, config);
+        writer.AddDocument(MakeDoc("survivor"));
+        writer.AddDocument(MakeDoc("target"));
+        writer.Commit();
+
+        writer.DeleteDocuments(new TermQuery("body", "target"));
+        long observedHits = -1;
+        config.CommitBeforePublication = _ =>
+        {
+            using var searcher = new IndexSearcher(new MMapDirectory(path));
+            observedHits = searcher.Search(new TermQuery("body", "target"), 10, TestContext.Current.CancellationToken).TotalHits;
+        };
+
+        writer.Commit();
+
+        Assert.Equal(1, observedHits);
+        config.CommitBeforePublication = null;
+    }
+
     /// <summary>
     /// After three successive deletion commits, all deleted documents must remain
     /// absent on reopen. Verifies that gen-versioned <c>.del</c> files do not
-    /// shadow each other and the <c>.seg</c> always points to the latest generation.
+    /// shadow each other and the selected commit points to the latest generation.
     /// </summary>
     [Fact(DisplayName = "Multiple Delete Commits: All Deleted Documents Absent On Reopen")]
     public void MultipleDeleteCommits_AllDeletedDocumentsAbsentOnReopen()
@@ -169,13 +233,11 @@ public sealed class FaultInjectionTests : IDisposable
 
     /// <summary>
     /// Simulates a scenario where the <c>.seg</c> file references a
-    /// <c>DelGeneration</c> whose <c>.del</c> file was subsequently deleted
-    /// (e.g. by a filesystem error or interrupted write). The index must open
-    /// without crashing; all documents reappear as live because
-    /// <see cref="SegmentReader"/> only loads the live-docs file if it exists.
+    /// <c>DelGeneration</c> whose <c>.del</c> file was subsequently deleted.
+    /// Opening the index must fail rather than treating deleted documents as live.
     /// </summary>
-    [Fact(DisplayName = "Simulated Crash: Seg References Del Gen Del File Missing Documents Return As Live")]
-    public void SimulatedCrash_SegReferencesDelGen_DelFileMissing_DocumentsReturnAsLive()
+    [Fact(DisplayName = "Simulated Crash: Seg References Missing Del Generation Fails Closed")]
+    public void SimulatedCrash_SegReferencesDelGen_DelFileMissing_FailsClosed()
     {
         string path = SubDir("crash-seg-del-missing");
 
@@ -200,14 +262,9 @@ public sealed class FaultInjectionTests : IDisposable
         Assert.NotEmpty(delFiles);
         foreach (var f in delFiles) File.Delete(f);
 
-        // Step 3: open the index. SegmentReader checks File.Exists for the del path;
-        // since the file is absent the segment is treated as fully live.
-        // Note: Stats.LiveDocCount comes from the persisted SegmentInfo.LiveDocCount in
-        // the .seg file (which still says 1); it is not recomputed from the absent bitmap.
-        // The correct observable is that both documents are searchable.
-        using var searcher = new IndexSearcher(new MMapDirectory(path));
-        Assert.Equal(1, searcher.Search(new TermQuery("body", "survivor"), 10, TestContext.Current.CancellationToken).TotalHits);
-        Assert.Equal(1, searcher.Search(new TermQuery("body", "target"), 10, TestContext.Current.CancellationToken).TotalHits);
+        // The deletion generation named by segment metadata is required state.
+        // Recovery must reject the index instead of resurrecting "target".
+        Assert.Throws<InvalidDataException>(() => new IndexSearcher(new MMapDirectory(path)));
     }
 
     // ---- crash window: truncated .del file ----
@@ -299,9 +356,8 @@ public sealed class FaultInjectionTests : IDisposable
     // ---- del file present before any deletion ----
 
     /// <summary>
-    /// A legacy unversioned <c>.del</c> file placed in the directory before any
-    /// indexed deletion is performed must still be loaded by <see cref="SegmentReader"/>
-    /// so that pre-existing live-docs state is respected on recovery.
+    /// A legacy unversioned <c>.del</c> file with matching segment metadata must
+    /// still be loaded by <see cref="SegmentReader"/> during recovery.
     /// </summary>
     [Fact(DisplayName = "Legacy Unversioned Del File: Loaded By Segment Reader")]
     public void LegacyUnversionedDelFile_LoadedBySegmentReader()
@@ -325,14 +381,23 @@ public sealed class FaultInjectionTests : IDisposable
         var liveDocs = new LiveDocs(segInfo.DocCount);
         liveDocs.Delete(2); // doc index 2 = "marked dead"
         LiveDocs.Serialise(Path.Combine(path, segInfo.SegmentId + ".del"), liveDocs);
+        segInfo.LiveDocCount = liveDocs.LiveCount;
+        segInfo.WriteTo(Path.Combine(path, segInfo.SegmentId + ".seg"));
+
+        // Remove the new state field so this fixture remains a genuine legacy commit.
+        string commitPath = Path.Combine(path, "segments_1");
+        var commitData = JsonSerializer.Deserialize(
+            CommitFileFormat.ReadJson(commitPath),
+            LeanCorpusJsonContext.Default.CommitData)
+            ?? throw new InvalidDataException("The fixture commit could not be read.");
+        commitData.SegmentStates = null;
+        string legacyJson = JsonSerializer.Serialize(commitData, LeanCorpusJsonContext.Default.CommitData);
+        File.WriteAllText(commitPath, CommitFileFormat.Wrap(legacyJson));
 
         // The SegmentReader falls back to the unversioned path when DelGeneration is null.
         using var searcher = new IndexSearcher(new MMapDirectory(path));
 
         // Doc 2 is filtered out by the del bitset; both remaining docs are searchable.
-        // Note: Stats.LiveDocCount reflects the SegmentInfo metadata in the .seg file,
-        // which was written before we added the del file manually -- asserting on
-        // search results is the reliable correctness check here.
         Assert.Equal(0, searcher.Search(new TermQuery("body", "dead"), 10, TestContext.Current.CancellationToken).TotalHits);
         Assert.Equal(2, searcher.Search(new TermQuery("body", "live"), 10, TestContext.Current.CancellationToken).TotalHits);
     }

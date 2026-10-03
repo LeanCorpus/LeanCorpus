@@ -42,10 +42,10 @@ Lucene (Java) refers to Lucene 10.3.1,
 | Edge n-gram tokeniser | ✔   `EdgeNGramTokeniser` | ✔ | ✔ | Lucene: `EdgeNGramTokenizer` |
 | CJK bigram tokeniser | ✔   `CJKBigramTokeniser` | ✔ | ✔ | Lucene: `CJKBigramTokenizer` |
 | Chinese lexicon tokeniser | ✔   `ChineseLexiconTokeniser` | ✔ | ✔ | Greedy longest-match segmentation with unigram fallback |
-| Japanese morphological tokeniser | ✔   `JapaneseTokeniser` | ✔ | ✔ | Character-class-based segmentation using Kuromoji data; splits at kanji/hiragana/katakana boundaries |
+| Japanese morphological tokeniser | ✔   `JapaneseTokeniser` | ✔ | ✔ | Uses a Kuromoji-derived `.jlc` dictionary and least-cost Viterbi segmentation |
 | ICU tokeniser (Unicode segmenter) | ✔   `IcuTokeniser` / `UnicodeTokenisation` | ✔ | ✔ | |
 | Thai tokeniser | ✔   `ThaiTokeniser` | ✔ | ✔ | Lucene: `ThaiTokenizer` |
-| UAX29 URL/email tokeniser | ✔   `Uax29UrlEmailTokeniser` | ✔ | ✔ | Lucene: `UAX29URLEmailTokenizer` |
+| URL/email heuristic tokeniser | ✔   `UrlEmailTokeniser` | ✔ | ✔ | Lucene uses `UAX29URLEmailTokenizer`; LeanCorpus preserves these terms with local Unicode-aware heuristics and does not claim UAX #29 conformance. |
 | Wikipedia tokeniser | ✔   `MediaWikiTokeniser` | ✔ | ✔ | Lucene: `WikipediaTokenizer` |
 | Pattern tokeniser | ✔   `PatternTokeniser` | ✔ | ✔ | Lucene: `PatternTokenizer` |
 | Path-hierarchy tokeniser | ✔   `PathTreeTokeniser` | ✔ | ✔ | Lucene: `PathHierarchyTokenizer`; adds suffix mode, depth payloads, root-aware parsing |
@@ -245,18 +245,18 @@ Lucene (Java) refers to Lucene 10.3.1,
 | Feature | In LeanCorpus | In Lucene.NET | In Lucene (Java) | Notes |
 |---|---|---|---|---|
 | Lucene classic query parser | ✔   `QueryParser` | ✔ | ✔ | `field:term`, phrases, proximity, fuzzy, prefix, boost |
-| Programmatic query builder | ✔   `BooleanQueryBuilder` | ✔ | ✔ | |
+| Programmatic query builder | ✔   `BooleanQuery.Builder` / `QueryBuilder.Bool` | ✔ | ✔ | |
 | Query extensions / helpers | ✔   `QueryExtensions` | ✔ | ✔ | |
 | Typed LINQ query provider | ✔   `LeanQueryable<T>` / `LeanQueryProvider<T>` / `LeanExpressionVisitor` | ❌ | ❌ | Translates strongly typed LINQ expressions through source-generated document mappings. |
 | `+`/`-` required/excluded syntax | ✔   `QueryParser` | ✔ | ✔ | |
 | Range syntax `[a TO b]` | ✔   `QueryParser` | ✔ | ✔ | |
 | Grouping `(...)` | ✔   `QueryParser` | ✔ | ✔ | |
 | Boost `^N` | ✔   `QueryParser` | ✔ | ✔ | |
-| Lenient parsing mode | ✔   `QueryParser` | ✔ | ✔ | |
+| Lenient parsing mode | ❌ | ✔ | ✔ | Removed from LeanCorpus until deterministic clause-boundary recovery is defined. |
 | Full grammar error positions | ❌ | ✔ | ✔ | Backlog |
 | Standard query parser (SQP) | ❌ | ✔ | ✔ | Backlog |
 | Analysing query parser | ✔   `AnalysingQueryParser` | ✔ | ✔ | Analyses literal portions of prefix and wildcard terms. |
-| Complex phrase query parser | ✔   `ComplexPhraseQueryParser` | ✔ | ✔ | Converts same-field complex phrase clauses to span queries. |
+| Complex phrase query parser | ✔   `ComplexPhraseQueryParser` | ✔ | ✔ | Supports analysed quoted phrases and flat `(a OR b)` groups; nested groups and other embedded operators are rejected. |
 | Surround query parser | ❌ | ✔ | ✔ | `SurroundQueryParser` supports span-oriented query syntax. |
 | XML query parser | ❌ | ✔ | ✔ | `CoreParser` / `XmlQueryParser`. |
 

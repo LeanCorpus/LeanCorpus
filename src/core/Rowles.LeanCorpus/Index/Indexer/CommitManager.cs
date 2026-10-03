@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Index.Backup;
 using Rowles.LeanCorpus.Index.Compatibility;
+using Rowles.LeanCorpus.Index.Segment;
 using Rowles.LeanCorpus.Search;
 using Rowles.LeanCorpus.Serialization;
 using Rowles.LeanCorpus.Store;
@@ -72,6 +74,7 @@ internal static class CommitManager
             writer.Config.DeletionPolicy.OnCommit(dirPath, writer.CommitGeneration,
                 SnapshotManager.GetSnapshotProtectedSegments(writer));
             CleanupObsoleteMergeSegments(writer);
+            PruneDeletionGenerations(writer);
 
             MergeScheduler.ScheduleBackgroundMerge(writer);
         }
@@ -98,7 +101,8 @@ internal static class CommitManager
             DeletionApplier.ApplyPendingDeletions(
                 writer.DeleteQueue, writer.CommittedSegments,
                 writer.Directory, writer.CommitGeneration,
-                writer.Config.DurableCommits, writer.Config.Metrics);
+                writer.Config.DurableCommits, writer.Config.Metrics,
+                writer.Config.CodecCatalog);
 
         if (writer.ContentChangedSinceCommit)
             writer.ContentToken++;
@@ -110,6 +114,7 @@ internal static class CommitManager
         writer.Config.DeletionPolicy.OnCommit(writer.Directory.DirectoryPath, writer.CommitGeneration,
             SnapshotManager.GetSnapshotProtectedSegments(writer));
         CleanupObsoleteMergeSegments(writer);
+        PruneDeletionGenerations(writer);
 
         // Schedule background merge after commit is fully written — segment files must
         // remain intact while WriteCommitStats opens them for scanning.
@@ -130,12 +135,17 @@ internal static class CommitManager
         var commitData = new CommitData
         {
             Segments = segmentIds,
+            SegmentStates = writer.CommittedSegments
+                .Select(SegmentCommitState.FromSegmentInfo)
+                .ToList(),
             Generation = gen,
             ContentToken = writer.ContentToken
         };
         var commitJson = JsonSerializer.Serialize(commitData, LeanCorpusJsonContext.Default.CommitData);
 
         var fileContent = CommitFileFormat.Wrap(commitJson);
+
+        writer.Config.CommitBeforePublication?.Invoke(commitFile);
 
         if (writer.Config.DurableCommits)
         {
@@ -174,7 +184,7 @@ internal static class CommitManager
         foreach (var dirtyFile in dirtyFiles)
         {
             var fileName = Path.GetFileName(dirtyFile.Path);
-            if (fileName.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
+            if (SegmentFileSet.IsTemporaryFileName(fileName, writer.Config.CodecCatalog))
                 continue;
 
             try
@@ -198,103 +208,53 @@ internal static class CommitManager
     }
 
     private static bool BelongsToCommittedSegment(string fileName, HashSet<string> segmentIds)
-    {
-        int separator = fileName.IndexOf('.');
-        int generationSeparator = fileName.IndexOf("_gen_", StringComparison.Ordinal);
-        int vectorSeparator = fileName.IndexOf("_v_", StringComparison.Ordinal);
-        if (generationSeparator >= 0 && (separator < 0 || generationSeparator < separator))
-            separator = generationSeparator;
-        if (vectorSeparator >= 0 && (separator < 0 || vectorSeparator < separator))
-            separator = vectorSeparator;
-
-        return separator > 0 && segmentIds.Contains(fileName[..separator]);
-    }
+        => SegmentFileSet.IsOwnedByAnySegment(fileName, segmentIds);
 
     public static void WriteCommitStats(IndexWriter writer)
     {
         var dirPath = writer.Directory.DirectoryPath;
-        int totalDocCount = 0;
-        int liveDocCount = 0;
-        var fieldLengthSums = new Dictionary<string, long>(StringComparer.Ordinal);
-        var fieldDocCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var segmentStatsForCommit = new List<SegmentStats>(writer.CommittedSegments.Count);
 
         foreach (var seg in writer.CommittedSegments)
         {
-            var segmentStats = SegmentStats.TryLoadFrom(SegmentStats.GetStatsPath(dirPath, seg.SegmentId));
+            var segmentStats = SegmentStats.TryLoadFrom(
+                SegmentStats.GetStatsPathForRead(dirPath, seg.SegmentId, seg.DelGeneration));
             if (segmentStats is not null &&
                 segmentStats.TotalDocCount == seg.DocCount &&
                 segmentStats.LiveDocCount == seg.LiveDocCount)
             {
-                AccumulateSegmentStats(segmentStats, fieldLengthSums, fieldDocCounts);
-                totalDocCount += segmentStats.TotalDocCount;
-                liveDocCount += segmentStats.LiveDocCount;
-                continue;
+                segmentStatsForCommit.Add(segmentStats);
             }
-
-            AccumulateSegmentStatsByScan(seg, writer.Directory, fieldLengthSums, fieldDocCounts,
-                ref totalDocCount, ref liveDocCount);
+            else if (AccumulateSegmentStatsByScan(seg, writer.Directory, writer.Config.CodecCatalog) is { } scannedStats)
+            {
+                scannedStats.WriteTo(SegmentStats.GetStatsPath(dirPath, seg.SegmentId, seg.DelGeneration));
+                segmentStatsForCommit.Add(scannedStats);
+            }
         }
 
-        var avgFieldLengths = new Dictionary<string, float>(StringComparer.Ordinal);
-        foreach (var (field, sum) in fieldLengthSums)
-        {
-            int count = fieldDocCounts.GetValueOrDefault(field, 1);
-            avgFieldLengths[field] = count > 0 ? (float)sum / count : 1.0f;
-        }
-
-        var stats = new IndexStats(totalDocCount, liveDocCount, avgFieldLengths, fieldDocCounts, fieldLengthSums);
+        var stats = IndexStats.FromSegmentStats(segmentStatsForCommit);
         stats.WriteTo(IndexStats.GetStatsPath(dirPath, writer.CommitGeneration));
     }
 
-    private static void AccumulateSegmentStats(
-        SegmentStats segmentStats,
-        Dictionary<string, long> fieldLengthSums,
-        Dictionary<string, int> fieldDocCounts)
-    {
-        foreach (var (field, sum) in segmentStats.FieldLengthSums)
-            fieldLengthSums[field] = fieldLengthSums.GetValueOrDefault(field) + sum;
-
-        foreach (var (field, count) in segmentStats.FieldDocCounts)
-            fieldDocCounts[field] = fieldDocCounts.GetValueOrDefault(field) + count;
-    }
-
-    private static void AccumulateSegmentStatsByScan(
+    private static SegmentStats? AccumulateSegmentStatsByScan(
         SegmentInfo segment,
         MMapDirectory directory,
-        Dictionary<string, long> fieldLengthSums,
-        Dictionary<string, int> fieldDocCounts,
-        ref int totalDocCount,
-        ref int liveDocCount)
+        CodecCatalog codecCatalog)
     {
         SegmentReader? reader = null;
         try
         {
-            reader = new SegmentReader(directory, segment);
+            reader = new SegmentReader(directory, segment, codecCatalog);
         }
         catch (FileNotFoundException)
         {
             // A background merge may have deleted this segment's files.
             // Skip the segment rather than failing the commit.
-            return;
+            return null;
         }
 
         using (reader)
-        {
-            totalDocCount += reader.MaxDoc;
-            for (int docId = 0; docId < reader.MaxDoc; docId++)
-            {
-                if (!reader.IsLive(docId))
-                    continue;
-
-                liveDocCount++;
-                foreach (var field in segment.FieldNames)
-                {
-                    int length = reader.GetFieldLength(docId, field);
-                    fieldLengthSums[field] = fieldLengthSums.GetValueOrDefault(field) + length;
-                    fieldDocCounts[field] = fieldDocCounts.GetValueOrDefault(field) + 1;
-                }
-            }
-        }
+            return SegmentStats.FromSegmentReader(reader);
     }
 
     public static void LoadLatestCommit(IndexWriter writer)
@@ -318,31 +278,7 @@ internal static class CommitManager
         writer.InitialiseNextSegmentOrdinal(GetNextSegmentOrdinal(recovery.SegmentIds));
 
         var dirPath = directory.DirectoryPath;
-        foreach (var segId in recovery.SegmentIds)
-        {
-            var segPath = Path.Combine(dirPath, segId + ".seg");
-            if (!FileOpenRetry.FileExists(segPath))
-                continue;
-
-            var seg = SegmentInfo.ReadFrom(segPath);
-
-            var basePath = Path.Combine(dirPath, segId);
-            var delPath = seg.DelGeneration.HasValue
-                ? basePath + $"_gen_{seg.DelGeneration.Value}.del"
-                : basePath + ".del";
-            if (FileOpenRetry.FileExists(delPath))
-            {
-                var liveDocs = LiveDocs.Deserialise(delPath, seg.DocCount);
-                seg.LiveDocCount = liveDocs.LiveCount;
-                seg.EarliestSoftDeleteTimestamp = liveDocs.EarliestSoftDeleteTimestamp;
-            }
-            else
-            {
-                seg.LiveDocCount = seg.DocCount;
-            }
-
-            writer.CommittedSegments.Add(seg);
-        }
+        writer.CommittedSegments.AddRange(recovery.SegmentInfos);
 
         if (config.DurableCommits)
         {
@@ -367,16 +303,47 @@ internal static class CommitManager
         }
     }
 
-    public static void DeleteSegmentFiles(string segId, LeanDirectory directory)
+    public static void DeleteSegmentFiles(
+        string segId,
+        LeanDirectory directory,
+        CodecCatalog? catalog = null)
     {
-        var directoryPath = directory.DirectoryPath;
-        foreach (var file in FileOpenRetry.GetFiles(directoryPath, segId + ".*"))
+        SegmentFileSet.Enumerate(directory.DirectoryPath, segId, catalog)
+            .DeleteAllOwnedFiles(directory, "segment file delete");
+    }
+
+    internal static void PruneDeletionGenerations(IndexWriter writer)
+    {
+        var snapshotsBySegment = new Dictionary<string, HashSet<int?>>(StringComparer.Ordinal);
+        foreach (IndexSnapshot snapshot in writer.HeldSnapshots)
         {
-            try { directory.DeleteFile(Path.GetFileName(file)); } catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "segment file delete"); }
+            foreach (SegmentDescriptor segment in snapshot.Segments)
+            {
+                if (!snapshotsBySegment.TryGetValue(segment.SegmentId, out var generations))
+                {
+                    generations = [];
+                    snapshotsBySegment.Add(segment.SegmentId, generations);
+                }
+                generations.Add(segment.DelGeneration);
+            }
         }
-        foreach (var file in FileOpenRetry.GetFiles(directoryPath, segId + "_v_*.*"))
+
+        foreach (SegmentInfo current in writer.CommittedSegments)
         {
-            try { directory.DeleteFile(Path.GetFileName(file)); } catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "vector file delete"); }
+            var protectedGenerations = new HashSet<int?> { current.DelGeneration };
+            if (snapshotsBySegment.TryGetValue(current.SegmentId, out var snapshotGenerations))
+                protectedGenerations.UnionWith(snapshotGenerations);
+            protectedGenerations.UnionWith(IndexRecovery.GetRetainedDeletionGenerations(
+                writer.Directory.DirectoryPath, current));
+
+            SegmentFileSet.Enumerate(
+                    writer.Directory.DirectoryPath,
+                    current.SegmentId,
+                    writer.Config.CodecCatalog)
+                .PruneDeletionFiles(
+                    writer.Directory,
+                    protectedGenerations,
+                    "obsolete deletion generation cleanup");
         }
     }
 
@@ -415,7 +382,8 @@ internal static class CommitManager
                 DeletionApplier.ApplyPendingDeletions(
                     writer.DeleteQueue, writer.CommittedSegments,
                     writer.Directory, writer.CommitGeneration,
-                    writer.Config.DurableCommits, writer.Config.Metrics);
+                    writer.Config.DurableCommits, writer.Config.Metrics,
+                    writer.Config.CodecCatalog);
 
             if (writer.CommittedSegments.Count <= 1)
                 return 0;
@@ -434,7 +402,11 @@ internal static class CommitManager
 
             var merger = new SegmentMerger(writer.Directory, writer.Config.MergePolicy, writer.Config.PostingsSkipInterval,
                 writer.Config.SoftDeleteRetentionSeconds, writer.Config.HnswBuildConfig,
-                useCompoundFile: writer.Config.UseCompoundFile);
+                useCompoundFile: writer.Config.UseCompoundFile,
+                destinationVectorQuantisation: writer.Config.VectorQuantisation)
+            {
+                FileCatalog = writer.Config.CodecCatalog
+            };
             int localOrdinal = writer.ReserveSegmentOrdinal();
             var merged = merger.MergeAll(mergeable, ref localOrdinal, writer.CommitGeneration);
 
@@ -465,6 +437,7 @@ internal static class CommitManager
                     merger.CleanupSegmentFiles(seg);
                 }
             }
+            PruneDeletionGenerations(writer);
 
             return mergeableCount;
         }
@@ -489,7 +462,8 @@ internal static class CommitManager
                 DeletionApplier.ApplyPendingDeletions(
                     writer.DeleteQueue, writer.CommittedSegments,
                     writer.Directory, writer.CommitGeneration,
-                    writer.Config.DurableCommits, writer.Config.Metrics);
+                    writer.Config.DurableCommits, writer.Config.Metrics,
+                    writer.Config.CodecCatalog);
 
             var protectedSegments = SnapshotManager.GetSnapshotProtectedSegments(writer);
 
@@ -511,7 +485,11 @@ internal static class CommitManager
 
                 var merger = new SegmentMerger(writer.Directory, writer.Config.MergePolicy, writer.Config.PostingsSkipInterval,
                     writer.Config.SoftDeleteRetentionSeconds, writer.Config.HnswBuildConfig,
-                    useCompoundFile: writer.Config.UseCompoundFile);
+                    useCompoundFile: writer.Config.UseCompoundFile,
+                    destinationVectorQuantisation: writer.Config.VectorQuantisation)
+                {
+                    FileCatalog = writer.Config.CodecCatalog
+                };
                 lastMerger = merger;
                 int localOrdinal = writer.ReserveSegmentOrdinal();
                 var merged = merger.MergeAll(toMerge, ref localOrdinal, writer.CommitGeneration);
@@ -552,6 +530,7 @@ internal static class CommitManager
                 WriteCommitStats(writer);
                 WriteCommitFile(writer);
                 writer.Config.DeletionPolicy.OnCommit(dirPath, writer.CommitGeneration, protectedSegments);
+                PruneDeletionGenerations(writer);
             }
         }
         return totalMerged;
@@ -573,7 +552,8 @@ internal static class CommitManager
                 DeletionApplier.ApplyPendingDeletions(
                     writer.DeleteQueue, writer.CommittedSegments,
                     writer.Directory, writer.CommitGeneration,
-                    writer.Config.DurableCommits, writer.Config.Metrics);
+                    writer.Config.DurableCommits, writer.Config.Metrics,
+                    writer.Config.CodecCatalog);
 
             if (writer.ContentChangedSinceCommit)
                 writer.ContentToken++;
@@ -611,38 +591,21 @@ internal static class CommitManager
             foreach (var seg in writer.CommittedSegments)
             {
                 if (!rollbackIds.Contains(seg.SegmentId))
-                    DeleteSegmentFiles(seg.SegmentId, writer.Directory);
+                    DeleteSegmentFiles(seg.SegmentId, writer.Directory, writer.Config.CodecCatalog);
             }
 
             writer.CommittedSegments.Clear();
             writer.CommittedSegments.AddRange(rollbackSegments);
-            foreach (var segment in rollbackSegments)
-                segment.WriteTo(Path.Combine(directoryPath, segment.SegmentId + ".seg"));
         }
 
         writer.ContentToken = writer.PreparedRollbackContentToken;
         writer.ContentChangedSinceCommit = false;
         writer.PreparedGeneration = -1;
         writer.PreparedSegments = null;
+        PruneDeletionGenerations(writer);
     }
 
-    private static SegmentInfo CloneSegmentInfo(SegmentInfo segment) => new()
-    {
-        SegmentId = segment.SegmentId,
-        DocCount = segment.DocCount,
-        LiveDocCount = segment.LiveDocCount,
-        TotalBytes = segment.TotalBytes,
-        CodecBytes = new Dictionary<string, long>(segment.CodecBytes, StringComparer.Ordinal),
-        CommitGeneration = segment.CommitGeneration,
-        IsCompoundFile = segment.IsCompoundFile,
-        FieldNames = [.. segment.FieldNames],
-        IndexSortFields = segment.IndexSortFields is null ? null : [.. segment.IndexSortFields],
-        VectorFields = [.. segment.VectorFields],
-        DelGeneration = segment.DelGeneration,
-        MinSequenceNumber = segment.MinSequenceNumber,
-        MaxSequenceNumber = segment.MaxSequenceNumber,
-        EarliestSoftDeleteTimestamp = segment.EarliestSoftDeleteTimestamp
-    };
+    private static SegmentInfo CloneSegmentInfo(SegmentInfo segment) => segment.DeepCopy();
 
     private static (List<SegmentInfo> Segments, long ContentToken) CapturePublishedState(IndexWriter writer)
     {
@@ -653,23 +616,9 @@ internal static class CommitManager
         if (recovery is null)
             return ([], 0);
 
-        var currentSegments = writer.CommittedSegments.ToDictionary(
-            static segment => segment.SegmentId,
-            StringComparer.Ordinal);
         var publishedSegments = new List<SegmentInfo>(recovery.SegmentIds.Count);
-        foreach (string segmentId in recovery.SegmentIds)
-        {
-            if (currentSegments.TryGetValue(segmentId, out var segment))
-            {
-                publishedSegments.Add(CloneSegmentInfo(segment));
-                continue;
-            }
-
-            var segmentPath = Path.Combine(
-                writer.Directory.DirectoryPath,
-                segmentId + ".seg");
-            publishedSegments.Add(SegmentInfo.ReadFrom(segmentPath));
-        }
+        foreach (SegmentInfo segment in recovery.SegmentInfos)
+            publishedSegments.Add(CloneSegmentInfo(segment));
 
         return (publishedSegments, recovery.ContentToken);
     }
@@ -686,8 +635,23 @@ internal static class CommitManager
     {
         if (writer.ObsoleteMergeSegments.Count == 0)
             return;
+
+        var retainedSegments = IndexRecovery.GetRetainedSegmentIds(writer.Directory.DirectoryPath);
+        var protectedSegments = SnapshotManager.GetSnapshotProtectedSegments(writer);
+        var stillObsolete = new List<string>();
         foreach (string segmentId in writer.ObsoleteMergeSegments)
-            DeleteSegmentFiles(segmentId, writer.Directory);
+        {
+            if (retainedSegments.Contains(segmentId) || protectedSegments.Contains(segmentId))
+            {
+                stillObsolete.Add(segmentId);
+                continue;
+            }
+
+            DeleteSegmentFiles(segmentId, writer.Directory, writer.Config.CodecCatalog);
+        }
+
         writer.ObsoleteMergeSegments.Clear();
+        foreach (string segmentId in stillObsolete)
+            writer.ObsoleteMergeSegments.Add(segmentId);
     }
 }

@@ -1,5 +1,6 @@
 using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Analysers;
+using Rowles.LeanCorpus.Analysis.Filters;
 
 namespace Rowles.Text.Tests;
 
@@ -27,6 +28,47 @@ public class StandardAnalyserTests
         Assert.Equal("live", result[0].Text);
     }
 
+    [Fact(DisplayName = "Normalise: Stop words remain available for one-to-one query normalisation")]
+    public void TryNormalise_StopWord_ReturnsLowercaseTerm()
+    {
+        ITermNormaliser normaliser = _analyser;
+
+        Assert.True(normaliser.TryNormalise("THE".AsSpan(), out string result));
+
+        Assert.Equal("the", result);
+    }
+
+    [Theory(DisplayName = "Normalise: Inputs that do not map to one complete token are rejected")]
+    [InlineData("foo-bar")]
+    [InlineData("foo!")]
+    [InlineData("")]
+    public void TryNormalise_NonSingleTokenInput_ReturnsFalse(string input)
+    {
+        ITermNormaliser normaliser = _analyser;
+
+        Assert.False(normaliser.TryNormalise(input.AsSpan(), out string result));
+
+        Assert.Equal(string.Empty, result);
+    }
+
+    [Fact(DisplayName = "Analyse: Stop-word filtering preserves following UTF-16 token metadata")]
+    public void Analyse_StopWordFilteringPreservesFollowingTokenMetadata()
+    {
+        const string input = "THE ÉCHO";
+        var sink = new MaterialisingTokenSink();
+
+        _analyser.Analyse(input, sink);
+
+        var token = Assert.Single(sink.Tokens);
+        Assert.Equal("écho", token.Text);
+        Assert.Equal(4, token.StartOffset);
+        Assert.Equal(input.Length, token.EndOffset);
+        Assert.Equal(Token.DefaultType, token.Type);
+        Assert.Equal(1, token.PositionIncrement);
+        Assert.Equal(1, token.PositionLength);
+        Assert.Null(token.Payload);
+    }
+
     /// <summary>
     /// Verifies the Analyse: Mixed Case With Stop Words Returns Lowercased Non Stop Words scenario.
     /// </summary>
@@ -41,6 +83,51 @@ public class StandardAnalyserTests
         Assert.Equal("running", result[0].Text);
         Assert.Equal("quickly", result[1].Text);
         Assert.Equal("forest", result[2].Text);
+    }
+
+    [Theory]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(15)]
+    [InlineData(16)]
+    [InlineData(17)]
+    public void Analyse_NonAsciiUppercaseToken_LowercasesRegardlessOfLength(int tokenLength)
+    {
+        string input = new('É', tokenLength);
+        var sink = new MaterialisingTokenSink();
+
+        _analyser.Analyse(input, sink);
+
+        var token = Assert.Single(sink.Tokens);
+        Assert.Equal(new string('é', tokenLength), token.Text);
+        var filterBuffer = input.ToCharArray();
+        new LowercaseFilter().Apply(filterBuffer);
+        Assert.Equal(token.Text, new string(filterBuffer));
+        Assert.Equal(0, token.StartOffset);
+        Assert.Equal(tokenLength, token.EndOffset);
+        Assert.Equal(Token.DefaultType, token.Type);
+        Assert.Equal(1, token.PositionIncrement);
+        Assert.Equal(1, token.PositionLength);
+        Assert.Null(token.Payload);
+    }
+
+    [Fact(DisplayName = "Analyse: Mixed ASCII and non-ASCII uppercase is lowercased")]
+    public void Analyse_MixedAsciiAndNonAsciiUppercase_LowercasesWholeToken()
+    {
+        const string input = "ASCIIÉUP";
+        var sink = new MaterialisingTokenSink();
+
+        _analyser.Analyse(input, sink);
+
+        var token = Assert.Single(sink.Tokens);
+        Assert.Equal("asciiéup", token.Text);
+        Assert.Equal(0, token.StartOffset);
+        Assert.Equal(input.Length, token.EndOffset);
+        Assert.Equal(Token.DefaultType, token.Type);
+        Assert.Equal(1, token.PositionIncrement);
+        Assert.Equal(1, token.PositionLength);
+        Assert.Null(token.Payload);
     }
 
     /// <summary>

@@ -9,8 +9,10 @@ using Rowles.LeanCorpus.Codecs.Vectors;
 using Rowles.LeanCorpus.Codecs.Bkd;
 using Rowles.LeanCorpus.Codecs.TermVectors;
 using Rowles.LeanCorpus.Codecs.TermDictionary;
+using Rowles.LeanCorpus.Index.Segment;
 using Rowles.LeanCorpus.Index.Indexer.Postings;
 using Rowles.LeanCorpus.Search;
+using Rowles.LeanCorpus.Search.Scoring;
 using Rowles.LeanCorpus.Store;
 namespace Rowles.LeanCorpus.Index.Indexer;
 
@@ -158,14 +160,12 @@ internal static class SegmentFlusher
         foreach (var arr in normsReturnList) ArrayPool<float>.Shared.Return(arr, clearArray: false);
 
         FieldLengthWriter.Write(basePath + ".fln", fieldLengths, docCount);
-        SegmentStats.FromFieldLengths(docCount, docCount, fieldNames, fieldLengths)
-            .WriteTo(SegmentStats.GetStatsPath(directoryPath, segId));
         foreach (var arr in lengthsReturnList) ArrayPool<int>.Shared.Return(arr, clearArray: false);
 
         // Stored fields
         StoredFieldsWriter.Write(basePath + ".fdt", basePath + ".fdx",
             source.StoredDocStarts, source.StoredFieldIds, source.StoredValues, source.StoredFieldIdToName,
-            config.StoredFieldBlockSize, config.CompressionPolicy);
+            config.StoredFieldBlockSize, config.CompressionPolicy, config.CodecCatalog);
 
         // Numeric field index
         WriteNumericIndex(source.NumericIndex, basePath + ".num");
@@ -399,10 +399,8 @@ internal static class SegmentFlusher
         flushSw.Stop();
         config.Metrics.RecordFlush(flushSw.Elapsed);
         long codecBytes = 0;
-        foreach (var path in FileOpenRetry.GetFiles(directoryPath, segId + ".*"))
-            codecBytes += FileOpenRetry.GetFileLength(path);
-        foreach (var path in FileOpenRetry.GetFiles(directoryPath, segId + "_v_*.*"))
-            codecBytes += FileOpenRetry.GetFileLength(path);
+        foreach (string fileName in SegmentFileSet.Enumerate(directoryPath, segId, config.CodecCatalog).FileNames)
+            codecBytes += FileOpenRetry.GetFileLength(Path.Combine(directoryPath, fileName));
         config.Metrics.RecordCodecFlush("all", flushSw.Elapsed, codecBytes);
 
         return segInfo;
@@ -502,27 +500,25 @@ internal static class SegmentFlusher
 
         CompleteSegment(segInfo, config, directoryPath);
 
+        SegmentStats segmentStats;
+        using (var statisticsDirectory = new MMapDirectory(directoryPath))
+        using (var statisticsReader = new SegmentReader(statisticsDirectory, segInfo, config.CodecCatalog))
+            segmentStats = SegmentStats.FromSegmentReader(statisticsReader);
+        segmentStats.WriteTo(SegmentStats.GetStatsPath(directoryPath, segId));
+
         return segInfo;
     }
 
-    internal static void RefreshSegmentSize(SegmentInfo segment, string directoryPath)
+    internal static void RefreshSegmentSize(
+        SegmentInfo segment,
+        string directoryPath,
+        CodecCatalog? catalog = null)
     {
         long totalBytes = 0;
         var codecBytes = new Dictionary<string, long>(StringComparer.Ordinal);
-        var paths = new HashSet<string>(StringComparer.Ordinal);
-        foreach (string pattern in new[]
+        foreach (string fileName in SegmentFileSet.Enumerate(directoryPath, segment.SegmentId, catalog).FileNames)
         {
-            segment.SegmentId + ".*",
-            segment.SegmentId + "_gen_*.del",
-            segment.SegmentId + "_v_*.*"
-        })
-        {
-            foreach (var path in FileOpenRetry.GetFiles(directoryPath, pattern))
-                paths.Add(path);
-        }
-
-        foreach (var path in paths)
-        {
+            string path = Path.Combine(directoryPath, fileName);
             var metadata = FileOpenRetry.GetFileMetadata(path);
             totalBytes += metadata.Length;
             codecBytes[metadata.Extension] = codecBytes.GetValueOrDefault(metadata.Extension) + metadata.Length;
@@ -535,9 +531,9 @@ internal static class SegmentFlusher
 
     internal static void CompleteSegment(SegmentInfo segment, IndexWriterConfig config, string directoryPath)
     {
-        if (config.UseCompoundFile && CompoundFileWriter.Pack(directoryPath, segment.SegmentId))
+        if (config.UseCompoundFile && CompoundFileWriter.Pack(directoryPath, segment.SegmentId, config.CodecCatalog))
             segment.IsCompoundFile = true;
-        RefreshSegmentSize(segment, directoryPath);
+        RefreshSegmentSize(segment, directoryPath, config.CodecCatalog);
     }
 
     /// <summary>

@@ -46,7 +46,7 @@ Index-time and query-time analysis must agree for exact term matching. A schema 
 |---|---:|---|
 | `Similarity` | BM25 | Index-time scoring metadata and default search scoring model. |
 | `CompressionPolicy` | `Deflate` | Stored-field block compression. |
-| `StoredFieldBlockSize` | `16` | Documents per stored-field compression block. |
+| `StoredFieldBlockSize` | `16` | Maximum documents per block; a 1 MiB raw-byte target can flush sooner. |
 | `PostingsSkipInterval` | `128` | Skip-data interval for postings. |
 | `StorePayloads` | `false` | Persists token payloads where analysis supplies them. |
 | `StoreTermVectors` | `false` | Persists per-document term vectors. |
@@ -164,6 +164,7 @@ by the caller retain caller ownership.
 | `EnableQueryCache` | `false` | Caches complete `TopDocs` results by query fingerprint and result count. |
 | `QueryCacheMaxEntries` | `1,024` | Soft entry cap. The current cache generation is replaced when the cap is exceeded. |
 | `MaxCachedSegmentReaders` | `256` | Bound for lazily opened segment readers. |
+| `MaxCachedSegmentReaderBytes` | `268435456` (256 MiB) | Estimated retained-resource budget for heavy segment-reader states. Active operations and cursors may temporarily exceed it until their leases end. |
 | `EnableBlockMaxWand` | `false` | Enables score-bound skipping for supported top-N queries. |
 | `Metrics` | null collector | Search metrics destination. |
 | `SlowQueryLog` | `null` | Optional structured slow-query logger. |

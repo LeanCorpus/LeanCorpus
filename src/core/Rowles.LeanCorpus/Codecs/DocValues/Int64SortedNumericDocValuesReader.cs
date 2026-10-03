@@ -1,130 +1,98 @@
-using Rowles.LeanCorpus.Store;
 using Rowles.LeanCorpus.Codecs.CodecKit;
+using Rowles.LeanCorpus.Store;
 
 namespace Rowles.LeanCorpus.Codecs.DocValues;
 
-/// <summary>
-/// Reads multi-valued 64-bit integer DocValues from a .dsnl sidecar file.
-/// </summary>
+/// <summary>Opens sorted Int64 DocValues as offsets and packed values.</summary>
 internal static class Int64SortedNumericDocValuesReader
 {
-    public static Dictionary<string, long[][]> Read(string filePath)
+    public static Dictionary<string, long[][]> Read(string filePath, int? expectedDocumentCount = null)
     {
-        var values = new Dictionary<string, long[][]>(StringComparer.Ordinal);
         if (!FileOpenRetry.FileExists(filePath))
-            return values;
+            return new Dictionary<string, long[][]>(StringComparer.Ordinal);
 
         using var input = new IndexInput(filePath);
-        return Read(input);
+        return Read(input, expectedDocumentCount);
     }
 
-    internal static Dictionary<string, long[][]> Read(IndexInput input)
+    internal static Dictionary<string, long[][]> Read(IndexInput input, int? expectedDocumentCount = null)
     {
-        using var inputLifetime = input;
-        var values = new Dictionary<string, long[][]>(StringComparer.Ordinal);
+        using (input)
+        {
+            var columns = OpenColumns(input, expectedDocumentCount);
+            var values = new Dictionary<string, long[][]>(columns.Count, StringComparer.Ordinal);
+            foreach ((string field, Int64SortedNumericDocValuesColumn column) in columns)
+                values.Add(field, column.Materialise());
+            return values;
+        }
+    }
+
+    /// <summary>
+    /// Parses and validates per-document offsets and packed-value positions without creating a jagged
+    /// row array. The caller owns <paramref name="input"/> for the returned columns.
+    /// </summary>
+    internal static Dictionary<string, Int64SortedNumericDocValuesColumn> OpenColumns(
+        IndexInput input,
+        int? expectedDocumentCount = null)
+    {
+        ArgumentNullException.ThrowIfNull(input);
         using var frame = CodecFileReader.OpenSupported(input, DocValuesCodecFiles.Int64SortedNumeric);
+        var body = new DocValuesBodyReader(input, frame, DocValuesCodecFiles.Int64SortedNumeric, expectedDocumentCount);
+        int fieldCount = body.ReadFieldCount();
+        var columns = new Dictionary<string, Int64SortedNumericDocValuesColumn>(StringComparer.Ordinal);
 
-        int fieldCount = input.ReadInt32();
-        for (int f = 0; f < fieldCount; f++)
+        for (int fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++)
         {
-            string fieldName = ReadString(input);
-            int docCount = input.ReadInt32();
-            var starts = new int[docCount + 1];
-            for (int i = 0; i < starts.Length; i++)
-                starts[i] = input.ReadInt32();
+            string fieldName = body.ReadString(fieldName: null);
+            int documentCount = body.ReadDocumentCount(fieldName);
+            int[] documentStarts = body.ReadInt32Array(
+                documentCount,
+                "document offsets",
+                fieldName,
+                includeTerminalValue: true);
 
-            int valueCount = input.ReadInt32();
-            ValidateStarts(starts, valueCount, fieldName);
-            var flattened = ReadPackedInt64s(input, valueCount);
+            int valueCount = body.ReadCount("value count", fieldName);
+            ValidateStarts(documentStarts, valueCount, fieldName, body);
+            long minimum = body.ReadInt64("minimum value", fieldName);
+            int bitsPerValue = body.ReadByte("bits-per-value", fieldName);
+            if (bitsPerValue > 64)
+                throw body.Corruption(
+                    $"Bits-per-value {bitsPerValue} must be between 0 and 64.",
+                    fieldName);
 
-            var perDoc = new long[docCount][];
-            for (int docId = 0; docId < docCount; docId++)
-            {
-                int start = starts[docId];
-                int end = starts[docId + 1];
-                if (end == start)
-                {
-                    perDoc[docId] = [];
-                    continue;
-                }
-
-                var docValues = new long[end - start];
-                Array.Copy(flattened, start, docValues, 0, docValues.Length);
-                perDoc[docId] = docValues;
-            }
-
-            values[fieldName] = perDoc;
+            long packedByteCount = body.ReadPackedByteCount(valueCount, bitsPerValue, fieldName);
+            long packedDataOffset = body.Position;
+            body.EnsureBodyBytes(packedByteCount, "packed values", fieldName);
+            var column = new Int64SortedNumericDocValuesColumn(
+                input, documentStarts, minimum, bitsPerValue, packedDataOffset);
+            if (!columns.TryAdd(fieldName, column))
+                throw body.Corruption("Field name is duplicated.", fieldName);
+            body.Seek(checked(packedDataOffset + packedByteCount), "packed values", fieldName);
         }
 
+        body.ValidateEnd();
         frame.ValidateChecksum();
-        return values;
+        return columns;
     }
 
-    private static long[] ReadPackedInt64s(IndexInput input, int valueCount)
+    private static void ValidateStarts(
+        int[] starts,
+        int totalValues,
+        string fieldName,
+        DocValuesBodyReader body)
     {
-        long min = input.ReadInt64();
-        int bitsPerValue = input.ReadByte();
-        var values = new long[valueCount];
-
-        if (valueCount == 0)
-            return values;
-
-        if (bitsPerValue == 0)
-        {
-            Array.Fill(values, min);
-            return values;
-        }
-
-        byte accum = 0;
-        int accBits = 0;
-        for (int i = 0; i < values.Length; i++)
-        {
-            ulong value = 0;
-            int collected = 0;
-            while (collected < bitsPerValue)
-            {
-                if (accBits == 0)
-                {
-                    accum = input.ReadByte();
-                    accBits = 8;
-                }
-
-                int take = Math.Min(bitsPerValue - collected, accBits);
-                value |= ((ulong)(accum & ((1 << take) - 1))) << collected;
-                accum >>= take;
-                accBits -= take;
-                collected += take;
-            }
-
-            values[i] = (long)((ulong)min + value);
-        }
-
-        return values;
-    }
-
-    private static void ValidateStarts(int[] starts, int totalValues, string fieldName)
-    {
-        if (starts[0] != 0)
-            throw new InvalidDataException($"Invalid Int64 sorted-numeric DocValues offsets for field '{fieldName}'.");
+        if (starts.Length == 0 || starts[0] != 0)
+            throw body.Corruption("Document offsets do not begin at zero.", fieldName);
 
         int previous = 0;
-        for (int i = 0; i < starts.Length; i++)
+        foreach (int current in starts)
         {
-            int current = starts[i];
             if (current < previous || current > totalValues)
-                throw new InvalidDataException($"Invalid Int64 sorted-numeric DocValues offsets for field '{fieldName}'.");
+                throw body.Corruption("Document offsets are not monotonic or exceed the value count.", fieldName);
             previous = current;
         }
 
         if (starts[^1] != totalValues)
-            throw new InvalidDataException($"Invalid Int64 sorted-numeric DocValues terminal offset for field '{fieldName}'.");
-    }
-
-    private static string ReadString(IndexInput input)
-    {
-        int length = input.ReadVarInt();
-        if (length < 0)
-            throw new InvalidDataException("Negative string length in Int64 sorted-numeric DocValues.");
-        return System.Text.Encoding.UTF8.GetString(input.ReadBytes(length));
+            throw body.Corruption("Terminal document offset does not match the value count.", fieldName);
     }
 }

@@ -21,11 +21,11 @@ public sealed class AdvancedAnalysisIntegrationTests : IClassFixture<TestDirecto
         _fixture = fixture;
     }
 
-    [Fact(DisplayName = "UAX29 URL Email Tokeniser: Indexes URLs And Email Addresses")]
-    public void Uax29UrlEmailTokeniser_IndexesUrlsAndEmailAddresses()
+    [Fact(DisplayName = "URL/email tokeniser: Indexes URLs And Email Addresses")]
+    public void UrlEmailTokeniser_IndexesUrlsAndEmailAddresses()
     {
         using var directory = new MMapDirectory(SubDir("uax29_special_terms"));
-        var analyser = new Analyser(new Uax29UrlEmailTokeniser(), new LowercaseFilter());
+        var analyser = new Analyser(new UrlEmailTokeniser(), new LowercaseFilter());
 
         using (var writer = new IndexWriter(directory, new IndexWriterConfig { DefaultAnalyser = analyser }))
         {
@@ -97,6 +97,28 @@ public sealed class AdvancedAnalysisIntegrationTests : IClassFixture<TestDirecto
         using var searcher = new IndexSearcher(directory);
         var phrase = new PhraseQuery("body", PhoneticEncoding.EncodeMetaphone("phone"), "book");
         Assert.Equal(1, searcher.Search(phrase, 10, TestContext.Current.CancellationToken).TotalHits);
+    }
+
+    [Fact(DisplayName = "CommonGrams Filter: Correct graph alternatives remain searchable after flattening")]
+    public void CommonGramsFilter_GraphAlternatives_PreservePhraseAndBigramSearch()
+    {
+        using var directory = new MMapDirectory(SubDir("common_grams_graph"));
+        var analyser = new Analyser(
+            new Tokeniser(),
+            new CommonGramsFilter(["the", "quick"]),
+            new FlattenGraphFilter());
+
+        using (var writer = new IndexWriter(directory, new IndexWriterConfig { DefaultAnalyser = analyser }))
+        {
+            var document = new LeanDocument();
+            document.Add(new TextField("body", "the quick fox"));
+            writer.AddDocument(document);
+            writer.Commit();
+        }
+
+        using var searcher = new IndexSearcher(directory);
+        Assert.Equal(1, searcher.Search(new TermQuery("body", "the_quick"), 10, TestContext.Current.CancellationToken).TotalHits);
+        Assert.Equal(1, searcher.Search(new PhraseQuery("body", "the", "quick", "fox"), 10, TestContext.Current.CancellationToken).TotalHits);
     }
 
     [Fact(DisplayName = "Hunspell Stem Filter: Stemmed Term Matches Inflected Document")]

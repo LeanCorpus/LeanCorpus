@@ -1,6 +1,7 @@
 using System.Buffers;
 using Rowles.LeanCorpus.Codecs.PackedBkd;
 using Rowles.LeanCorpus.Document.Fields;
+using Rowles.LeanCorpus.Index.Indexer;
 using Rowles.LeanCorpus.Index.Segment;
 using Rowles.LeanCorpus.Search.Geo;
 using Rowles.LeanCorpus.Search.Scoring;
@@ -571,7 +572,7 @@ public sealed partial class IndexSearcher
         {
             var fields = reader.Info.IndexSortFields;
             if (fields is not { Count: 1 }
-                || !TryParseIndexSortField(fields[0], out var readerSort))
+                || !IndexSort.TryParseSerialisedField(fields[0], out var readerSort))
             {
                 return false;
             }
@@ -583,20 +584,6 @@ public sealed partial class IndexSearcher
         }
 
         indexSortField = commonSort!;
-        return true;
-    }
-
-    private static bool TryParseIndexSortField(string metadata, out SortField sortField)
-    {
-        sortField = default!;
-        var parts = metadata.Split(':');
-        if (parts.Length is < 3 or > 4) return false;
-        if (!Enum.TryParse<SortFieldType>(parts[0], out var type)) return false;
-        if (type is SortFieldType.GeoDistance or SortFieldType.XYDistance) return false;
-        if (!bool.TryParse(parts[2], out bool descending)) return false;
-        var selector = SortValueSelector.Min;
-        if (parts.Length == 4 && !Enum.TryParse(parts[3], out selector)) return false;
-        sortField = new SortField(type, parts[1], descending, selector);
         return true;
     }
 
@@ -899,8 +886,8 @@ public sealed partial class IndexSearcher
 
             string latitudeField = _sort.FieldName + "_lat";
             string longitudeField = _sort.FieldName + "_lon";
-            if (!_reader.TryGetNumericDocValues(latitudeField, out _, out var latitudePresence)
-                || !_reader.TryGetNumericDocValues(longitudeField, out _, out var longitudePresence))
+            if (!_reader.TryGetNumericDocValuesPresence(latitudeField, out var latitudePresence)
+                || !_reader.TryGetNumericDocValuesPresence(longitudeField, out var longitudePresence))
                 return;
 
             int latitudeDocumentCount = latitudePresence?.Cardinality ?? _reader.MaxDoc;
@@ -917,12 +904,11 @@ public sealed partial class IndexSearcher
             if (legacyCandidates is not null && legacyCandidates.Cardinality <= metadata.DocumentCount)
                 return;
 
-            byte[][][]? exactGeoValues = _reader.GetBinaryDocValues(
-                GeoPointDocValues.GetFieldName(_sort.FieldName));
+            string exactField = GeoPointDocValues.GetFieldName(_sort.FieldName);
             if (legacyCandidates is null)
             {
                 for (int localDocId = 0; localDocId < _reader.MaxDoc && !ShouldStop; localDocId++)
-                    CollectLegacyGeoDocument(localDocId, exactGeoValues);
+                    CollectLegacyGeoDocument(localDocId, exactField);
                 return;
             }
 
@@ -931,11 +917,11 @@ public sealed partial class IndexSearcher
                 if (ShouldStop)
                     break;
 
-                CollectLegacyGeoDocument(localDocId, exactGeoValues);
+                CollectLegacyGeoDocument(localDocId, exactField);
             }
         }
 
-        private void CollectLegacyGeoDocument(int localDocId, byte[][][]? exactGeoValues)
+        private void CollectLegacyGeoDocument(int localDocId, string exactField)
         {
             if (!_reader.IsLive(localDocId))
                 return;
@@ -944,9 +930,7 @@ public sealed partial class IndexSearcher
                 _filterCandidatesRejected++;
                 return;
             }
-            if (exactGeoValues is not null
-                && (uint)localDocId < (uint)exactGeoValues.Length
-                && exactGeoValues[localDocId].Length > 0)
+            if (_reader.HasBinaryDocValue(exactField, localDocId))
                 return;
 
             AddDocument(_reader.DocBase + localDocId, includeMissing: false);

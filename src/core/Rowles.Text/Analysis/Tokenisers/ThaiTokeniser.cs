@@ -1,6 +1,3 @@
-using System.Collections.Frozen;
-using System.Globalization;
-
 #if !ROWLES_TEXT
 using Rowles.LeanCorpus.Store;
 #endif
@@ -21,8 +18,7 @@ public sealed class ThaiTokeniser : IShareableSpanTokeniser
     /// <summary>Token type emitted for Thai segments.</summary>
     public const string ThaiType = "thai";
 
-    private readonly FrozenSet<string> _lexicon;
-    private readonly int _maxWordLength;
+    private readonly LexiconPrefixTrie _prefixTrie;
 
     /// <summary>
     /// Initialises a new <see cref="ThaiTokeniser"/> with the supplied lexicon.
@@ -42,8 +38,7 @@ public sealed class ThaiTokeniser : IShareableSpanTokeniser
         if (words.Length == 0)
             throw new ArgumentException("Lexicon must contain at least one word.", nameof(lexicon));
 
-        _lexicon = words.ToFrozenSet(StringComparer.Ordinal);
-        _maxWordLength = words.Max(static word => word.Length);
+        _prefixTrie = new LexiconPrefixTrie(words);
     }
 
     /// <summary>
@@ -132,27 +127,16 @@ public sealed class ThaiTokeniser : IShareableSpanTokeniser
     }
 
     private int TryFindLongestLexiconMatch(ReadOnlySpan<char> input, int start, int end)
-    {
-        int maxLength = Math.Min(_maxWordLength, end - start);
-        for (int length = maxLength; length > 0; length--)
-        {
-            var candidate = input.Slice(start, length);
-            if (_lexicon.GetAlternateLookup<ReadOnlySpan<char>>().Contains(candidate))
-                return length;
-        }
-
-        return 0;
-    }
+        => _prefixTrie.FindLongest(input, start, end);
 
     private static int ReadThaiCluster(ReadOnlySpan<char> input, int start, int end)
     {
         int i = start + 1;
         while (i < end)
         {
-            var category = char.GetUnicodeCategory(input[i]);
-            if (category is UnicodeCategory.NonSpacingMark or UnicodeCategory.SpacingCombiningMark or UnicodeCategory.EnclosingMark)
+            if (UnicodeTokenisation.IsMark(input, i, out int scalarLength))
             {
-                i++;
+                i += scalarLength;
                 continue;
             }
 

@@ -30,7 +30,7 @@ var config = new IndexWriterConfig
 | `DeletionPolicy` | `KeepLatestCommitPolicy` | Which old commits survive |
 | `DurableCommits` | `true` | `fsync` before declaring commit successful |
 | `CompressionPolicy` | `Deflate` | Stored field compression |
-| `StoredFieldBlockSize` | `16` | Docs per compression block |
+| `StoredFieldBlockSize` | `16` | Maximum docs per block; a 1 MiB raw-byte target can flush sooner |
 | `PostingsSkipInterval` | `128` | Postings skip-list frequency |
 | `MergeThreshold` | `10` | Segment count that triggers a merge |
 | `BKDMaxLeafSize` | `512` | BKD tree leaf capacity |
@@ -38,6 +38,32 @@ var config = new IndexWriterConfig
 | `TokenBudgetPolicy` | `Truncate` | What happens when the cap is hit |
 | `StoreTermVectors` | `false` | Whether to persist term vectors |
 | `Metrics` | `NullMetricsCollector.Instance` | Metrics backend |
+
+## Compression codec catalogue
+
+Stored-field compression implementations are captured by the immutable
+`CodecCatalog` used by the writer and searcher. Optional compression packages
+register during startup; custom implementations can be added to a catalogue
+before it is built:
+
+```csharp
+var compressionCodec = new MyCompressionCodec();
+var codecCatalog = new CodecCatalogBuilder()
+    .AddBuiltIns()
+    .AddCompressionCodec(compressionCodec)
+    .Build();
+
+var config = new IndexWriterConfig
+{
+    CodecCatalog = codecCatalog,
+    CompressionPolicy = (FieldCompressionPolicy)compressionCodec.PolicyByte,
+};
+```
+
+`AddCompressionCodec` rejects a policy byte that is already present. To
+intentionally change a built-in or registered implementation for this
+catalogue, use `ReplaceCompressionCodec` before `Build()`. Existing catalogues
+and open readers keep their captured implementation.
 
 ## Process-wide defaults
 

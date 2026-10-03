@@ -1,6 +1,11 @@
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Globalization;
+using System.Text;
 using Rowles.LeanCorpus.Codecs;
 using Rowles.LeanCorpus.Codecs.CodecKit;
+using Rowles.LeanCorpus.Codecs.StoredFields;
+using Rowles.LeanCorpus.Codecs.DocValues;
 using Rowles.LeanCorpus.Codecs.Vectors;
 using Rowles.LeanCorpus.Document;
 using Rowles.LeanCorpus.Document.Fields;
@@ -14,6 +19,7 @@ using Rowles.LeanCorpus.Search.Queries;
 using Rowles.LeanCorpus.Search.Searcher;
 using Rowles.LeanCorpus.Store;
 using Rowles.LeanCorpus.Tests.Shared.Fixtures;
+using Rowles.LeanCorpus.Util;
 
 namespace Rowles.LeanCorpus.Tests.Core.Index.Migration;
 [Category(TestCategory.Integration)]
@@ -72,6 +78,48 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
 
         writer.Commit();
         return path;
+    }
+
+    private string CreateIndexWithMissingSortedValue(string name)
+    {
+        var path = Path.Combine(_fixture.Path, name);
+        Directory.CreateDirectory(path);
+        using var directory = new MMapDirectory(path);
+        using var writer = new IndexWriter(directory, new IndexWriterConfig());
+
+        var present = new LeanDocument();
+        present.Add(new TextField("body", "first migration document"));
+        present.Add(new StringField("tag", "alpha", stored: false));
+        writer.AddDocument(present);
+
+        var missing = new LeanDocument();
+        missing.Add(new TextField("body", "second migration document"));
+        writer.AddDocument(missing);
+        writer.Commit();
+        return path;
+    }
+
+    private static void WriteLegacyV2SortedDocValuesWithMissingValue(string path)
+    {
+        var presence = new RoaringBitmap();
+        presence.Add(1);
+        using var bitmapStream = new MemoryStream();
+        using (var bitmapWriter = new BinaryWriter(bitmapStream, Encoding.UTF8, leaveOpen: true))
+            presence.Serialise(bitmapWriter);
+
+        using var output = new IndexOutput(path);
+        using var frame = CodecFileHeader.BeginStreamingWrite(output, version: 2);
+        var body = frame.Output;
+        body.WriteInt32(1);
+        body.WriteString("tag");
+        body.WriteInt32(checked((int)bitmapStream.Length));
+        body.WriteBytes(bitmapStream.GetBuffer().AsSpan(0, checked((int)bitmapStream.Length)));
+        body.WriteInt32(2);
+        body.WriteInt32(2);
+        body.WriteString("");
+        body.WriteString("alpha");
+        body.WriteByte(1);
+        body.WriteByte(2);
     }
 
     private string CreateVectorIndex(string name, VectorQuantisation quantisation)
@@ -238,45 +286,155 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
     }
 
     /// <summary>
-    /// Re-wraps current canonical stored-fields files as v1 CodecKit envelopes.
-    /// Used to exercise the stored-fields migration path.
+    /// Writes genuine v1 inline-name records from the current reader values so
+    /// migration tests exercise the historical body layout, not relabelled v5 bytes.
     /// </summary>
     private static void DowngradeStoredFieldsToV1(string indexPath)
     {
         var fdtPath = Directory.GetFiles(indexPath, "*.fdt").Single();
         var fdxPath = Directory.GetFiles(indexPath, "*.fdx").Single();
+        var (documents, compression) = ReadStoredFieldsDocuments(fdtPath, fdxPath);
+        var fixture = BuildLegacyStoredFieldsData(documents, blockSize: 16, compression);
+        int envelopeHeaderSize = LegacyEnvelopeHeaderSize(fixture.Body.Length);
+        long[] blockOffsets = fixture.RelativeBlockOffsets
+            .Select(offset => checked(envelopeHeaderSize + offset))
+            .ToArray();
 
-        var (fdtBody, canonicalFdtBodyStart) = ReadCanonicalBody(fdtPath);
-        int fdtHeaderSize;
-        using (var fs = new FileStream(fdtPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        WriteLegacyEnvelope(fdtPath, StoredFieldsFileHeader.V1, fixture.Body);
+        var indexBody = BuildLegacyStoredFieldsIndex(documents.Count, 16, blockOffsets);
+        WriteLegacyEnvelope(fdxPath, StoredFieldsFileHeader.V1, indexBody);
+    }
+
+    private static void DowngradeStoredFieldsToV4(string indexPath)
+    {
+        var fdtPath = Directory.GetFiles(indexPath, "*.fdt").Single();
+        var fdxPath = Directory.GetFiles(indexPath, "*.fdx").Single();
+        var (documents, compression) = ReadStoredFieldsDocuments(fdtPath, fdxPath);
+        var fixture = BuildLegacyStoredFieldsData(documents, blockSize: 16, compression);
+        long fdtBodyStart = CodecFileWriter.FixedHeaderLength +
+            Encoding.ASCII.GetByteCount(StoredFieldsCodecFiles.Data.FormatId);
+        long[] blockOffsets = fixture.RelativeBlockOffsets
+            .Select(offset => checked(fdtBodyStart + offset))
+            .ToArray();
+
+        CodecFileWriter.WriteAtomically(
+            fdtPath,
+            StoredFieldsCodecFiles.Data.FormatId,
+            StoredFieldsFileHeader.V4,
+            durable: false,
+            output => output.WriteBytes(fixture.Body));
+        byte[] indexBody = BuildLegacyStoredFieldsIndex(documents.Count, 16, blockOffsets);
+        CodecFileWriter.WriteAtomically(
+            fdxPath,
+            StoredFieldsCodecFiles.Index.FormatId,
+            StoredFieldsFileHeader.V4,
+            durable: false,
+            output => output.WriteBytes(indexBody));
+    }
+
+    private static (List<Dictionary<string, List<StoredFieldValue>>> Documents, FieldCompressionPolicy Compression)
+        ReadStoredFieldsDocuments(string fdtPath, string fdxPath)
+    {
+        using var reader = StoredFieldsReader.Open(fdtPath, fdxPath);
+        var documents = new List<Dictionary<string, List<StoredFieldValue>>>(reader.DocCount);
+        for (int docId = 0; docId < reader.DocCount; docId++)
+            documents.Add(reader.ReadDocumentValues(docId));
+        return (documents, reader.Compression);
+    }
+
+    private static (byte[] Body, long[] RelativeBlockOffsets) BuildLegacyStoredFieldsData(
+        IReadOnlyList<Dictionary<string, List<StoredFieldValue>>> documents,
+        int blockSize,
+        FieldCompressionPolicy compression)
+    {
+        var body = new ArrayBufferWriter<byte>();
+        var blockOffsets = new List<long>();
+        body.WriteInt32(blockSize);
+        body.WriteByte((byte)compression);
+
+        for (int firstDocument = 0; firstDocument < documents.Count; firstDocument += blockSize)
         {
-            fs.WriteByte(1);
-            WriteLegacyEnvelopeLength(fs, fdtBody.Length);
-            fdtHeaderSize = LegacyEnvelopeHeaderSize(fdtBody.Length);
-            fs.Write(fdtBody);
-        }
-
-        // Re-wrap .fdx and shift file-absolute block offsets to the v1 body base.
-        var (fdxBodyBytes, _) = ReadCanonicalBody(fdxPath);
-        var fdxBody = fdxBodyBytes.AsSpan();
-        int blockSize = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(fdxBody);
-        int docCount = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(fdxBody.Slice(4));
-        int blockCount = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(fdxBody.Slice(8));
-        long headerDelta = fdtHeaderSize - canonicalFdtBodyStart;
-
-        using (var fs = new FileStream(fdxPath, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            fs.WriteByte(1);
-            WriteLegacyEnvelopeLength(fs, fdxBody.Length);
-            fs.Write(fdxBody.Slice(0, 12));
-            for (int i = 0; i < blockCount; i++)
+            int documentCount = Math.Min(blockSize, documents.Count - firstDocument);
+            var raw = new ArrayBufferWriter<byte>();
+            var intraOffsets = new int[documentCount];
+            for (int i = 0; i < documentCount; i++)
             {
-                long offset = System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(fdxBody.Slice(12 + i * 8));
-                System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(
-                    fdxBody.Slice(12 + i * 8), offset + headerDelta);
+                intraOffsets[i] = raw.WrittenCount;
+                WriteLegacyStoredFieldsDocument(raw, documents[firstDocument + i]);
             }
-            fs.Write(fdxBody.Slice(12, blockCount * 8));
+
+            var (compressed, compressedLength) = StoredFieldCompression.Compress(raw.WrittenSpan, compression);
+            blockOffsets.Add(body.WrittenCount);
+            body.WriteInt32(documentCount);
+            body.WriteInt32(raw.WrittenCount);
+            body.WriteInt32(compressedLength);
+            foreach (int intraOffset in intraOffsets)
+                body.WriteInt32(intraOffset);
+            body.WriteBytes(compressed.AsSpan(0, compressedLength));
         }
+
+        return (body.WrittenSpan.ToArray(), blockOffsets.ToArray());
+    }
+
+    private static byte[] BuildLegacyStoredFieldsIndex(int documentCount, int blockSize, long[] blockOffsets)
+    {
+        var body = new ArrayBufferWriter<byte>();
+        body.WriteInt32(blockSize);
+        body.WriteInt32(documentCount);
+        body.WriteInt32(blockOffsets.Length);
+        foreach (long blockOffset in blockOffsets)
+            body.WriteInt64(blockOffset);
+        return body.WrittenSpan.ToArray();
+    }
+
+    private static void WriteLegacyStoredFieldsDocument(
+        IBufferWriter<byte> writer,
+        IReadOnlyDictionary<string, List<StoredFieldValue>> fields)
+    {
+        writer.WriteInt32(fields.Count);
+        Span<byte> encodeBuffer = stackalloc byte[512];
+        foreach (var (name, values) in fields)
+        {
+            int nameLength = Encoding.UTF8.GetByteCount(name);
+            Span<byte> nameBytes = nameLength <= encodeBuffer.Length ? encodeBuffer : new byte[nameLength];
+            Encoding.UTF8.GetBytes(name, nameBytes);
+            writer.WriteInt32(nameLength);
+            writer.WriteBytes(nameBytes[..nameLength]);
+            writer.WriteInt32(values.Count);
+            foreach (StoredFieldValue value in values)
+                WriteLegacyStoredFieldValue(writer, value, encodeBuffer);
+        }
+    }
+
+    private static void WriteLegacyStoredFieldValue(
+        IBufferWriter<byte> writer,
+        StoredFieldValue value,
+        Span<byte> encodeBuffer)
+    {
+        writer.WriteByte((byte)value.Kind);
+        if (value.IsBinary)
+        {
+            byte[] bytes = value.BinaryValue ?? [];
+            writer.WriteInt32(bytes.Length);
+            writer.WriteBytes(bytes);
+            return;
+        }
+
+        if (value.IsLong)
+        {
+            writer.WriteInt32(sizeof(long));
+            Span<byte> bytes = stackalloc byte[sizeof(long)];
+            BinaryPrimitives.WriteInt64LittleEndian(bytes, value.LongValue);
+            writer.WriteBytes(bytes);
+            return;
+        }
+
+        string text = value.StringValue ?? string.Empty;
+        int byteCount = Encoding.UTF8.GetByteCount(text);
+        Span<byte> textBytes = byteCount <= encodeBuffer.Length ? encodeBuffer : new byte[byteCount];
+        Encoding.UTF8.GetBytes(text, textBytes);
+        writer.WriteInt32(byteCount);
+        writer.WriteBytes(textBytes[..byteCount]);
     }
 
     private static (byte[] Body, long BodyStart) ReadCanonicalBody(string path)
@@ -806,6 +964,35 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
     public void Migrate_Rewrite_SortedDocValues()
         => AssertRewriteRestoresVersion("migrate_rewrite_dvs", "*.dvs", CodecConstants.SortedDocValuesVersion);
 
+    [Fact(DisplayName = "Migrate: Rewrite sorted DocValues v2 and remove the missing placeholder term")]
+    public void Migrate_Rewrite_SortedDocValuesV2_RemovesMissingPlaceholder()
+    {
+        string path = CreateIndexWithMissingSortedValue("migrate_rewrite_dvs_v2");
+        string docValuesPath = Directory.GetFiles(path, "*.dvs").Single();
+        WriteLegacyV2SortedDocValuesWithMissingValue(docValuesPath);
+
+        Assert.Equal(["", "alpha"], SortedDocValuesReader.ReadTerms(docValuesPath)["tag"]);
+
+        var result = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = false,
+            });
+
+        Assert.True(result.Succeeded,
+            $"Sorted DocValues v2 rewrite failed. Issues: {string.Join("; ", result.Issues.Select(issue => issue.Message))}");
+        Assert.Equal(CodecConstants.SortedDocValuesVersion, ReadVersionByte(path, "*.dvs"));
+
+        using var directory = new MMapDirectory(path);
+        using var searcher = new IndexSearcher(directory);
+        var reader = Assert.Single(searcher.GetSegmentReaders());
+        Assert.Equal(["alpha"], reader.GetSortedDocValueTerms("tag")!);
+        Assert.Equal(["", "alpha"], reader.GetSortedDocValues("tag")!);
+    }
+
     [Fact(DisplayName = "Migrate: Rewrite sorted set doc values")]
     public void Migrate_Rewrite_SortedSetDocValues()
         => AssertRewriteRestoresVersion("migrate_rewrite_dss", "*.dss", CodecConstants.SortedSetDocValuesVersion);
@@ -966,10 +1153,35 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
         AssertIndexReadable(path);
     }
 
+    [Fact(DisplayName = "Migrate: Rewrite stored fields v4 field-name records to v5 IDs")]
+    public void Migrate_Rewrite_StoredFieldsV4()
+    {
+        var path = CreateCurrentVersionIndex("migrate_rewrite_fdt_v4");
+        DowngradeStoredFieldsToV4(path);
+        Assert.Equal(StoredFieldsFileHeader.V4, ReadVersionByte(path, "*.fdt"));
+        Assert.Equal(StoredFieldsFileHeader.V4, ReadVersionByte(path, "*.fdx"));
+
+        var result = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = true,
+            });
+
+        Assert.True(result.Succeeded,
+            $"Migration failed. Issues: {string.Join("; ", result.Issues.Select(i => $"{i.Code}: {i.Message}"))}");
+        Assert.Equal(CodecConstants.StoredFieldsVersion, ReadVersionByte(path, "*.fdt"));
+        Assert.Equal(CodecConstants.StoredFieldsVersion, ReadVersionByte(path, "*.fdx"));
+        AssertIndexReadable(path);
+    }
+
     [Fact(DisplayName = "Migrate: Stored-fields family rewrites when only the index member is legacy")]
     public void Migrate_StoredFieldsIndexOnlyLegacy_RewritesFamily()
     {
         var path = CreateCurrentVersionIndex("migrate_rewrite_fdx_only");
+        DowngradeStoredFieldsToV4(path);
         var fdxPath = Directory.GetFiles(path, "*.fdx").Single();
         var (body, _) = ReadCanonicalBody(fdxPath);
         WriteCustomHeader(fdxPath, version: 2, body);
@@ -977,7 +1189,7 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
         var plan = IndexCodecMigrator.Plan(new MMapDirectory(path));
         Assert.Contains(plan.Actions, action =>
             action.Kind == IndexCodecMigrationActionKind.CoordinatedRewrite &&
-            action.FileName!.EndsWith(".fdx", StringComparison.Ordinal));
+            action.FamilyId == "leancorpus.stored-fields");
 
         var result = IndexCodecMigrator.Migrate(new MMapDirectory(path), new IndexCodecMigrationOptions
         {

@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Text;
 using Rowles.LeanCorpus.Codecs;
 using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Store;
@@ -8,8 +7,8 @@ namespace Rowles.LeanCorpus.Codecs.StoredFields;
 
 /// <summary>
 /// Writes stored field data (.fdt) with configurable compression
-/// and a parallel offset index (.fdx). Documents are grouped into blocks of 16.
-/// Each field supports multiple values.
+/// and a parallel offset index (.fdx). Blocks are bounded by raw bytes and a
+/// configurable maximum document count. Each field supports multiple values.
 /// </summary>
 internal static class StoredFieldsWriter
 {
@@ -20,8 +19,13 @@ internal static class StoredFieldsWriter
     /// </summary>
     internal static void Write(string fdtPath, string fdxPath,
         List<int> docStarts, List<int> fieldIds, List<StoredFieldValue> values, List<string> fieldNames,
-        int blockSize = DefaultBlockSize, FieldCompressionPolicy compression = FieldCompressionPolicy.Deflate)
+        int blockSize = DefaultBlockSize,
+        FieldCompressionPolicy compression = FieldCompressionPolicy.Deflate,
+        CodecCatalog? catalog = null)
     {
+        CompressionCodecRegistry.MarkIndexOpened();
+        var compressionCodec = (catalog ?? CodecCatalog.Default).GetCompressionCodec((byte)compression);
+        StoredFieldsBlockPolicy.ValidateMaximumDocumentCount(blockSize);
         int docCount = docStarts.Count;
 
         using var fdtOutput = new IndexOutput(fdtPath);
@@ -30,102 +34,74 @@ internal static class StoredFieldsWriter
         fdtScope.Output.WriteByte((byte)compression);
 
         var blockOffsets = new List<long>();
+        var intraOffsets = new List<int>(blockSize);
         var rawBuf = new ArrayBufferWriter<byte>(4096);
         Span<byte> encodeBuf = stackalloc byte[512];
 
         var distinctFieldIds = new List<int>(16);
-        Span<int> intraOffsetsStack = stackalloc int[64];
-        bool[] seenFieldId = ArrayPool<bool>.Shared.Rent(Math.Max(16, fieldNames.Count));
+        int scratchLength = Math.Max(1, fieldNames.Count);
+        int[] fieldCounts = ArrayPool<int>.Shared.Rent(scratchLength);
+        int[] fieldEnds = ArrayPool<int>.Shared.Rent(scratchLength);
+        int[] groupedEntryIndexes = ArrayPool<int>.Shared.Rent(Math.Max(1, Math.Min(fieldIds.Count, 256)));
+        int docsInBlock = 0;
         try
         {
-            // Rented arrays may retain marks from unrelated search operations.
-            Array.Clear(seenFieldId);
-            for (int blockStart = 0; blockStart < docCount; blockStart += blockSize)
+            for (int docId = 0; docId < docCount; docId++)
             {
-                int blockEnd = Math.Min(blockStart + blockSize, docCount);
-                int blockDocCount = blockEnd - blockStart;
-
-                rawBuf.Clear();
-
-                Span<int> intraOffsets = blockDocCount <= intraOffsetsStack.Length
-                    ? intraOffsetsStack[..blockDocCount]
-                    : new int[blockDocCount];
-
-                for (int d = 0; d < blockDocCount; d++)
+                int entryStart = docStarts[docId];
+                int entryEnd = docId + 1 < docCount ? docStarts[docId + 1] : fieldIds.Count;
+                int entryCount = entryEnd - entryStart;
+                if (entryCount > groupedEntryIndexes.Length)
                 {
-                    intraOffsets[d] = (int)rawBuf.WrittenCount;
-                    int docIdx = blockStart + d;
-                    int entryStart = docStarts[docIdx];
-                    int entryEnd = docIdx + 1 < docCount ? docStarts[docIdx + 1] : fieldIds.Count;
-
-                    distinctFieldIds.Clear();
-                    for (int e = entryStart; e < entryEnd; e++)
-                    {
-                        int fid = fieldIds[e];
-                        if (fid >= seenFieldId.Length)
-                        {
-                            var grown = ArrayPool<bool>.Shared.Rent(fid + 1);
-                            Array.Clear(grown);
-                            foreach (int existing in distinctFieldIds) grown[existing] = true;
-                            ArrayPool<bool>.Shared.Return(seenFieldId);
-                            seenFieldId = grown;
-                        }
-                        if (!seenFieldId[fid])
-                        {
-                            seenFieldId[fid] = true;
-                            distinctFieldIds.Add(fid);
-                        }
-                    }
-                    foreach (int fid in distinctFieldIds) seenFieldId[fid] = false;
-
-                    rawBuf.WriteInt32(distinctFieldIds.Count);
-                    foreach (int fid in distinctFieldIds)
-                    {
-                        string name = fieldNames[fid];
-                        int nameByteCount = Encoding.UTF8.GetByteCount(name);
-                        Span<byte> nameBuf = nameByteCount <= encodeBuf.Length ? encodeBuf : new byte[nameByteCount];
-                        Encoding.UTF8.GetBytes(name, nameBuf);
-                        rawBuf.WriteInt32(nameByteCount);
-                        rawBuf.WriteBytes(nameBuf[..nameByteCount]);
-
-                        int valueCount = 0;
-                        for (int e = entryStart; e < entryEnd; e++)
-                            if (fieldIds[e] == fid) valueCount++;
-                        rawBuf.WriteInt32(valueCount);
-
-                        for (int e = entryStart; e < entryEnd; e++)
-                        {
-                            if (fieldIds[e] != fid) continue;
-                            WriteStoredValue(rawBuf, values[e], encodeBuf);
-                        }
-                    }
+                    var grown = ArrayPool<int>.Shared.Rent(entryCount);
+                    ArrayPool<int>.Shared.Return(groupedEntryIndexes);
+                    groupedEntryIndexes = grown;
                 }
 
-                int rawLength = (int)rawBuf.WrittenCount;
-                var rawData = rawBuf.WrittenSpan;
+                long documentRawLength = StoredFieldsBlockEncoder.GroupFlatDocument(
+                    fieldIds, values, fieldNames, entryStart, entryEnd, distinctFieldIds,
+                    fieldCounts, fieldEnds, groupedEntryIndexes);
+                StoredFieldsBlockPolicy.ValidateRawLength(documentRawLength);
 
-                var (compData, compLength) = StoredFieldCompression.Compress(rawData, compression);
+                if (documentRawLength > StoredFieldsBlockPolicy.TargetRawBytes)
+                {
+                    FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
+                    var oversizedBuffer = new ArrayBufferWriter<byte>(checked((int)documentRawLength));
+                    StoredFieldsBlockEncoder.WriteFlatDocument(
+                        oversizedBuffer, values, distinctFieldIds, fieldCounts, groupedEntryIndexes, encodeBuf);
+                    WriteBlock(fdtScope.Output, blockOffsets, oversizedBuffer.WrittenSpan, [0], compressionCodec);
+                    continue;
+                }
 
-                blockOffsets.Add(fdtScope.Output.Position);
-                fdtScope.Output.WriteInt32(blockDocCount);
-                fdtScope.Output.WriteInt32(rawLength);
-                fdtScope.Output.WriteInt32(compLength);
-                for (int i = 0; i < blockDocCount; i++)
-                    fdtScope.Output.WriteInt32(intraOffsets[i]);
-                fdtScope.Output.WriteBytes(compData.AsSpan(0, compLength));
+                if (StoredFieldsBlockPolicy.ShouldFlushBeforeAdd(
+                        docsInBlock, rawBuf.WrittenCount, documentRawLength, blockSize))
+                    FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
+
+                intraOffsets.Add(rawBuf.WrittenCount);
+                StoredFieldsBlockEncoder.WriteFlatDocument(
+                    rawBuf, values, distinctFieldIds, fieldCounts, groupedEntryIndexes, encodeBuf);
+                docsInBlock++;
+
+                if (StoredFieldsBlockPolicy.ShouldFlushAfterAdd(docsInBlock, rawBuf.WrittenCount, blockSize))
+                    FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
             }
         }
         finally
         {
-            ArrayPool<bool>.Shared.Return(seenFieldId);
+            ArrayPool<int>.Shared.Return(fieldCounts);
+            ArrayPool<int>.Shared.Return(fieldEnds);
+            ArrayPool<int>.Shared.Return(groupedEntryIndexes);
         }
 
+        FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
         fdtScope.Complete();
-        WriteFdx(fdxPath, blockSize, docCount, blockOffsets);
+        WriteFdx(fdxPath, blockSize, docCount, fieldNames, blockOffsets);
     }
 
     internal static void Write(string fdtPath, string fdxPath, IReadOnlyList<Dictionary<string, List<string>>> docs,
-        int blockSize = DefaultBlockSize, FieldCompressionPolicy compression = FieldCompressionPolicy.Deflate)
+        int blockSize = DefaultBlockSize,
+        FieldCompressionPolicy compression = FieldCompressionPolicy.Deflate,
+        CodecCatalog? catalog = null)
         => Write(
             fdtPath,
             fdxPath,
@@ -134,7 +110,8 @@ internal static class StoredFieldsWriter
                 static kvp => kvp.Key,
                 static kvp => kvp.Value.Select(StoredFieldValue.FromString).ToList()),
             blockSize,
-            compression);
+            compression,
+            catalog);
 
     internal static void Write(
         string fdtPath,
@@ -142,100 +119,129 @@ internal static class StoredFieldsWriter
         int docCount,
         Func<int, Dictionary<string, List<StoredFieldValue>>> readDocument,
         int blockSize = DefaultBlockSize,
-        FieldCompressionPolicy compression = FieldCompressionPolicy.Deflate)
+        FieldCompressionPolicy compression = FieldCompressionPolicy.Deflate,
+        CodecCatalog? catalog = null)
     {
+        CompressionCodecRegistry.MarkIndexOpened();
+        var compressionCodec = (catalog ?? CodecCatalog.Default).GetCompressionCodec((byte)compression);
+        ArgumentOutOfRangeException.ThrowIfNegative(docCount);
+        ArgumentNullException.ThrowIfNull(readDocument);
+        StoredFieldsBlockPolicy.ValidateMaximumDocumentCount(blockSize);
+
         using var fdtOutput = new IndexOutput(fdtPath);
         using var fdtScope = CodecFileWriter.Begin(fdtOutput, StoredFieldsCodecFiles.Data);
         fdtScope.Output.WriteInt32(blockSize);
         fdtScope.Output.WriteByte((byte)compression);
 
         var blockOffsets = new List<long>();
+        var intraOffsets = new List<int>(blockSize);
         var rawBuf = new ArrayBufferWriter<byte>(4096);
+        var fieldNameToId = new Dictionary<string, int>(StringComparer.Ordinal);
+        var fieldNames = new List<string>();
         Span<byte> encodeBuf = stackalloc byte[512];
+        int docsInBlock = 0;
 
-        for (int blockStart = 0; blockStart < docCount; blockStart += blockSize)
+        for (int docId = 0; docId < docCount; docId++)
         {
-            int blockEnd = Math.Min(blockStart + blockSize, docCount);
-            int blockCount = blockEnd - blockStart;
+            var fields = readDocument(docId);
+            long documentRawLength = StoredFieldsBlockEncoder.GetDictionaryDocumentRawLength(
+                fields, fieldNameToId, fieldNames);
+            StoredFieldsBlockPolicy.ValidateRawLength(documentRawLength);
 
-            rawBuf.Clear();
-
-            var intraOffsets = new int[blockCount];
-            for (int i = 0; i < blockCount; i++)
+            if (documentRawLength > StoredFieldsBlockPolicy.TargetRawBytes)
             {
-                intraOffsets[i] = (int)rawBuf.WrittenCount;
-                var fields = readDocument(blockStart + i);
-                rawBuf.WriteInt32(fields.Count);
-                foreach (var (name, values) in fields)
-                {
-                    int nameByteCount = Encoding.UTF8.GetByteCount(name);
-                    Span<byte> nameBuf = nameByteCount <= encodeBuf.Length ? encodeBuf : new byte[nameByteCount];
-                    Encoding.UTF8.GetBytes(name, nameBuf);
-                    rawBuf.WriteInt32(nameByteCount);
-                    rawBuf.WriteBytes(nameBuf[..nameByteCount]);
-
-                    rawBuf.WriteInt32(values.Count);
-                    foreach (var value in values)
-                        WriteStoredValue(rawBuf, value, encodeBuf);
-                }
+                FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
+                var oversizedBuffer = new ArrayBufferWriter<byte>(checked((int)documentRawLength));
+                StoredFieldsBlockEncoder.WriteDictionaryDocument(
+                    oversizedBuffer, fields, fieldNameToId, fieldNames, encodeBuf);
+                WriteBlock(fdtScope.Output, blockOffsets, oversizedBuffer.WrittenSpan, [0], compressionCodec);
+                continue;
             }
 
-            int rawLength = (int)rawBuf.WrittenCount;
-            var rawData = rawBuf.WrittenSpan;
+            if (StoredFieldsBlockPolicy.ShouldFlushBeforeAdd(
+                    docsInBlock, rawBuf.WrittenCount, documentRawLength, blockSize))
+                FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
 
-            var (compData, compLength) = StoredFieldCompression.Compress(rawData, compression);
+            intraOffsets.Add(rawBuf.WrittenCount);
+            StoredFieldsBlockEncoder.WriteDictionaryDocument(
+                rawBuf, fields, fieldNameToId, fieldNames, encodeBuf);
+            docsInBlock++;
 
-            blockOffsets.Add(fdtScope.Output.Position);
-            fdtScope.Output.WriteInt32(blockCount);
-            fdtScope.Output.WriteInt32(rawLength);
-            fdtScope.Output.WriteInt32(compLength);
-            for (int i = 0; i < blockCount; i++)
-                fdtScope.Output.WriteInt32(intraOffsets[i]);
-            fdtScope.Output.WriteBytes(compData.AsSpan(0, compLength));
+            if (StoredFieldsBlockPolicy.ShouldFlushAfterAdd(docsInBlock, rawBuf.WrittenCount, blockSize))
+                FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
         }
 
+        FlushBlock(fdtScope.Output, blockOffsets, rawBuf, intraOffsets, ref docsInBlock, compressionCodec);
         fdtScope.Complete();
-        WriteFdx(fdxPath, blockSize, docCount, blockOffsets);
+        WriteFdx(fdxPath, blockSize, docCount, fieldNames, blockOffsets);
     }
 
-    private static void WriteFdx(string fdxPath, int blockSize, int docCount, List<long> blockOffsets)
+    private static void FlushBlock(
+        ISequentialIndexOutput output,
+        List<long> blockOffsets,
+        ArrayBufferWriter<byte> rawBuf,
+        List<int> intraOffsets,
+        ref int docsInBlock,
+        IFieldCompressionCodec compressionCodec)
+    {
+        if (docsInBlock == 0) return;
+        WriteBlock(output, blockOffsets, rawBuf.WrittenSpan, intraOffsets, compressionCodec);
+        rawBuf.Clear();
+        intraOffsets.Clear();
+        docsInBlock = 0;
+    }
+
+    internal static void WriteBlock(
+        ISequentialIndexOutput output,
+        List<long> blockOffsets,
+        ReadOnlySpan<byte> rawData,
+        IReadOnlyList<int> intraOffsets,
+        FieldCompressionPolicy compression)
+        => WriteBlock(
+            output,
+            blockOffsets,
+            rawData,
+            intraOffsets,
+            CodecCatalog.Default.GetCompressionCodec((byte)compression));
+
+    internal static void WriteBlock(
+        ISequentialIndexOutput output,
+        List<long> blockOffsets,
+        ReadOnlySpan<byte> rawData,
+        IReadOnlyList<int> intraOffsets,
+        IFieldCompressionCodec compressionCodec)
+    {
+        int rawLength = rawData.Length;
+        StoredFieldsBlockPolicy.ValidateRawLength(rawLength);
+        var (compData, compLength) = StoredFieldCompression.Compress(rawData, compressionCodec);
+        ValidateCompressedLength(rawLength, compLength);
+
+        blockOffsets.Add(output.Position);
+        output.WriteInt32(intraOffsets.Count);
+        output.WriteInt32(rawLength);
+        output.WriteInt32(compLength);
+        for (int i = 0; i < intraOffsets.Count; i++)
+            output.WriteInt32(intraOffsets[i]);
+        output.WriteBytes(compData.AsSpan(0, compLength));
+    }
+
+    internal static void ValidateCompressedLength(int rawLength, int compLength)
+    {
+        if (compLength <= 0 || compLength > StoredFieldsBlockPolicy.MaximumRawBytes)
+            throw new InvalidDataException(
+                $"Stored fields block compLength {compLength} exceeds maximum {StoredFieldsBlockPolicy.MaximumRawBytes}.");
+    }
+
+    private static void WriteFdx(
+        string fdxPath,
+        int blockSize,
+        int docCount,
+        List<string> fieldNames,
+        List<long> blockOffsets)
     {
         using var fdxOutput = new IndexOutput(fdxPath);
         using var fdxScope = CodecFileWriter.Begin(fdxOutput, StoredFieldsCodecFiles.Index);
-        fdxScope.Output.WriteInt32(blockSize);
-        fdxScope.Output.WriteInt32(docCount);
-        fdxScope.Output.WriteInt32(blockOffsets.Count);
-        foreach (var offset in blockOffsets)
-            fdxScope.Output.WriteInt64(offset);
+        StoredFieldsBlockEncoder.WriteIndexBody(fdxScope.Output, blockSize, docCount, fieldNames, blockOffsets);
         fdxScope.Complete();
-    }
-
-    private static void WriteStoredValue(IBufferWriter<byte> writer, StoredFieldValue value, Span<byte> encodeBuf)
-    {
-        writer.WriteByte((byte)value.Kind);
-
-        if (value.IsBinary)
-        {
-            var bytes = value.BinaryValue ?? [];
-            writer.WriteInt32(bytes.Length);
-            writer.WriteBytes(bytes);
-            return;
-        }
-
-        if (value.IsLong)
-        {
-            writer.WriteInt32(sizeof(long));
-            Span<byte> bytes = stackalloc byte[sizeof(long)];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(bytes, value.LongValue);
-            writer.WriteBytes(bytes);
-            return;
-        }
-
-        var text = value.StringValue ?? string.Empty;
-        int valueByteCount = Encoding.UTF8.GetByteCount(text);
-        Span<byte> valueBuf = valueByteCount <= encodeBuf.Length ? encodeBuf : new byte[valueByteCount];
-        Encoding.UTF8.GetBytes(text, valueBuf);
-        writer.WriteInt32(valueByteCount);
-        writer.WriteBytes(valueBuf[..valueByteCount]);
     }
 }

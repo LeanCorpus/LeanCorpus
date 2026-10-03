@@ -18,7 +18,7 @@ internal sealed class SegmentFileAccess : IDisposable
         _isCompound = isCompound;
     }
 
-    internal static SegmentFileAccess Open(MMapDirectory directory, SegmentInfo info)
+    internal static SegmentFileAccess Open(MMapDirectory directory, SegmentDescriptor info)
     {
         if (!info.IsCompoundFile)
         {
@@ -41,6 +41,8 @@ internal sealed class SegmentFileAccess : IDisposable
 
     internal bool IsCompound => _isCompound;
 
+    internal ISegmentFileSource LogicalFiles => _fileSource;
+
     internal string Name(string extension) => _segmentId + extension;
 
     internal bool Exists(string extension)
@@ -48,6 +50,9 @@ internal sealed class SegmentFileAccess : IDisposable
         string name = Name(extension);
         return _fileSource.FileExists(name);
     }
+
+    internal long GetFileLength(string extension)
+        => _fileSource.GetFileLength(Name(extension));
 
     internal IndexInput OpenInput(string extension)
     {

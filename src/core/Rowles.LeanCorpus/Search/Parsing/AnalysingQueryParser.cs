@@ -1,46 +1,52 @@
-using System.Text;
 using Rowles.LeanCorpus.Analysis.Analysers;
 
 namespace Rowles.LeanCorpus.Search.Parsing;
 
-/// <summary>Query parser that also analyses literal portions of wildcard and prefix terms.</summary>
+/// <summary>Query parser that normalises literal portions of wildcard, prefix and range terms.</summary>
 public sealed class AnalysingQueryParser : QueryParser
 {
     /// <summary>Initialises an analysing query parser.</summary>
+    /// <param name="defaultField">The field used when no explicit field prefix is present.</param>
+    /// <param name="analyser">The analyser used to normalise literal query text.</param>
+    /// <param name="lenient">Must be <see langword="false"/>; lenient recovery was removed.</param>
+    /// <exception cref="NotSupportedException">Thrown when <paramref name="lenient"/> is <see langword="true"/>.</exception>
     public AnalysingQueryParser(string defaultField, IAnalyser analyser, bool lenient = false)
         : base(defaultField, analyser, lenient)
     {
     }
 
-    /// <inheritdoc/>
-    protected override string AnalyseMultiTerm(string term)
+    /// <summary>Initialises an analysing query parser with explicit parser-time budgets.</summary>
+    /// <param name="defaultField">The field used when no explicit field prefix is present.</param>
+    /// <param name="analyser">The analyser used to normalise literal query text.</param>
+    /// <param name="options">The parser-time limits to enforce for each query.</param>
+    public AnalysingQueryParser(string defaultField, IAnalyser analyser, QueryParserOptions options)
+        : base(defaultField, analyser, options)
     {
-        var builder = new StringBuilder(term.Length);
-        int start = 0;
-        for (int i = 0; i <= term.Length; i++)
-        {
-            if (i < term.Length && term[i] is not ('*' or '?'))
-                continue;
+    }
 
-            if (i > start)
-            {
-                string literal = term[start..i];
-                string analysed = AnalyseTerm(literal);
-                builder.Append(analysed.Length == 0 ? literal : analysed);
-            }
+    /// <summary>Initialises an analysing parser with a per-parse analyser factory.</summary>
+    /// <param name="defaultField">The field used when no explicit field prefix is present.</param>
+    /// <param name="analyserFactory">Creates an analyser for each parse invocation.</param>
+    /// <param name="lenient">Must be <see langword="false"/>; lenient recovery was removed.</param>
+    /// <exception cref="NotSupportedException">Thrown when <paramref name="lenient"/> is <see langword="true"/>.</exception>
+    public AnalysingQueryParser(string defaultField, Func<IAnalyser> analyserFactory, bool lenient = false)
+        : base(defaultField, analyserFactory, lenient)
+    {
+    }
 
-            if (i < term.Length)
-                builder.Append(term[i]);
-            start = i + 1;
-        }
-
-        return builder.ToString();
+    /// <summary>Initialises an analysing parser with explicit budgets and a per-parse analyser factory.</summary>
+    /// <param name="defaultField">The field used when no explicit field prefix is present.</param>
+    /// <param name="analyserFactory">Creates an analyser for each parse invocation.</param>
+    /// <param name="options">The parser-time limits to enforce for each query.</param>
+    public AnalysingQueryParser(string defaultField, Func<IAnalyser> analyserFactory, QueryParserOptions options)
+        : base(defaultField, analyserFactory, options)
+    {
     }
 
     /// <inheritdoc/>
-    protected override string AnalyseRangeBound(string term)
-    {
-        string analysed = AnalyseTerm(term);
-        return analysed.Length == 0 ? term : analysed;
-    }
+    protected override string AnalyseMultiTerm(string term) =>
+        NormaliseMultiTermPattern(term, literal => NormaliseSingleTerm(Analyser, literal));
+
+    /// <inheritdoc/>
+    protected override string AnalyseRangeBound(string term) => NormaliseSingleTerm(Analyser, term);
 }

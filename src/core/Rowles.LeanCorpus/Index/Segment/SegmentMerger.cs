@@ -11,6 +11,7 @@ using Rowles.LeanCorpus.Store;
 using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Index.Indexer;
 using Rowles.LeanCorpus.Codecs.ShapeDocValues;
+using Rowles.LeanCorpus.Search.Scoring;
 
 namespace Rowles.LeanCorpus.Index.Segment;
 
@@ -29,6 +30,9 @@ public sealed class SegmentMerger
     private readonly Diagnostics.IMetricsCollector _metrics;
     private readonly HnswBuildConfig _hnswBuildConfig;
     private readonly bool _useCompoundFile;
+    private readonly VectorQuantisation _destinationVectorQuantisation;
+
+    internal CodecCatalog FileCatalog { get; set; } = CodecCatalog.Default;
 
     /// <summary>Default merge threshold: when this many segments exist, merge.</summary>
     public const int DefaultMergeThreshold = 10;
@@ -55,6 +59,20 @@ public sealed class SegmentMerger
         HnswBuildConfig? hnswBuildConfig = null,
         Diagnostics.IMetricsCollector? metrics = null,
         bool useCompoundFile = false)
+        : this(directory, mergePolicy, skipInterval, softDeleteRetentionSeconds, hnswBuildConfig,
+            metrics, useCompoundFile, VectorQuantisation.None)
+    {
+    }
+
+    internal SegmentMerger(
+        MMapDirectory directory,
+        IMergePolicy mergePolicy,
+        int skipInterval,
+        double softDeleteRetentionSeconds,
+        HnswBuildConfig? hnswBuildConfig,
+        Diagnostics.IMetricsCollector? metrics,
+        bool useCompoundFile,
+        VectorQuantisation destinationVectorQuantisation)
     {
         _directory = directory;
         _mergePolicy = mergePolicy ?? new TieredMergePolicy(DefaultMergeThreshold);
@@ -63,6 +81,22 @@ public sealed class SegmentMerger
         _hnswBuildConfig = hnswBuildConfig ?? new HnswBuildConfig();
         _metrics = metrics ?? Diagnostics.NullMetricsCollector.Instance;
         _useCompoundFile = useCompoundFile;
+        _destinationVectorQuantisation = destinationVectorQuantisation;
+    }
+
+    internal SegmentMerger(
+        MMapDirectory directory,
+        IMergePolicy mergePolicy,
+        int skipInterval,
+        double softDeleteRetentionSeconds,
+        HnswBuildConfig? hnswBuildConfig,
+        bool useCompoundFile,
+        VectorQuantisation destinationVectorQuantisation)
+        : this(directory, mergePolicy, skipInterval, softDeleteRetentionSeconds, hnswBuildConfig,
+            metrics: null,
+            useCompoundFile: useCompoundFile,
+            destinationVectorQuantisation: destinationVectorQuantisation)
+    {
     }
 
     /// <summary>Initialises a merger bound to the given directory with the default tiered policy.</summary>
@@ -163,9 +197,10 @@ public sealed class SegmentMerger
         try
         {
             foreach (var segInfo in segments)
-                readers[segInfo.SegmentId] = new SegmentReader(_directory, segInfo);
+                readers[segInfo.SegmentId] = new SegmentReader(_directory, segInfo, FileCatalog);
 
-            return MergeSegmentsCore(segments, readers, newSegId, basePath, commitGeneration, spatialFields);
+            return MergeSegmentsCore(segments, readers, newSegId, basePath, commitGeneration, spatialFields,
+                _destinationVectorQuantisation);
         }
         finally
         {
@@ -180,44 +215,49 @@ public sealed class SegmentMerger
         string newSegId,
         string basePath,
         int commitGeneration,
-        List<SpatialFieldInfo> spatialFields)
+        List<SpatialFieldInfo> spatialFields,
+        VectorQuantisation destinationVectorQuantisation)
     {
-        // Phase 1: build per-segment doc-id remap (live docs only).
-        // Use int[] with -1 sentinel; flat arrays beat Dictionary on both lookup
-        // cost and allocation pressure for the hot streaming-merge inner loop.
-        var perSegmentMaps = new List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)>(segments.Count);
-        var retainedSoftDeletes = new List<(int DocId, long Timestamp)>();
-        int newDocId = 0;
+        // Phase 1: build per-segment doc-id remaps. Compatible, physically sorted inputs
+        // are merged by their complete index-sort key; all other inputs retain committed
+        // segment order and must not claim index-sort metadata in the output.
         long softDeleteCutoff = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - (long)(_softDeleteRetentionSeconds * 1000);
-        foreach (var segInfo in segments)
+        bool hasCompatibleIndexSort = TryGetCommonIndexSort(segments, out SortField[] sortFields);
+        var sortedMaps = new List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)>(segments.Count);
+        var sortedSoftDeletes = new List<(int DocId, long Timestamp)>();
+        int sortedDocCount = 0;
+        bool hasSortedOutputOrder = hasCompatibleIndexSort
+            && TryBuildSortedDocumentMaps(
+                segments,
+                readers,
+                sortFields,
+                softDeleteCutoff,
+                out sortedMaps,
+                out sortedDocCount,
+                out sortedSoftDeletes);
+        List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)> perSegmentMaps;
+        List<(int DocId, long Timestamp)> retainedSoftDeletes;
+        int totalDocs;
+        if (hasSortedOutputOrder)
         {
-            var reader = readers[segInfo.SegmentId];
-            var docIdMap = new int[segInfo.DocCount];
-            bool retainSoftDeletes = ShouldRetainSoftDeletes(segInfo);
-            for (int oldDocId = 0; oldDocId < segInfo.DocCount; oldDocId++)
-            {
-                if (reader.IsLive(oldDocId))
-                {
-                    docIdMap[oldDocId] = newDocId++;
-                    continue;
-                }
-
-                if (retainSoftDeletes &&
-                    reader.IsSoftDeleted(oldDocId, out long timestamp) &&
-                    timestamp > softDeleteCutoff)
-                {
-                    int retainedDocId = newDocId++;
-                    docIdMap[oldDocId] = retainedDocId;
-                    retainedSoftDeletes.Add((retainedDocId, timestamp));
-                    continue;
-                }
-
-                docIdMap[oldDocId] = -1;
-            }
-            perSegmentMaps.Add((segInfo, docIdMap, reader));
+            perSegmentMaps = sortedMaps;
+            retainedSoftDeletes = sortedSoftDeletes;
+            totalDocs = sortedDocCount;
         }
-        int totalDocs = newDocId;
+        else
+        {
+            perSegmentMaps = BuildSequentialDocumentMaps(
+                segments,
+                readers,
+                softDeleteCutoff,
+                out totalDocs,
+                out retainedSoftDeletes);
+        }
         if (totalDocs == 0) return null;
+
+        Dictionary<string, VectorFieldContract> vectorContracts = PreflightVectorContracts(segments);
+
+        MergeDocument[] documentOrder = BuildDestinationDocumentOrder(perSegmentMaps, totalDocs);
 
         var fieldNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var segInfo in segments)
@@ -232,19 +272,21 @@ public sealed class SegmentMerger
         // disk doc-by-doc; doc-values columns still buffer (codec format requires it).
         using var ctx = new MergeContext(totalDocs, fieldNames);
         bool anyTermVectors = readers.Values.Any(r => r.HasTermVectors);
-        using (var storedWriter = new StoredFieldsStreamWriter(basePath + ".fdt", basePath + ".fdx"))
+        using (var storedWriter = new StoredFieldsStreamWriter(
+            basePath + ".fdt", basePath + ".fdx", catalog: FileCatalog))
         using (var tvWriter = anyTermVectors ? new TermVectorsStreamWriter(basePath + ".tvd", basePath + ".tvx") : null)
         {
             ctx.StoredWriter = storedWriter;
             ctx.TermVectorWriter = tvWriter;
-            AccumulateDocPayloads(perSegmentMaps, ctx);
+            AccumulateDocPayloads(perSegmentMaps, documentOrder, ctx);
         }
 
         // Phase 4: emit per-codec output files.
         WriteNorms(perSegmentMaps, readers, fieldNames, basePath, totalDocs);
-        var mergedVectorFields = MergeVectors(ctx, basePath);
+        var mergedVectorFields = MergeVectors(
+            ctx, documentOrder, basePath, vectorContracts, destinationVectorQuantisation);
         WriteNumericFiles(ctx, basePath);
-        WriteFieldLengthsAndStats(ctx, fieldNames, basePath, newSegId, totalDocs);
+        WriteFieldLengths(ctx, basePath, totalDocs);
         WriteDocValueColumns(ctx, basePath);
         WriteBkdTree(ctx, basePath);
         WritePackedBkdTree(ctx, basePath);
@@ -267,16 +309,24 @@ public sealed class SegmentMerger
             LiveDocCount = mergedLiveDocs?.LiveCount ?? totalDocs,
             CommitGeneration = commitGeneration,
             FieldNames = fieldNames.ToList(),
-            IndexSortFields = segments[0].IndexSortFields,
+            IndexSortFields = hasSortedOutputOrder && segments[0].IndexSortFields is { } sortMetadata
+                ? [.. sortMetadata]
+                : null,
             VectorFields = mergedVectorFields,
             SpatialFields = spatialFields,
             MinSequenceNumber = ComputeMergedMinSeqNo(segments),
             MaxSequenceNumber = ComputeMergedMaxSeqNo(segments),
             EarliestSoftDeleteTimestamp = mergedLiveDocs?.EarliestSoftDeleteTimestamp,
         };
-        if (_useCompoundFile && CompoundFileWriter.Pack(_directory.DirectoryPath, newSegId))
+        if (_useCompoundFile && CompoundFileWriter.Pack(_directory.DirectoryPath, newSegId, FileCatalog))
             mergedInfo.IsCompoundFile = true;
-        SegmentFlusher.RefreshSegmentSize(mergedInfo, _directory.DirectoryPath);
+        SegmentFlusher.RefreshSegmentSize(mergedInfo, _directory.DirectoryPath, FileCatalog);
+
+        SegmentStats mergedStats;
+        using (var statisticsReader = new SegmentReader(_directory, mergedInfo))
+            mergedStats = SegmentStats.FromSegmentReader(statisticsReader);
+        mergedStats.WriteTo(SegmentStats.GetStatsPath(_directory.DirectoryPath, newSegId));
+
         return mergedInfo;
     }
 
@@ -303,6 +353,526 @@ public sealed class SegmentMerger
             .ToList();
     }
 
+    private static Dictionary<string, VectorFieldContract> PreflightVectorContracts(
+        IReadOnlyList<SegmentInfo> segments)
+    {
+        var contracts = new Dictionary<string, VectorFieldContract>(StringComparer.Ordinal);
+        var firstSourceSegments = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (SegmentInfo segment in segments)
+        {
+            foreach (VectorFieldInfo field in segment.VectorFields)
+            {
+                var contract = new VectorFieldContract(field.Dimension, field.Normalised);
+                if (!contracts.TryGetValue(field.FieldName, out VectorFieldContract existing))
+                {
+                    contracts.Add(field.FieldName, contract);
+                    firstSourceSegments.Add(field.FieldName, segment.SegmentId);
+                    continue;
+                }
+
+                if (existing.Dimension != contract.Dimension)
+                    throw new InvalidDataException(
+                        $"Cannot merge vector field '{field.FieldName}': segment '{segment.SegmentId}' has dimension {contract.Dimension}, " +
+                        $"which differs from dimension {existing.Dimension} in segment '{firstSourceSegments[field.FieldName]}'.");
+
+                if (existing.Normalised != contract.Normalised)
+                    throw new InvalidDataException(
+                        $"Cannot merge vector field '{field.FieldName}': segment '{segment.SegmentId}' has Normalised={contract.Normalised}, " +
+                        $"which differs from Normalised={existing.Normalised} in segment '{firstSourceSegments[field.FieldName]}'.");
+            }
+        }
+
+        return contracts;
+    }
+
+    private readonly record struct VectorFieldContract(int Dimension, bool Normalised);
+
+    private static bool TryGetCommonIndexSort(List<SegmentInfo> segments, out SortField[] sortFields)
+    {
+        sortFields = [];
+        if (segments.Count == 0 || segments[0].IndexSortFields is not { Count: > 0 } common)
+            return false;
+
+        foreach (SegmentInfo segment in segments)
+        {
+            if (segment.IndexSortFields is not { Count: > 0 } fields
+                || !fields.SequenceEqual(common, StringComparer.Ordinal))
+                return false;
+        }
+
+        var parsed = new SortField[common.Count];
+        for (int i = 0; i < common.Count; i++)
+        {
+            string[] parts = common[i].Split(':');
+            if (parts.Length is < 3 or > 4
+                || !Enum.TryParse(parts[0], ignoreCase: false, out SortFieldType type)
+                || !Enum.IsDefined(type)
+                || type is not (SortFieldType.DocId or SortFieldType.Numeric or SortFieldType.Int64 or SortFieldType.String)
+                || (type == SortFieldType.DocId ? parts[1].Length != 0 : string.IsNullOrWhiteSpace(parts[1]))
+                || !bool.TryParse(parts[2], out bool descending))
+                return false;
+
+            SortValueSelector selector = SortValueSelector.Min;
+            if (parts.Length == 4
+                && (!Enum.TryParse(parts[3], ignoreCase: false, out selector)
+                    || !Enum.IsDefined(selector)))
+                return false;
+
+            parsed[i] = new SortField(type, parts[1], descending, selector);
+        }
+
+        // A descending DocId key is the pre-flush document ID. That value is not
+        // persisted after SegmentFlusher physically reorders a segment, so a merge
+        // cannot reconstruct a globally correct key from the source segments.
+        if (parsed.Any(static field => field.Type == SortFieldType.DocId && field.Descending))
+            return false;
+
+        sortFields = parsed;
+        return true;
+    }
+
+    private bool TryBuildSortedDocumentMaps(
+        List<SegmentInfo> segments,
+        IReadOnlyDictionary<string, SegmentReader> readers,
+        SortField[] sortFields,
+        long softDeleteCutoff,
+        out List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)> perSegmentMaps,
+        out int totalDocs,
+        out List<(int DocId, long Timestamp)> retainedSoftDeletes)
+    {
+        perSegmentMaps = new List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)>(segments.Count);
+        retainedSoftDeletes = [];
+        totalDocs = 0;
+
+        var queue = new PriorityQueue<MergeSortCursor, MergeSortCursor>(
+            segments.Count,
+            new MergeSortCursorComparer(sortFields));
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            SegmentInfo segment = segments[i];
+            SegmentReader reader = readers[segment.SegmentId];
+            var docIdMap = new int[segment.DocCount];
+            Array.Fill(docIdMap, -1);
+            perSegmentMaps.Add((segment, docIdMap, reader));
+            List<DocIdRange> droppedBlockRanges = BuildDroppedBlockRanges(
+                reader, segment, softDeleteCutoff);
+
+            var cursor = new MergeSortCursor(
+                segment,
+                reader,
+                docIdMap,
+                sortFields,
+                i,
+                ShouldRetainSoftDeletes(segment),
+                softDeleteCutoff,
+                droppedBlockRanges);
+            if (cursor.TryAdvance())
+                queue.Enqueue(cursor, cursor);
+            else if (!cursor.IsInputSorted)
+                return false;
+        }
+
+        while (queue.TryDequeue(out MergeSortCursor? cursor, out _))
+        {
+            int newDocId = totalDocs++;
+            cursor.DocIdMap[cursor.CurrentOldDocId] = newDocId;
+            if (cursor.CurrentIsRetainedSoftDelete)
+                retainedSoftDeletes.Add((newDocId, cursor.CurrentSoftDeleteTimestamp));
+
+            if (cursor.TryAdvance())
+                queue.Enqueue(cursor, cursor);
+            else if (!cursor.IsInputSorted)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)> BuildSequentialDocumentMaps(
+        List<SegmentInfo> segments,
+        IReadOnlyDictionary<string, SegmentReader> readers,
+        long softDeleteCutoff,
+        out int totalDocs,
+        out List<(int DocId, long Timestamp)> retainedSoftDeletes)
+    {
+        var perSegmentMaps = new List<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)>(segments.Count);
+        retainedSoftDeletes = [];
+        totalDocs = 0;
+        foreach (SegmentInfo segment in segments)
+        {
+            SegmentReader reader = readers[segment.SegmentId];
+            var docIdMap = new int[segment.DocCount];
+            bool retainSoftDeletes = ShouldRetainSoftDeletes(segment);
+            List<DocIdRange> droppedBlockRanges = BuildDroppedBlockRanges(
+                reader, segment, softDeleteCutoff);
+            int droppedBlockRangeIndex = 0;
+            for (int oldDocId = 0; oldDocId < segment.DocCount; oldDocId++)
+            {
+                while (droppedBlockRangeIndex < droppedBlockRanges.Count
+                    && oldDocId > droppedBlockRanges[droppedBlockRangeIndex].End)
+                    droppedBlockRangeIndex++;
+
+                if (droppedBlockRangeIndex < droppedBlockRanges.Count
+                    && oldDocId >= droppedBlockRanges[droppedBlockRangeIndex].Start)
+                {
+                    docIdMap[oldDocId] = -1;
+                    continue;
+                }
+
+                if (reader.IsLive(oldDocId))
+                {
+                    docIdMap[oldDocId] = totalDocs++;
+                    continue;
+                }
+
+                if (retainSoftDeletes
+                    && reader.IsSoftDeleted(oldDocId, out long timestamp)
+                    && timestamp > softDeleteCutoff)
+                {
+                    int retainedDocId = totalDocs++;
+                    docIdMap[oldDocId] = retainedDocId;
+                    retainedSoftDeletes.Add((retainedDocId, timestamp));
+                    continue;
+                }
+
+                docIdMap[oldDocId] = -1;
+            }
+
+            perSegmentMaps.Add((segment, docIdMap, reader));
+        }
+
+        return perSegmentMaps;
+    }
+
+    private static List<DocIdRange> BuildDroppedBlockRanges(
+        SegmentReader reader,
+        SegmentInfo segment,
+        long softDeleteCutoff)
+    {
+        ParentBitSet? parentBitSet = reader.GetParentBitSet();
+        if (parentBitSet is null)
+            return [];
+
+        var droppedBlocks = new List<DocIdRange>();
+        int blockStart = 0;
+        for (int parentDocId = parentBitSet.NextParent(0);
+             parentDocId >= 0;
+             parentDocId = parentBitSet.NextParent(parentDocId + 1))
+        {
+            if (!IsRetainedDuringMerge(reader, segment, parentDocId, softDeleteCutoff))
+                droppedBlocks.Add(new DocIdRange(blockStart, parentDocId));
+
+            blockStart = parentDocId + 1;
+        }
+
+        return droppedBlocks;
+    }
+
+    private static bool IsRetainedDuringMerge(
+        SegmentReader reader,
+        SegmentInfo segment,
+        int docId,
+        long softDeleteCutoff)
+    {
+        if (reader.IsLive(docId))
+            return true;
+
+        return ShouldRetainSoftDeletes(segment)
+            && reader.IsSoftDeleted(docId, out long timestamp)
+            && timestamp > softDeleteCutoff;
+    }
+
+    private static MergeDocument[] BuildDestinationDocumentOrder(
+        IReadOnlyList<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)> perSegmentMaps,
+        int totalDocs)
+    {
+        var documentOrder = new MergeDocument[totalDocs];
+        foreach ((SegmentInfo segment, int[] docIdMap, SegmentReader reader) in perSegmentMaps)
+        {
+            for (int oldDocId = 0; oldDocId < docIdMap.Length; oldDocId++)
+            {
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId < 0)
+                    continue;
+                if ((uint)newDocId >= (uint)documentOrder.Length || documentOrder[newDocId].Segment is not null)
+                    throw new InvalidDataException("The merge document remap contains duplicate or out-of-range destination IDs.");
+
+                documentOrder[newDocId] = new MergeDocument(segment, reader, oldDocId);
+            }
+        }
+
+        for (int newDocId = 0; newDocId < documentOrder.Length; newDocId++)
+            if (documentOrder[newDocId].Segment is null)
+                throw new InvalidDataException("The merge document remap contains a gap in destination IDs.");
+
+        return documentOrder;
+    }
+
+    private static int CompareSortValues(
+        IReadOnlyList<SortField> sortFields,
+        ReadOnlySpan<MergeSortValue> left,
+        ReadOnlySpan<MergeSortValue> right)
+    {
+        for (int i = 0; i < sortFields.Count; i++)
+        {
+            SortField field = sortFields[i];
+            int comparison = field.Type switch
+            {
+                SortFieldType.Numeric => left[i].NumericValue.CompareTo(right[i].NumericValue),
+                SortFieldType.Int64 or SortFieldType.DocId => left[i].Int64Value.CompareTo(right[i].Int64Value),
+                SortFieldType.String => string.Compare(left[i].StringValue, right[i].StringValue, StringComparison.Ordinal),
+                _ => throw new InvalidDataException($"Index sort type '{field.Type}' is not supported during merge.")
+            };
+
+            if (field.Descending)
+                comparison = comparison < 0 ? 1 : comparison > 0 ? -1 : 0;
+            if (comparison != 0)
+                return comparison;
+        }
+
+        return 0;
+    }
+
+    private sealed class MergeSortValueResolver
+    {
+        private readonly SegmentReader _reader;
+        private readonly SortField _field;
+
+        internal MergeSortValueResolver(SegmentReader reader, SortField field)
+        {
+            _reader = reader;
+            _field = field;
+        }
+
+        internal MergeSortValue Read(int oldDocId, ISet<string> storedFieldFilter)
+        {
+            switch (_field.Type)
+            {
+                case SortFieldType.Numeric:
+                    if (_reader.TryGetSortedNumericDocValues(_field.FieldName, oldDocId, out var sortedNumericValues)
+                        && sortedNumericValues.Count > 0)
+                        return MergeSortValue.Numeric(SegmentFlusher.SelectNumericValue(
+                            sortedNumericValues, _field.Selector));
+                    if (_reader.HasNumericDocValues(_field.FieldName))
+                    {
+                        _reader.TryGetNumericValue(_field.FieldName, oldDocId, out double docValue);
+                        return MergeSortValue.Numeric(docValue);
+                    }
+                    if (_reader.TryGetNumericValue(_field.FieldName, oldDocId, out double numericValue))
+                        return MergeSortValue.Numeric(numericValue);
+                    if (TryGetStoredSortValue(_reader, _field.FieldName, oldDocId, storedFieldFilter, out var numericStored))
+                    {
+                        if (numericStored.IsLong)
+                            return MergeSortValue.Numeric(numericStored.LongValue);
+                        if (numericStored.StringValue is { } numericText
+                            && double.TryParse(numericText, System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out numericValue))
+                            return MergeSortValue.Numeric(numericValue);
+                    }
+                    return MergeSortValue.Numeric(0);
+
+                case SortFieldType.Int64:
+                    if (_reader.TryGetSortedInt64DocValues(_field.FieldName, oldDocId, out var sortedInt64Values)
+                        && sortedInt64Values.Count > 0)
+                        return MergeSortValue.Int64(SegmentFlusher.SelectInt64Value(
+                            sortedInt64Values, _field.Selector));
+                    if (_reader.HasInt64DocValues(_field.FieldName))
+                    {
+                        _reader.TryGetInt64Value(_field.FieldName, oldDocId, out long docValue);
+                        return MergeSortValue.Int64(docValue);
+                    }
+                    if (_reader.TryGetInt64Value(_field.FieldName, oldDocId, out long int64Value))
+                        return MergeSortValue.Int64(int64Value);
+                    if (TryGetStoredSortValue(_reader, _field.FieldName, oldDocId, storedFieldFilter, out var int64Stored))
+                    {
+                        if (int64Stored.IsLong)
+                            return MergeSortValue.Int64(int64Stored.LongValue);
+                        if (int64Stored.StringValue is { } int64Text
+                            && long.TryParse(int64Text, System.Globalization.NumberStyles.Integer,
+                                System.Globalization.CultureInfo.InvariantCulture, out int64Value))
+                            return MergeSortValue.Int64(int64Value);
+                    }
+                    return MergeSortValue.Int64(0);
+
+                case SortFieldType.String:
+                    if (_reader.HasSortedDocValues(_field.FieldName))
+                    {
+                        return MergeSortValue.String(
+                            _reader.TryGetSortedDocValue(_field.FieldName, oldDocId, out var value)
+                                ? value
+                                : string.Empty);
+                    }
+                    if (_reader.TryGetSortedSetDocValues(_field.FieldName, oldDocId, out var sortedSetValues)
+                        && sortedSetValues.Count > 0)
+                        return MergeSortValue.String(_field.Selector == SortValueSelector.Max
+                            ? sortedSetValues[^1]
+                            : sortedSetValues[0]);
+                    if (_reader.TryGetBinaryDocValues(_field.FieldName, oldDocId, out var binaryValues)
+                        && binaryValues.Count > 0)
+                        return MergeSortValue.String(System.Text.Encoding.UTF8.GetString(binaryValues[0]));
+                    if (TryGetStoredSortValue(_reader, _field.FieldName, oldDocId, storedFieldFilter, out var stringStored))
+                        return MergeSortValue.String(stringStored.StringValue);
+                    return MergeSortValue.String(null);
+
+                case SortFieldType.DocId:
+                    return MergeSortValue.Int64(oldDocId);
+
+                default:
+                    throw new InvalidDataException($"Index sort type '{_field.Type}' is not supported during merge.");
+            }
+        }
+    }
+
+    private static bool TryGetStoredSortValue(
+        SegmentReader reader,
+        string fieldName,
+        int oldDocId,
+        ISet<string> storedFieldFilter,
+        out StoredFieldValue value)
+    {
+        var stored = reader.GetStoredFieldValues(oldDocId, storedFieldFilter);
+        if (stored.TryGetValue(fieldName, out IReadOnlyList<StoredFieldValue>? values) && values.Count > 0)
+        {
+            value = values[0];
+            return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    private readonly record struct MergeDocument(SegmentInfo Segment, SegmentReader Reader, int OldDocId);
+
+    private readonly record struct DocIdRange(int Start, int End);
+
+    private readonly record struct MergeSortValue(double NumericValue, long Int64Value, string? StringValue)
+    {
+        internal static MergeSortValue Numeric(double value) => new(value, 0, null);
+        internal static MergeSortValue Int64(long value) => new(0, value, null);
+        internal static MergeSortValue String(string? value) => new(0, 0, value);
+    }
+
+    private sealed class MergeSortCursor
+    {
+        private readonly SortField[] _sortFields;
+        private readonly long _softDeleteCutoff;
+        private readonly bool _retainSoftDeletes;
+        private readonly IReadOnlyList<DocIdRange> _droppedBlockRanges;
+        private readonly MergeSortValue[] _previousKey;
+        private readonly MergeSortValueResolver[] _sortValueResolvers;
+        private readonly HashSet<string>[] _storedFieldFilters;
+        private bool _hasPreviousKey;
+        private int _nextOldDocId;
+        private int _droppedBlockRangeIndex;
+
+        internal SegmentInfo Segment { get; }
+        internal SegmentReader Reader { get; }
+        internal int[] DocIdMap { get; }
+        internal int SourceOrdinal { get; }
+        internal int CurrentOldDocId { get; private set; }
+        internal MergeSortValue[] CurrentKey { get; }
+        internal bool CurrentIsRetainedSoftDelete { get; private set; }
+        internal long CurrentSoftDeleteTimestamp { get; private set; }
+        internal bool IsInputSorted { get; private set; } = true;
+
+        internal MergeSortCursor(
+            SegmentInfo segment,
+            SegmentReader reader,
+            int[] docIdMap,
+            SortField[] sortFields,
+            int sourceOrdinal,
+            bool retainSoftDeletes,
+            long softDeleteCutoff,
+            IReadOnlyList<DocIdRange> droppedBlockRanges)
+        {
+            Segment = segment;
+            Reader = reader;
+            DocIdMap = docIdMap;
+            SourceOrdinal = sourceOrdinal;
+            _sortFields = sortFields;
+            _retainSoftDeletes = retainSoftDeletes;
+            _softDeleteCutoff = softDeleteCutoff;
+            _droppedBlockRanges = droppedBlockRanges;
+            CurrentKey = new MergeSortValue[sortFields.Length];
+            _previousKey = new MergeSortValue[sortFields.Length];
+            _sortValueResolvers = new MergeSortValueResolver[sortFields.Length];
+            _storedFieldFilters = new HashSet<string>[sortFields.Length];
+            for (int i = 0; i < sortFields.Length; i++)
+            {
+                _sortValueResolvers[i] = new MergeSortValueResolver(reader, sortFields[i]);
+                _storedFieldFilters[i] = new HashSet<string>(StringComparer.Ordinal);
+                if (sortFields[i].FieldName.Length > 0)
+                    _storedFieldFilters[i].Add(sortFields[i].FieldName);
+            }
+        }
+
+        internal bool TryAdvance()
+        {
+            while (_nextOldDocId < Segment.DocCount)
+            {
+                int oldDocId = _nextOldDocId++;
+                while (_droppedBlockRangeIndex < _droppedBlockRanges.Count
+                    && oldDocId > _droppedBlockRanges[_droppedBlockRangeIndex].End)
+                    _droppedBlockRangeIndex++;
+
+                if (_droppedBlockRangeIndex < _droppedBlockRanges.Count
+                    && oldDocId >= _droppedBlockRanges[_droppedBlockRangeIndex].Start)
+                    continue;
+
+                bool isLive = Reader.IsLive(oldDocId);
+                bool isRetainedSoftDelete = false;
+                long softDeleteTimestamp = 0;
+                if (!isLive)
+                {
+                    if (!_retainSoftDeletes
+                        || !Reader.IsSoftDeleted(oldDocId, out softDeleteTimestamp)
+                        || softDeleteTimestamp <= _softDeleteCutoff)
+                        continue;
+                    isRetainedSoftDelete = true;
+                }
+
+                for (int i = 0; i < _sortFields.Length; i++)
+                    CurrentKey[i] = _sortValueResolvers[i].Read(oldDocId, _storedFieldFilters[i]);
+
+                if (_hasPreviousKey
+                    && CompareSortValues(_sortFields, _previousKey, CurrentKey) > 0)
+                {
+                    IsInputSorted = false;
+                    return false;
+                }
+
+                Array.Copy(CurrentKey, _previousKey, CurrentKey.Length);
+                _hasPreviousKey = true;
+                CurrentOldDocId = oldDocId;
+                CurrentIsRetainedSoftDelete = isRetainedSoftDelete;
+                CurrentSoftDeleteTimestamp = softDeleteTimestamp;
+                return true;
+            }
+
+            return false;
+        }
+    }
+
+    private sealed class MergeSortCursorComparer(SortField[] sortFields) : IComparer<MergeSortCursor>
+    {
+        public int Compare(MergeSortCursor? left, MergeSortCursor? right)
+        {
+            if (ReferenceEquals(left, right)) return 0;
+            if (left is null) return -1;
+            if (right is null) return 1;
+
+            int comparison = CompareSortValues(sortFields, left.CurrentKey, right.CurrentKey);
+            if (comparison != 0)
+                return comparison;
+
+            comparison = left.SourceOrdinal.CompareTo(right.SourceOrdinal);
+            return comparison != 0
+                ? comparison
+                : left.CurrentOldDocId.CompareTo(right.CurrentOldDocId);
+        }
+    }
+
     /// <summary>
     /// Accumulator for per-doc data structures threaded through the merge phases.
     /// Owns nothing; lifetime is the merge call.
@@ -318,21 +888,22 @@ public sealed class SegmentMerger
         internal Dictionary<string, int[]> FieldLengths { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, float[]> FieldBoosts { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, double[]> NumericDocValues { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, HashSet<int>> NumericDocValuesPresence { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, long[]> Int64DocValues { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, HashSet<int>> Int64DocValuesPresence { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, string?[]> SortedDocValues { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, IReadOnlyList<string>?[]> SortedSetDocValues { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, IReadOnlyList<double>?[]> SortedNumericDocValues { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, IReadOnlyList<long>?[]> Int64SortedDocValues { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, IReadOnlyList<byte[]>?[]> BinaryDocValues { get; } = new(StringComparer.Ordinal);
         internal ParentBitSet? ParentBitSet { get; set; }
-        internal Dictionary<string, Dictionary<int, ReadOnlyMemory<float>>> Vectors { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, List<int>> VectorFieldDocIds { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, PackedBkdFieldBuffer> PackedBkdFields { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, ShapeDocValuesFieldBuffer> ShapeDocValuesFields { get; } = new(StringComparer.Ordinal);
-        internal Dictionary<string, int> VectorFieldDims { get; } = new(StringComparer.Ordinal);
-        internal Dictionary<string, bool> VectorFieldNormalised { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, Dictionary<string, ShapeDocValuesFieldMetadata>> ShapeDocValuesMetadataBySegment { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, bool> VectorFieldHadHnsw { get; } = new(StringComparer.Ordinal);
-        internal Dictionary<string, VectorQuantisation> VectorFieldQuantisation { get; } = new(StringComparer.Ordinal);
         internal Dictionary<string, List<(SegmentInfo Seg, Dictionary<int, int> OldToNew, SegmentReader Reader)>> VectorFieldRemaps { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<string, Dictionary<SegmentInfo, Dictionary<int, int>>> VectorFieldRemapsBySource { get; } = new(StringComparer.Ordinal);
 
         internal MergeContext(int totalDocs, HashSet<string> fieldNames)
         {
@@ -369,11 +940,11 @@ public sealed class SegmentMerger
 
     private void AccumulateDocPayloads(
         IReadOnlyList<(SegmentInfo Seg, int[] DocIdMap, SegmentReader Reader)> sources,
+        MergeDocument[] documentOrder,
         MergeContext ctx)
     {
         foreach (var (segInfo, docIdMap, reader) in sources)
         {
-            bool segHasTermVectors = reader.HasTermVectors;
             var segParentBitSet = reader.GetParentBitSet();
 
             var segFieldLengths = reader.FileExists(".fln")
@@ -381,15 +952,8 @@ public sealed class SegmentMerger
                     ?? new Dictionary<string, int[]>(StringComparer.Ordinal)
                 : new Dictionary<string, int[]>(StringComparer.Ordinal);
 
-            var segNumericDvs = ReadNumericDocValues(reader);
-            var segSortedDvs = ReadSortedDocValues(reader);
-            var segSortedSetDvs = ReadSortedSetDocValues(reader);
-            var segSortedNumericDvs = ReadSortedNumericDocValues(reader);
-            var segBinaryDvs = ReadBinaryDocValues(reader);
             var segNumericIndex = ReadNumericIndex(reader);
             var segInt64Index = ReadInt64Index(reader);
-            var segInt64Dvs = ReadInt64DocValues(reader);
-            var segInt64SortedDvs = ReadInt64SortedDocValues(reader);
             var packedFieldNames = reader.GetPackedBkdFieldNames();
             IReadOnlyList<string> shapeDocValuesFieldNames = reader.GetShapeDocValuesFieldNames();
             var shapeDocValuesFields = new Dictionary<string, ShapeDocValuesFieldMetadata>(
@@ -418,6 +982,7 @@ public sealed class SegmentMerger
                 }
                 shapeDocValuesFields.Add(shapeFieldName, shapeMetadata);
             }
+            ctx.ShapeDocValuesMetadataBySegment.Add(segInfo.SegmentId, shapeDocValuesFields);
             if (packedFieldNames.Count > 0)
                 reader.ValidatePackedBkdChecksum();
             foreach (var packedFieldName in packedFieldNames)
@@ -440,8 +1005,17 @@ public sealed class SegmentMerger
                 reader.IntersectPackedBkd(packedFieldName, ref collector);
             }
 
-            // Pre-build a name->VectorFieldInfo dictionary so the per-doc/per-field
-            // loop body avoids an O(N) LINQ scan for each posting.
+            AccumulateNumericIndexColumns(segNumericIndex, docIdMap, ctx);
+            AccumulateInt64IndexColumns(segInt64Index, docIdMap, ctx);
+            AccumulateFieldLengthColumns(segFieldLengths, docIdMap, ctx);
+            AccumulateNumericDocValuesColumns(reader, docIdMap, ctx);
+            AccumulateInt64DocValuesColumns(reader, docIdMap, ctx);
+            AccumulateSortedDocValuesColumns(reader, docIdMap, ctx);
+            AccumulateSortedSetDocValuesColumns(reader, docIdMap, ctx);
+            AccumulateSortedNumericDocValuesColumns(reader, docIdMap, ctx);
+            AccumulateInt64SortedNumericDocValuesColumns(reader, docIdMap, ctx);
+            AccumulateBinaryDocValuesColumns(reader, docIdMap, ctx);
+
             Dictionary<string, VectorFieldInfo>? vectorFieldByName = null;
             if (reader.HasVectors)
             {
@@ -455,152 +1029,395 @@ public sealed class SegmentMerger
                 int remapDocId = docIdMap[oldDocId];
                 if (remapDocId < 0) continue;
 
-                foreach ((string shapeFieldName, ShapeDocValuesFieldMetadata _) in shapeDocValuesFields)
-                {
-                    if (!reader.TryGetShapeDocValuesRecordMetadata(shapeFieldName, oldDocId, out ShapeDocValuesRecordMetadata record))
-                        continue;
-                    reader.ValidateShapeDocValuesRecord(shapeFieldName, oldDocId);
-                    byte[] rawRecord = reader.ReadShapeDocValuesRecordBytes(shapeFieldName, oldDocId);
-                    ctx.ShapeDocValuesFields[shapeFieldName].AppendRawRecord(
-                        remapDocId,
-                        record.ValueCount,
-                        record.PrimitiveCount,
-                        rawRecord);
-                }
-
-                ctx.StoredWriter!.AddDocument(reader.GetStoredFieldValues(oldDocId));
-
-                foreach (var (field, values) in segNumericIndex)
-                {
-                    if (!values.TryGetValue(oldDocId, out double numVal)) continue;
-                    if (!ctx.NumericFields.TryGetValue(field, out var fieldMap))
-                    {
-                        fieldMap = new Dictionary<int, double>();
-                        ctx.NumericFields[field] = fieldMap;
-                    }
-                    fieldMap[remapDocId] = numVal;
-                }
-
-                foreach (var (field, values) in segInt64Index)
-                {
-                    if (!values.TryGetValue(oldDocId, out long intVal)) continue;
-                    if (!ctx.Int64Fields.TryGetValue(field, out var fieldMap))
-                    {
-                        fieldMap = new Dictionary<int, long>();
-                        ctx.Int64Fields[field] = fieldMap;
-                    }
-                    fieldMap[remapDocId] = intVal;
-                }
-
-                foreach (var (field, fl) in segFieldLengths)
-                {
-                    if ((uint)oldDocId >= (uint)fl.Length) continue;
-                    if (!ctx.FieldLengths.TryGetValue(field, out var dst))
-                    {
-                        dst = new int[ctx.TotalDocs];
-                        ctx.FieldLengths[field] = dst;
-                    }
-                    dst[remapDocId] = fl[oldDocId];
-                }
-
-                foreach (var (field, arr) in segNumericDvs.Values)
-                {
-                    if ((uint)oldDocId >= (uint)arr.Length) continue;
-                    // Skip docs absent from this field according to the presence bitmap.
-                    if (segNumericDvs.Presence.TryGetValue(field, out var presenceBitmap) &&
-                        presenceBitmap is not null && !presenceBitmap.Contains(oldDocId))
-                        continue;
-                    if (!ctx.NumericDocValues.TryGetValue(field, out var dst))
-                    {
-                        dst = new double[ctx.TotalDocs];
-                        ctx.NumericDocValues[field] = dst;
-                    }
-                    dst[remapDocId] = arr[oldDocId];
-                }
-
-                foreach (var (field, arr) in segInt64Dvs.Values)
-                {
-                    if ((uint)oldDocId >= (uint)arr.Length) continue;
-                    if (segInt64Dvs.Presence.TryGetValue(field, out var presenceBitmap) &&
-                        presenceBitmap is not null && !presenceBitmap.Contains(oldDocId))
-                        continue;
-                    if (!ctx.Int64DocValues.TryGetValue(field, out var dst))
-                    {
-                        dst = new long[ctx.TotalDocs];
-                        ctx.Int64DocValues[field] = dst;
-                    }
-                    dst[remapDocId] = arr[oldDocId];
-                }
-
-                foreach (var (field, arr) in segSortedDvs.Values)
-                {
-                    if ((uint)oldDocId >= (uint)arr.Length) continue;
-                    // Skip docs absent from this field according to the presence bitmap.
-                    if (segSortedDvs.Presence.TryGetValue(field, out var presenceBitmap) &&
-                        presenceBitmap is not null && !presenceBitmap.Contains(oldDocId))
-                        continue;
-                    if (!ctx.SortedDocValues.TryGetValue(field, out var dst))
-                    {
-                        dst = new string?[ctx.TotalDocs];
-                        ctx.SortedDocValues[field] = dst;
-                    }
-                    dst[remapDocId] = arr[oldDocId];
-                }
-
-                CopyMergedMultiValues(segSortedSetDvs, ctx.SortedSetDocValues, oldDocId, remapDocId, ctx.TotalDocs);
-                CopyMergedMultiValues(segSortedNumericDvs, ctx.SortedNumericDocValues, oldDocId, remapDocId, ctx.TotalDocs);
-                CopyMergedMultiValues(segInt64SortedDvs, ctx.Int64SortedDocValues, oldDocId, remapDocId, ctx.TotalDocs);
-                CopyMergedMultiValues(segBinaryDvs, ctx.BinaryDocValues, oldDocId, remapDocId, ctx.TotalDocs);
-
-                if (ctx.TermVectorWriter is not null)
-                {
-                    var tv = segHasTermVectors ? reader.GetTermVectors(oldDocId) : null;
-                    ctx.TermVectorWriter.AddDocument(tv);
-                }
-
                 if (segParentBitSet is not null && segParentBitSet.IsParent(oldDocId))
                 {
                     ctx.ParentBitSet ??= new ParentBitSet(ctx.TotalDocs);
                     ctx.ParentBitSet.Set(remapDocId);
                 }
+            }
 
-                if (reader.HasVectors)
+            if (reader.HasVectors)
+            {
+                foreach (string vfName in reader.VectorFieldNames)
                 {
-                    foreach (var vfName in reader.VectorFieldNames)
+                    if (vectorFieldByName is null || !vectorFieldByName.TryGetValue(vfName, out var match))
+                        throw new InvalidDataException($"Vector field '{vfName}' has no segment metadata during merge.");
+
+                    List<int>? vectorDocIds = null;
+                    Dictionary<int, int>? oldToNew = null;
+
+                    for (int oldDocId = 0; oldDocId < segInfo.DocCount; oldDocId++)
                     {
-                        var vec = reader.GetVector(vfName, oldDocId);
-                        if (vec is null || vec.Length == 0) continue;
-                        if (!ctx.Vectors.TryGetValue(vfName, out var perField))
-                        {
-                            perField = new Dictionary<int, ReadOnlyMemory<float>>();
-                            ctx.Vectors[vfName] = perField;
-                        }
-                        perField[remapDocId] = vec;
-                        ctx.VectorFieldDims[vfName] = vec.Length;
+                        int remapDocId = docIdMap[oldDocId];
+                        if (remapDocId < 0) continue;
 
-                        if (!ctx.VectorFieldRemaps.TryGetValue(vfName, out var remapList))
+                        if (vectorDocIds is null)
                         {
-                            remapList = new List<(SegmentInfo, Dictionary<int, int>, SegmentReader)>();
-                            ctx.VectorFieldRemaps[vfName] = remapList;
-                        }
-                        var entry = remapList.FirstOrDefault(t => ReferenceEquals(t.Seg, segInfo));
-                        if (entry.OldToNew is null)
-                        {
-                            entry = (segInfo, new Dictionary<int, int>(), reader);
-                            remapList.Add(entry);
-                        }
-                        entry.OldToNew[oldDocId] = remapDocId;
+                            if (!ctx.VectorFieldDocIds.TryGetValue(vfName, out vectorDocIds))
+                            {
+                                vectorDocIds = new List<int>();
+                                ctx.VectorFieldDocIds.Add(vfName, vectorDocIds);
+                            }
 
-                        var match = vectorFieldByName is not null && vectorFieldByName.TryGetValue(vfName, out var vfInfo)
-                            ? vfInfo : null;
-                        if (match is not null)
-                        {
-                            ctx.VectorFieldNormalised[vfName] = match.Normalised;
-                            ctx.VectorFieldHadHnsw[vfName] = ctx.VectorFieldHadHnsw.GetValueOrDefault(vfName, false) || match.HasHnsw;
-                            ctx.VectorFieldQuantisation[vfName] = match.Quantisation;
+                            if (!ctx.VectorFieldRemaps.TryGetValue(vfName, out var remapList))
+                            {
+                                remapList = new List<(SegmentInfo, Dictionary<int, int>, SegmentReader)>();
+                                ctx.VectorFieldRemaps.Add(vfName, remapList);
+                            }
+                            if (!ctx.VectorFieldRemapsBySource.TryGetValue(vfName, out var remapsBySource))
+                            {
+                                remapsBySource = new Dictionary<SegmentInfo, Dictionary<int, int>>(ReferenceEqualityComparer.Instance);
+                                ctx.VectorFieldRemapsBySource.Add(vfName, remapsBySource);
+                            }
+                            if (!remapsBySource.TryGetValue(segInfo, out oldToNew))
+                            {
+                                oldToNew = new Dictionary<int, int>();
+                                remapsBySource.Add(segInfo, oldToNew);
+                                remapList.Add((segInfo, oldToNew, reader));
+                            }
                         }
+
+                        vectorDocIds!.Add(remapDocId);
+                        oldToNew![oldDocId] = remapDocId;
                     }
+
+                    if (vectorDocIds is not null)
+                        ctx.VectorFieldHadHnsw[vfName] = ctx.VectorFieldHadHnsw.GetValueOrDefault(vfName, false) || match.HasHnsw;
                 }
+            }
+        }
+
+        for (int newDocId = 0; newDocId < documentOrder.Length; newDocId++)
+        {
+            MergeDocument document = documentOrder[newDocId];
+            ctx.StoredWriter!.AddDocument(document.Reader.GetStoredFieldValues(document.OldDocId));
+            if (ctx.TermVectorWriter is not null)
+            {
+                var termVectors = document.Reader.HasTermVectors
+                    ? document.Reader.GetTermVectors(document.OldDocId)
+                    : null;
+                ctx.TermVectorWriter.AddDocument(termVectors);
+            }
+
+            if (!ctx.ShapeDocValuesMetadataBySegment.TryGetValue(
+                    document.Segment.SegmentId,
+                    out Dictionary<string, ShapeDocValuesFieldMetadata>? shapeFields))
+                continue;
+
+            foreach ((string shapeFieldName, ShapeDocValuesFieldMetadata _) in shapeFields)
+            {
+                if (!document.Reader.TryGetShapeDocValuesRecordMetadata(
+                        shapeFieldName,
+                        document.OldDocId,
+                        out ShapeDocValuesRecordMetadata record))
+                    continue;
+                document.Reader.ValidateShapeDocValuesRecord(shapeFieldName, document.OldDocId);
+                byte[] rawRecord = document.Reader.ReadShapeDocValuesRecordBytes(shapeFieldName, document.OldDocId);
+                ctx.ShapeDocValuesFields[shapeFieldName].AppendRawRecord(
+                    newDocId,
+                    record.ValueCount,
+                    record.PrimitiveCount,
+                    rawRecord);
+            }
+        }
+    }
+
+    private static void AccumulateNumericIndexColumns(
+        Dictionary<string, Dictionary<int, double>> columns,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        foreach ((string field, Dictionary<int, double> values) in columns)
+        {
+            if (!ctx.NumericFields.TryGetValue(field, out Dictionary<int, double>? destination))
+            {
+                destination = new Dictionary<int, double>(values.Count);
+                ctx.NumericFields.Add(field, destination);
+            }
+
+            foreach ((int oldDocId, double value) in values)
+            {
+                if ((uint)oldDocId >= (uint)docIdMap.Length)
+                    continue;
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId >= 0)
+                    destination[newDocId] = value;
+            }
+        }
+    }
+
+    private static void AccumulateInt64IndexColumns(
+        Dictionary<string, Dictionary<int, long>> columns,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        foreach ((string field, Dictionary<int, long> values) in columns)
+        {
+            if (!ctx.Int64Fields.TryGetValue(field, out Dictionary<int, long>? destination))
+            {
+                destination = new Dictionary<int, long>(values.Count);
+                ctx.Int64Fields.Add(field, destination);
+            }
+
+            foreach ((int oldDocId, long value) in values)
+            {
+                if ((uint)oldDocId >= (uint)docIdMap.Length)
+                    continue;
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId >= 0)
+                    destination[newDocId] = value;
+            }
+        }
+    }
+
+    private static void AccumulateFieldLengthColumns(
+        Dictionary<string, int[]> columns,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        foreach ((string field, int[] values) in columns)
+        {
+            if (!ctx.FieldLengths.TryGetValue(field, out int[]? destination))
+            {
+                destination = new int[ctx.TotalDocs];
+                ctx.FieldLengths.Add(field, destination);
+            }
+
+            int documentCount = Math.Min(values.Length, docIdMap.Length);
+            for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+            {
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId >= 0)
+                    destination[newDocId] = values[oldDocId];
+            }
+        }
+    }
+
+    private static void AccumulateNumericDocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dvn"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dvn");
+        foreach ((string field, NumericDocValuesColumn column) in NumericDocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            if (!ctx.NumericDocValues.TryGetValue(field, out double[]? destination))
+            {
+                destination = new double[ctx.TotalDocs];
+                ctx.NumericDocValues.Add(field, destination);
+            }
+            if (!ctx.NumericDocValuesPresence.TryGetValue(field, out HashSet<int>? destinationPresence))
+            {
+                destinationPresence = new HashSet<int>();
+                ctx.NumericDocValuesPresence.Add(field, destinationPresence);
+            }
+
+            if (column.Presence is { } presentDocuments)
+            {
+                foreach (int oldDocId in presentDocuments)
+                {
+                    if ((uint)oldDocId >= (uint)docIdMap.Length)
+                        continue;
+                    int newDocId = docIdMap[oldDocId];
+                    if (newDocId < 0)
+                        continue;
+                    destination[newDocId] = column.GetValue(oldDocId);
+                    destinationPresence.Add(newDocId);
+                }
+            }
+            else
+            {
+                int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+                for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+                {
+                    int newDocId = docIdMap[oldDocId];
+                    if (newDocId < 0)
+                        continue;
+                    destination[newDocId] = column.GetValue(oldDocId);
+                    destinationPresence.Add(newDocId);
+                }
+            }
+        }
+    }
+
+    private static void AccumulateInt64DocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dvnl"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dvnl");
+        foreach ((string field, Int64DocValuesColumn column) in Int64DocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            if (!ctx.Int64DocValues.TryGetValue(field, out long[]? destination))
+            {
+                destination = new long[ctx.TotalDocs];
+                ctx.Int64DocValues.Add(field, destination);
+            }
+            if (!ctx.Int64DocValuesPresence.TryGetValue(field, out HashSet<int>? destinationPresence))
+            {
+                destinationPresence = new HashSet<int>();
+                ctx.Int64DocValuesPresence.Add(field, destinationPresence);
+            }
+
+            if (column.Presence is { } presentDocuments)
+            {
+                foreach (int oldDocId in presentDocuments)
+                {
+                    if ((uint)oldDocId >= (uint)docIdMap.Length)
+                        continue;
+                    int newDocId = docIdMap[oldDocId];
+                    if (newDocId < 0)
+                        continue;
+                    destination[newDocId] = column.GetValue(oldDocId);
+                    destinationPresence.Add(newDocId);
+                }
+            }
+            else
+            {
+                int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+                for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+                {
+                    int newDocId = docIdMap[oldDocId];
+                    if (newDocId < 0)
+                        continue;
+                    destination[newDocId] = column.GetValue(oldDocId);
+                    destinationPresence.Add(newDocId);
+                }
+            }
+        }
+    }
+
+    private static void AccumulateSortedDocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dvs"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dvs");
+        foreach ((string field, SortedDocValuesColumn column) in SortedDocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            if (!ctx.SortedDocValues.TryGetValue(field, out string?[]? destination))
+            {
+                destination = new string?[ctx.TotalDocs];
+                ctx.SortedDocValues.Add(field, destination);
+            }
+
+            if (column.Presence is { } presentDocuments)
+            {
+                foreach (int oldDocId in presentDocuments)
+                {
+                    if ((uint)oldDocId >= (uint)docIdMap.Length)
+                        continue;
+                    int newDocId = docIdMap[oldDocId];
+                    if (newDocId >= 0)
+                        destination[newDocId] = column.GetValue(oldDocId);
+                }
+            }
+            else
+            {
+                int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+                for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+                {
+                    int newDocId = docIdMap[oldDocId];
+                    if (newDocId >= 0)
+                        destination[newDocId] = column.GetValue(oldDocId);
+                }
+            }
+        }
+    }
+
+    private static void AccumulateSortedSetDocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dss"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dss");
+        foreach ((string field, SortedSetDocValuesColumn column) in SortedSetDocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+            for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+            {
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId < 0 || !column.HasValues(oldDocId))
+                    continue;
+                AddMergedMultiValue(ctx.SortedSetDocValues, field, newDocId, ctx.TotalDocs, column.GetValues(oldDocId));
+            }
+        }
+    }
+
+    private static void AccumulateSortedNumericDocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dsn"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dsn");
+        foreach ((string field, SortedNumericDocValuesColumn column) in SortedNumericDocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+            for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+            {
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId < 0 || !column.HasValues(oldDocId))
+                    continue;
+                AddMergedMultiValue(ctx.SortedNumericDocValues, field, newDocId, ctx.TotalDocs, column.GetValues(oldDocId));
+            }
+        }
+    }
+
+    private static void AccumulateInt64SortedNumericDocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dsnl"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dsnl");
+        foreach ((string field, Int64SortedNumericDocValuesColumn column) in Int64SortedNumericDocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+            for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+            {
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId < 0 || !column.HasValues(oldDocId))
+                    continue;
+                AddMergedMultiValue(ctx.Int64SortedDocValues, field, newDocId, ctx.TotalDocs, column.GetValues(oldDocId));
+            }
+        }
+    }
+
+    private static void AccumulateBinaryDocValuesColumns(
+        SegmentReader reader,
+        int[] docIdMap,
+        MergeContext ctx)
+    {
+        if (!reader.FileExists(".dvb"))
+            return;
+
+        using IndexInput input = reader.OpenInput(".dvb");
+        foreach ((string field, BinaryDocValuesColumn column) in BinaryDocValuesReader.OpenColumns(input, reader.MaxDoc))
+        {
+            int documentCount = Math.Min(column.DocumentCount, docIdMap.Length);
+            for (int oldDocId = 0; oldDocId < documentCount; oldDocId++)
+            {
+                int newDocId = docIdMap[oldDocId];
+                if (newDocId < 0 || !column.HasValues(oldDocId))
+                    continue;
+                AddMergedMultiValue(ctx.BinaryDocValues, field, newDocId, ctx.TotalDocs, column.GetValues(oldDocId));
             }
         }
     }
@@ -636,122 +1453,91 @@ public sealed class SegmentMerger
         NormsWriter.Write(basePath + ".nrm", fieldNorms, fieldBoosts);
     }
 
-    private List<VectorFieldInfo> MergeVectors(MergeContext ctx, string basePath)
+    private List<VectorFieldInfo> MergeVectors(
+        MergeContext ctx,
+        MergeDocument[] documentOrder,
+        string basePath,
+        IReadOnlyDictionary<string, VectorFieldContract> vectorContracts,
+        VectorQuantisation destinationVectorQuantisation)
     {
         var merged = new List<VectorFieldInfo>();
-        foreach (var (fieldName, perField) in ctx.Vectors)
+        foreach (var (fieldName, vectorDocIds) in ctx.VectorFieldDocIds)
         {
-            if (perField.Count == 0) continue;
-            int dimension = ctx.VectorFieldDims[fieldName];
-            if (!ctx.VectorFieldNormalised.TryGetValue(fieldName, out var normalised))
+            if (vectorDocIds.Count == 0) continue;
+            if (!vectorContracts.TryGetValue(fieldName, out VectorFieldContract contract))
                 throw new InvalidOperationException(
-                    $"Cannot determine Normalised flag for vector field '{fieldName}' during merge. Source segments must declare this flag.");
+                    $"Cannot determine the vector contract for field '{fieldName}' during merge. Source segments must declare this field.");
 
-            var quantisation = ctx.VectorFieldQuantisation.GetValueOrDefault(fieldName, VectorQuantisation.None);
-            float int8Min = 0f, int8Alpha = 0f;
-            float[]? bbqCentroid = null;
+            int dimension = contract.Dimension;
+            bool normalised = contract.Normalised;
+            VectorQuantisation quantisation = destinationVectorQuantisation;
+            bool shouldBuildHnsw = ctx.VectorFieldHadHnsw.GetValueOrDefault(fieldName, false)
+                && vectorDocIds.Count >= 2;
+            string vecPath = Codecs.Vectors.VectorFilePaths.VectorFile(basePath, fieldName);
+            var mergedSource = new MergedDocumentVectorSource(documentOrder, fieldName, dimension);
+            bool hasHnsw = false;
 
             if (quantisation == VectorQuantisation.None)
             {
-                var vecPath = Codecs.Vectors.VectorFilePaths.VectorFile(basePath, fieldName);
-                VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, perField, quantisation);
+                VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, mergedSource);
+                if (shouldBuildHnsw)
+                {
+                    using var vectorReader = VectorReader.Open(vecPath);
+                    hasHnsw = BuildAndWriteMergedHnsw(
+                        fieldName,
+                        basePath,
+                        dimension,
+                        normalised,
+                        quantisation,
+                        new VectorReaderSource(vectorReader),
+                        vectorDocIds,
+                        ctx.VectorFieldRemaps);
+                }
             }
             else
             {
-                switch (quantisation)
+                var vqPath = Codecs.Vectors.VectorFilePaths.QuantisedVectorFile(basePath, fieldName);
+                string vecFileName = Path.GetFileName(vecPath);
+                try
                 {
-                    case VectorQuantisation.Int8:
-                        (int8Min, int8Alpha) = ComputeInt8ParamsMerge(perField);
-                        break;
-                    case VectorQuantisation.BBQ:
-                        bbqCentroid = ComputeBBQCentroidMerge(perField, dimension);
-                        break;
-                }
-            }
-
-            bool hasHnsw = false;
-            if (ctx.VectorFieldHadHnsw.GetValueOrDefault(fieldName, false) && perField.Count >= 2)
-            {
-                IVectorSource src;
-                if (quantisation == VectorQuantisation.Int8)
-                {
-                    src = new Int8QuantisedMemoryVectorSource(perField, dimension, int8Min, int8Alpha);
-                    var vqPath = Codecs.Vectors.VectorFilePaths.QuantisedVectorFile(basePath, fieldName);
-                    QuantisedVectorWriter.WriteInt8(vqPath, ctx.TotalDocs, dimension, perField);
-                }
-                else if (quantisation == VectorQuantisation.BBQ)
-                {
-                    src = new BBQMemoryVectorSource(perField, dimension, bbqCentroid!);
-                    var vqPath = Codecs.Vectors.VectorFilePaths.QuantisedVectorFile(basePath, fieldName);
-                    QuantisedVectorWriter.WriteBBQ(vqPath, ctx.TotalDocs, dimension, perField, bbqCentroid!);
-                }
-                else
-                {
-                    src = new InMemoryVectorSource(new Dictionary<int, ReadOnlyMemory<float>>(perField), dimension);
-                }
-
-                var hnswSw = System.Diagnostics.Stopwatch.StartNew();
-
-                HnswGraph? graph = null;
-                if (ctx.VectorFieldRemaps.TryGetValue(fieldName, out var remapList) && remapList.Count > 0)
-                {
-                    var seed = remapList
-                        .Where(t => t.Seg.VectorFields.Any(vf => vf.FieldName == fieldName && vf.HasHnsw))
-                        .OrderByDescending(t => t.OldToNew.Count)
-                        .FirstOrDefault();
-
-                    if (seed.OldToNew is not null && seed.OldToNew.Count > 0)
+                    VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, mergedSource);
+                    using (var vectorReader = VectorReader.Open(vecPath))
                     {
-                        string seedHnswExtension = Codecs.Vectors.VectorFilePaths.HnswFile(
-                            string.Empty, fieldName);
-                        if (seed.Reader.FileExists(seedHnswExtension))
+                        var vectorSource = new VectorReaderSource(vectorReader);
+                        switch (quantisation)
                         {
-                            try
-                            {
-                                graph = HnswReader.Read(
-                                    seed.Reader.OpenInput(seedHnswExtension), src, normalised, seed.OldToNew);
-                                graph.Thaw();
-                                foreach (var docId in perField.Keys)
-                                    if (!graph.ContainsNode(docId)) graph.Insert(docId);
-                            }
-                            catch (Exception ex) when (ex is IOException or InvalidDataException)
-                            {
-                                Diagnostics.LeanCorpusActivitySource.TraceSwallowed(
-                                    ex, $"HNSW seed read failed for '{fieldName}'; rebuilding graph from scratch");
-                                graph = null;
-                            }
+                            case VectorQuantisation.Int8:
+                                QuantisedVectorWriter.WriteInt8(
+                                    vqPath, ctx.TotalDocs, dimension, vectorSource, vectorDocIds);
+                                break;
+                            case VectorQuantisation.BBQ:
+                                QuantisedVectorWriter.WriteBBQ(
+                                    vqPath, ctx.TotalDocs, dimension, vectorSource, vectorDocIds);
+                                break;
+                            default:
+                                throw new InvalidDataException(
+                                    $"Unsupported vector quantisation '{quantisation}' during merge of field '{fieldName}'.");
                         }
                     }
-                }
 
-                if (graph is null)
-                {
-                    var docIds = perField.Keys.ToArray();
-                    graph = HnswGraphBuilder.Build(src, docIds, _hnswBuildConfig);
+                    if (shouldBuildHnsw)
+                    {
+                        using var quantisedReader = QuantisedVectorReader.Open(vqPath);
+                        hasHnsw = BuildAndWriteMergedHnsw(
+                            fieldName,
+                            basePath,
+                            dimension,
+                            normalised,
+                            quantisation,
+                            new QuantisedVectorSource(quantisedReader),
+                            vectorDocIds,
+                            ctx.VectorFieldRemaps);
+                    }
                 }
-                else
+                finally
                 {
-                    graph.Freeze();
-                }
-
-                hnswSw.Stop();
-                _metrics.RecordHnswBuild(hnswSw.Elapsed, perField.Count);
-                var hnswPath = Codecs.Vectors.VectorFilePaths.HnswFile(basePath, fieldName);
-                HnswWriter.Write(hnswPath, graph, dimension, normalised);
-                hasHnsw = true;
-            }
-            else if (quantisation != VectorQuantisation.None)
-            {
-                // Write .vq even when HNSW is not rebuilt, since the data was deferred.
-                var vqPath = Codecs.Vectors.VectorFilePaths.QuantisedVectorFile(basePath, fieldName);
-                switch (quantisation)
-                {
-                    case VectorQuantisation.Int8:
-                        QuantisedVectorWriter.WriteInt8(vqPath, ctx.TotalDocs, dimension, perField);
-                        break;
-                    case VectorQuantisation.BBQ:
-                        QuantisedVectorWriter.WriteBBQ(vqPath, ctx.TotalDocs, dimension, perField, bbqCentroid!);
-                        break;
+                    if (_directory.FileExists(vecFileName))
+                        _directory.DeleteFile(vecFileName);
                 }
             }
 
@@ -767,6 +1553,116 @@ public sealed class SegmentMerger
         return merged;
     }
 
+    private bool BuildAndWriteMergedHnsw(
+        string fieldName,
+        string basePath,
+        int dimension,
+        bool normalised,
+        VectorQuantisation destinationVectorQuantisation,
+        IVectorSource vectorSource,
+        IReadOnlyList<int> vectorDocIds,
+        IReadOnlyDictionary<string, List<(SegmentInfo Seg, Dictionary<int, int> OldToNew, SegmentReader Reader)>> vectorFieldRemaps)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        HnswGraph? graph = null;
+        try
+        {
+            if (vectorFieldRemaps.TryGetValue(fieldName, out var remapList) && remapList.Count > 0)
+            {
+                var seed = remapList
+                    .Where(entry => entry.Seg.VectorFields.Any(field =>
+                        field.FieldName == fieldName
+                        && field.HasHnsw
+                        && field.Dimension == dimension
+                        && field.Normalised == normalised
+                        && field.Quantisation == destinationVectorQuantisation))
+                    .OrderByDescending(static entry => entry.OldToNew.Count)
+                    .FirstOrDefault();
+
+                if (seed.OldToNew is not null && seed.OldToNew.Count > 0)
+                {
+                    string seedHnswExtension = VectorFilePaths.HnswFile(string.Empty, fieldName);
+                    if (seed.Reader.FileExists(seedHnswExtension))
+                    {
+                        try
+                        {
+                            graph = HnswReader.Read(
+                                seed.Reader.OpenInput(seedHnswExtension), vectorSource, normalised, seed.OldToNew);
+                            graph.Thaw();
+                            foreach (int docId in vectorDocIds)
+                                if (!graph.ContainsNode(docId)) graph.Insert(docId);
+                        }
+                        catch (Exception ex) when (ex is IOException or InvalidDataException)
+                        {
+                            graph?.Dispose();
+                            graph = null;
+                            Diagnostics.LeanCorpusActivitySource.TraceSwallowed(
+                                ex, $"HNSW seed read failed for '{fieldName}'; rebuilding graph from scratch");
+                        }
+                    }
+                }
+            }
+
+            if (graph is null)
+            {
+                graph = HnswGraphBuilder.Build(vectorSource, vectorDocIds, _hnswBuildConfig);
+            }
+            else
+            {
+                graph.Freeze();
+            }
+
+            stopwatch.Stop();
+            _metrics.RecordHnswBuild(stopwatch.Elapsed, vectorDocIds.Count);
+            string hnswPath = VectorFilePaths.HnswFile(basePath, fieldName);
+            HnswWriter.Write(hnswPath, graph, dimension, normalised);
+            return true;
+        }
+        finally
+        {
+            graph?.Dispose();
+        }
+    }
+
+    private sealed class MergedDocumentVectorSource : IVectorSource
+    {
+        private readonly MergeDocument[] _documents;
+        private readonly string _fieldName;
+        private float[]? _zeroVector;
+
+        internal MergedDocumentVectorSource(MergeDocument[] documents, string fieldName, int dimension)
+        {
+            _documents = documents;
+            _fieldName = fieldName;
+            Dimension = dimension;
+        }
+
+        public int Dimension { get; }
+        public int Count => _documents.Length;
+
+        public ReadOnlySpan<float> GetVector(int docId)
+        {
+            MergeDocument document = GetDocument(docId);
+            return document.Reader.GetVector(_fieldName, document.OldDocId) ?? (_zeroVector ??= new float[Dimension]);
+        }
+
+        public void CopyVectorTo(int docId, Span<float> destination)
+        {
+            if (destination.Length != Dimension)
+                throw new ArgumentException($"Destination length {destination.Length} != vector dimension {Dimension}.", nameof(destination));
+            MergeDocument document = GetDocument(docId);
+            if (!document.Reader.TryCopyVectorTo(_fieldName, document.OldDocId, destination))
+                destination.Clear();
+        }
+
+        private MergeDocument GetDocument(int docId)
+        {
+            if ((uint)docId >= (uint)_documents.Length)
+                throw new ArgumentOutOfRangeException(nameof(docId));
+            return _documents[docId];
+        }
+    }
+
     private static void WriteNumericFiles(MergeContext ctx, string basePath)
     {
         if (ctx.NumericFields.Count > 0)
@@ -775,19 +1671,10 @@ public sealed class SegmentMerger
             WriteInt64Index(basePath + ".numl", ctx.Int64Fields);
     }
 
-    private static void WriteFieldLengthsAndStats(
-        MergeContext ctx,
-        IReadOnlyCollection<string> fieldNames,
-        string basePath,
-        string newSegId,
-        int totalDocs)
+    private static void WriteFieldLengths(MergeContext ctx, string basePath, int totalDocs)
     {
         if (ctx.FieldLengths.Count > 0)
             FieldLengthWriter.Write(basePath + ".fln", ctx.FieldLengths, totalDocs);
-
-        var dirPath = Path.GetDirectoryName(basePath)!;
-        SegmentStats.FromFieldLengths(totalDocs, totalDocs, fieldNames, ctx.FieldLengths)
-            .WriteTo(SegmentStats.GetStatsPath(dirPath, newSegId));
     }
 
     private static void WriteDocValueColumns(MergeContext ctx, string basePath)
@@ -805,12 +1692,11 @@ public sealed class SegmentMerger
                     for (int i = 0; i < kn; i++)
                     {
                         var field = fieldKeys[i];
-                        ctx.NumericFields.TryGetValue(field, out var sparseMap);
-                        IReadOnlySet<int>? presenceSet = sparseMap is not null
-                            ? (IReadOnlySet<int>)sparseMap.Keys.ToHashSet()
-                            : null;
+                        if (!ctx.NumericDocValuesPresence.TryGetValue(field, out var presenceSet))
+                            throw new InvalidDataException($"Numeric DocValues field '{field}' has no merged presence set.");
                         NumericDocValuesWriter.WriteFieldBlock(bodyOutput, field, ctx.NumericDocValues[field], ctx.TotalDocs, presenceSet);
                         ctx.NumericDocValues.Remove(field);
+                        ctx.NumericDocValuesPresence.Remove(field);
                     }
                 }
                 finally
@@ -824,10 +1710,13 @@ public sealed class SegmentMerger
             var int64Presence = new Dictionary<string, IReadOnlySet<int>>(ctx.Int64DocValues.Count, StringComparer.Ordinal);
             foreach (var field in ctx.Int64DocValues.Keys)
             {
-                if (ctx.Int64Fields.TryGetValue(field, out var sparseMap))
-                    int64Presence[field] = sparseMap.Keys.ToHashSet();
+                if (!ctx.Int64DocValuesPresence.TryGetValue(field, out var presenceSet))
+                    throw new InvalidDataException($"Int64 DocValues field '{field}' has no merged presence set.");
+                int64Presence[field] = presenceSet;
             }
             Int64DocValuesWriter.Write(basePath + ".dvnl", ctx.Int64DocValues, ctx.TotalDocs, int64Presence);
+            ctx.Int64DocValues.Clear();
+            ctx.Int64DocValuesPresence.Clear();
         }
 
         if (ctx.SortedDocValues.Count > 0)
@@ -877,22 +1766,6 @@ public sealed class SegmentMerger
         }
 
         perDoc[docId] = values.ToArray();
-    }
-
-    private static void CopyMergedMultiValues<T>(
-        Dictionary<string, T[][]> source,
-        Dictionary<string, IReadOnlyList<T>?[]> destination,
-        int oldDocId,
-        int remapDocId,
-        int totalDocs)
-    {
-        foreach (var (field, perDocValues) in source)
-        {
-            if ((uint)oldDocId >= (uint)perDocValues.Length || perDocValues[oldDocId].Length == 0)
-                continue;
-
-            AddMergedMultiValue(destination, field, remapDocId, totalDocs, perDocValues[oldDocId]);
-        }
     }
 
     private static void WriteBkdTree(MergeContext ctx, string basePath)
@@ -965,18 +1838,8 @@ public sealed class SegmentMerger
 
     internal void CleanupSegmentFiles(SegmentInfo seg)
     {
-        // Delete every file belonging to this segment (any extension).
-        foreach (var filePath in FileOpenRetry.GetFiles(_directory.DirectoryPath, $"{seg.SegmentId}.*"))
-        {
-            try { _directory.DeleteFile(Path.GetFileName(filePath)); }
-            catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "merge segment file cleanup"); }
-        }
-        // Also sweep generation-versioned deletion files (e.g. seg_0_gen_3.del).
-        foreach (var filePath in FileOpenRetry.GetFiles(_directory.DirectoryPath, $"{seg.SegmentId}_gen_*.del"))
-        {
-            try { _directory.DeleteFile(Path.GetFileName(filePath)); }
-            catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "merge del file cleanup"); }
-        }
+        SegmentFileSet.Enumerate(_directory.DirectoryPath, seg.SegmentId, FileCatalog)
+            .DeleteAllOwnedFiles(_directory, "merge segment file cleanup");
     }
 
     private static int GetSizeTier(int docCount)
@@ -1009,47 +1872,6 @@ public sealed class SegmentMerger
         return NumericIndexCodec.ReadInt64(reader.OpenInput(".numl"));
     }
 
-    private static (Dictionary<string, double[]> Values,
-        Dictionary<string, Util.RoaringBitmap?> Presence) ReadNumericDocValues(SegmentReader reader)
-        => reader.FileExists(".dvn")
-            ? NumericDocValuesReader.Read(reader.OpenInput(".dvn"))
-            : (new Dictionary<string, double[]>(StringComparer.Ordinal),
-                new Dictionary<string, Util.RoaringBitmap?>(StringComparer.Ordinal));
-
-    private static (Dictionary<string, long[]> Values,
-        Dictionary<string, Util.RoaringBitmap?> Presence) ReadInt64DocValues(SegmentReader reader)
-        => reader.FileExists(".dvnl")
-            ? Int64DocValuesReader.Read(reader.OpenInput(".dvnl"))
-            : (new Dictionary<string, long[]>(StringComparer.Ordinal),
-                new Dictionary<string, Util.RoaringBitmap?>(StringComparer.Ordinal));
-
-    private static (Dictionary<string, string[]> Values,
-        Dictionary<string, Util.RoaringBitmap?> Presence) ReadSortedDocValues(SegmentReader reader)
-        => reader.FileExists(".dvs")
-            ? SortedDocValuesReader.Read(reader.OpenInput(".dvs"))
-            : (new Dictionary<string, string[]>(StringComparer.Ordinal),
-                new Dictionary<string, Util.RoaringBitmap?>(StringComparer.Ordinal));
-
-    private static Dictionary<string, string[][]> ReadSortedSetDocValues(SegmentReader reader)
-        => reader.FileExists(".dss")
-            ? SortedSetDocValuesReader.Read(reader.OpenInput(".dss"))
-            : new Dictionary<string, string[][]>(StringComparer.Ordinal);
-
-    private static Dictionary<string, double[][]> ReadSortedNumericDocValues(SegmentReader reader)
-        => reader.FileExists(".dsn")
-            ? SortedNumericDocValuesReader.Read(reader.OpenInput(".dsn"))
-            : new Dictionary<string, double[][]>(StringComparer.Ordinal);
-
-    private static Dictionary<string, long[][]> ReadInt64SortedDocValues(SegmentReader reader)
-        => reader.FileExists(".dsnl")
-            ? Int64SortedNumericDocValuesReader.Read(reader.OpenInput(".dsnl"))
-            : new Dictionary<string, long[][]>(StringComparer.Ordinal);
-
-    private static Dictionary<string, byte[][][]> ReadBinaryDocValues(SegmentReader reader)
-        => reader.FileExists(".dvb")
-            ? BinaryDocValuesReader.Read(reader.OpenInput(".dvb"))
-            : new Dictionary<string, byte[][][]>(StringComparer.Ordinal);
-
     /// <summary>
     /// Returns <c>true</c> if this segment contains soft-deleted documents that may still
     /// be within the retention window and should be preserved during a merge.
@@ -1076,9 +1898,10 @@ public sealed class SegmentMerger
         try
         {
             foreach (var segInfo in sourceSegments)
-                readers[segInfo.SegmentId] = new SegmentReader(sourceDirectory, segInfo);
+                readers[segInfo.SegmentId] = new SegmentReader(sourceDirectory, segInfo, config.CodecCatalog);
 
-            return MergeSegmentsCore(sourceSegments, readers, newSegId, basePath, commitGeneration, spatialFields);
+            return MergeSegmentsCore(sourceSegments, readers, newSegId, basePath, commitGeneration, spatialFields,
+                config.VectorQuantisation);
         }
         finally
         {
@@ -1115,48 +1938,9 @@ public sealed class SegmentMerger
         return max;
     }
 
-    private static (float min, float alpha) ComputeInt8ParamsMerge(
-        IReadOnlyDictionary<int, ReadOnlyMemory<float>> perField)
-    {
-        float min = float.MaxValue;
-        float max = float.MinValue;
-        foreach (var v in perField.Values)
-        {
-            var sp = v.Span;
-            for (int j = 0; j < sp.Length; j++)
-            {
-                float val = sp[j];
-                if (val < min) min = val;
-                if (val > max) max = val;
-            }
-        }
-        if (MathF.Abs(max - min) < 1e-8f) max = min + 1f;
-        return (min, (max - min) / 255f);
-    }
-
     private static void TryDeleteTemporaryFile(string path)
     {
         try { FileOpenRetry.Delete(path); } catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "merge file delete"); }
     }
 
-    private static float[] ComputeBBQCentroidMerge(
-        IReadOnlyDictionary<int, ReadOnlyMemory<float>> perField,
-        int dimension)
-    {
-        float[] centroid = new float[dimension];
-        int cnt = 0;
-        foreach (var v in perField.Values)
-        {
-            var sp = v.Span;
-            for (int j = 0; j < dimension; j++)
-                centroid[j] += sp[j];
-            cnt++;
-        }
-        if (cnt > 0)
-        {
-            for (int j = 0; j < dimension; j++)
-                centroid[j] /= cnt;
-        }
-        return centroid;
-    }
 }

@@ -32,18 +32,34 @@ not share deletion state.
 `SegmentReader` is a metadata facade. Direct instances create their heavy state
 on first use and retain it privately. An `IndexSearcher` gives all of its facades
 one thread-safe LRU cache, bounded by
-`IndexSearcherConfig.MaxCachedSegmentReaders`, which defaults to 256.
+`IndexSearcherConfig.MaxCachedSegmentReaders`, which defaults to 256, and
+`IndexSearcherConfig.MaxCachedSegmentReaderBytes`, which defaults to 256 MiB.
+The byte limit weights each cached state by logical mapped-file lengths and
+estimated materialised arrays, grouped by reader component and exposed through
+`IndexSearcher.SegmentReaderCacheMetrics`. These figures estimate retained
+reader resources; they do not represent process working set or RSS.
 
 Cache hits return value-type leases. An entry with an active lease cannot be
-evicted. Concurrent operations may temporarily take the cache over capacity,
-but releasing a lease trims inactive entries back to the configured bound.
-Loading occurs outside the cache lock, and concurrent first access runs one
-factory. Evicted values are disposed after leaving the cache lock.
+evicted. Concurrent operations and cursors may temporarily take the cache over
+either bound. Releasing the last lease refreshes the resource estimate and
+trims inactive entries by both count and estimated bytes. There is no
+segment-count rule that makes warmed heavy states permanently resident. The
+metadata facade remains available while its heavy state is evicted and can be
+loaded again. Loading occurs outside the cache lock, and concurrent first
+access runs one factory. Evicted values are disposed after leaving the cache
+lock.
 
 Every top-level segment query holds a lease for the complete operation. A
 returned `PostingsEnum` transfers its lease to the cursor's existing shared
 disposal guard. This keeps copied cursors, mapped postings, vector readers, and
 HNSW vector sources valid until their operation ends.
+
+Each vector field owns one lazy holder for its vector reader, quantised reader,
+and HNSW graph. First access to a field is synchronised by that holder, so
+initialising one field does not block another field. Successful readers and
+graphs are published once and reused; a missing graph is cached, while failed
+opens or graph reads remain retryable. Segment state disposes each field's
+graph before its vector reader after active operation leases have drained.
 
 Committed segment files are protected by one searcher snapshot lease acquired
 from a single directory inventory. A process-wide registry, keyed by canonical
@@ -53,7 +69,10 @@ until the final lease is released. Failed snapshot or mapped-input acquisition
 does not retain a count.
 
 Opening a searcher still validates the commit, migration markers, segment
-metadata, and required file presence. Individual codec headers and corruption
+metadata, and required logical file presence. Direct `SegmentReader`
+construction and explicit segment-list searchers use the same structural check
+as committed-index recovery, including metadata-declared vector and HNSW files
+for both loose and compound segments. Individual codec headers and corruption
 checks occur when their component is first loaded. Writer compatibility checks
 remain eager so a writer cannot append to an index that needs migration.
 Persisted `IndexStats` load normally. When they are absent, the segment scan is
@@ -66,10 +85,20 @@ workaround that was introduced to avoid a merge deletion race.
 
 - Searcher construction scales with compact segment metadata rather than FSTs,
   postings mappings, norms, stored fields, and DocValues.
-- Indexes with more active segments than the cache capacity trade bounded memory
-  for reload work. Broad queries may reload readers with the default capacity.
-- A cache sized to at least the segment count retains all warmed readers and is
-  intended for workloads that prioritise repeat-query latency over memory.
+- `MaxCachedSegmentReaders` remains a secondary entry-count limit. The byte
+  budget evicts heavier states first by LRU order, while the public metrics show
+  retained estimates by component. A component remains owned by its state and
+  is disposed with that state after active leases end.
+- Resource estimates use logical compound-member lengths, so accounting does
+  not charge every reader for the whole `.cfs` file. Array estimates include
+  loaded materialisations; they are conservative guidance for retained cache
+  resources, not an exact managed-heap or mapped-page measurement.
+- Vector and HNSW first-touch state is isolated per field; one field's cold
+  reader or graph load does not serialise other fields. All resources remain
+  owned by the segment state and follow its lease-protected disposal lifetime.
+- Smaller budgets can increase reader reload and DocValues materialisation
+  work. A configured entry count no longer pins all warmed readers when it is
+  greater than the active segment count.
 - Old searchers remain valid while another directory instance merges and cleans
   up their segments. Obsolete files are removed after all snapshots and mappings
   close.

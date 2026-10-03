@@ -10,15 +10,15 @@ public sealed partial class IndexSearcher
     private void ExecutePhraseQuery(PhraseQuery query, SegmentReader reader,
         Dictionary<(string Field, string Term), int> globalDFs, ref TopNCollector collector)
     {
-        if (query.Terms.Length == 0) return;
+        if (query.TermSpan.IsEmpty) return;
         ExecutePhraseQueryWithPositionEnums(query, reader, globalDFs, ref collector);
     }
     private void ExecutePhraseQueryWithPositionEnums(PhraseQuery query, SegmentReader reader,
         Dictionary<(string Field, string Term), int> globalDFs, ref TopNCollector collector)
     {
-        if (query.Terms.Length == 0) return;
+        if (query.TermSpan.IsEmpty) return;
 
-        int termCount = query.Terms.Length;
+        int termCount = query.TermSpan.Length;
         var qualifiedTerms = query.QualifiedTerms;
 
         // Open position-aware PostingsEnums for all terms
@@ -46,7 +46,7 @@ public sealed partial class IndexSearcher
         int slop = query.Slop;
         reader.TryGetFieldBoosts(query.Field, out var fieldBoosts);
         bool hasDeletions = reader.HasDeletions;
-        reader.TryGetFieldLengths(query.Field, out var fieldLengths);
+        var fieldLengths = reader.GetFieldLengthsForQuery(query.Field);
         float avgDocLength = Stats.GetAvgFieldLength(query.Field);
 
         // Compute scoring factors for every term, not just the leader.
@@ -54,7 +54,7 @@ public sealed partial class IndexSearcher
         var termFactors = new (float F1, float F2, float F3)[termCount];
         for (int i = 0; i < termCount; i++)
         {
-            int docFreq = globalDFs.GetValueOrDefault((query.Field, query.Terms[i]), postingsArr[i].DocFreq);
+            int docFreq = globalDFs.GetValueOrDefault((query.Field, query.TermSpan[i]), postingsArr[i].DocFreq);
             long collectionFreq = RequiresCollectionStatistics(query.Field)
                 ? GetGlobalCollectionFreq(qualifiedTerms[i])
                 : 0;
@@ -92,10 +92,10 @@ public sealed partial class IndexSearcher
             }
 
             if (hasAllPositions && HasPositionsWithinSlopSpan(
-                    postingsArr, termCount, query.Positions, slop))
+                    postingsArr, termCount, query.PositionSpan, slop))
             {
-                int docLength = fieldLengths is not null && (uint)docId < (uint)fieldLengths.Length
-                    ? fieldLengths[docId] : 1;
+                int docLength = fieldLengths is not null && (uint)docId < (uint)fieldLengths.Value.Length
+                    ? fieldLengths.Value.Span[docId] : 1;
                 // Sum scores across all terms using the leader's term frequency
                 // as an estimate of the phrase frequency.
                 float score = 0;
@@ -352,7 +352,7 @@ public sealed partial class IndexSearcher
     private static bool HasPositionsWithinSlopSpan(
         Span<PostingsEnum> postings,
         int termCount,
-        IReadOnlyList<int> expectedPositions,
+        ReadOnlySpan<int> expectedPositions,
         int slop)
     {
         if (termCount == 1) return true;

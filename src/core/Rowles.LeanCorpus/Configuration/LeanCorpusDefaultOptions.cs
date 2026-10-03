@@ -168,7 +168,7 @@ public sealed class IndexWriterDefaultOptions
     public bool? DurableCommits { get; set; }
     /// <summary>Gets or sets the stored-fields compression policy.</summary>
     public FieldCompressionPolicy? CompressionPolicy { get; set; }
-    /// <summary>Gets or sets the stored-field block size.</summary>
+    /// <summary>Gets or sets the maximum documents per stored-field block; the byte target may flush earlier.</summary>
     public int? StoredFieldBlockSize { get; set; }
     /// <summary>Gets or sets the postings skip interval.</summary>
     public int? PostingsSkipInterval { get; set; }
@@ -380,6 +380,7 @@ public sealed class IndexSearcherDefaultOptions
         MaxConcurrency = snapshot.MaxConcurrency.IsSet ? snapshot.MaxConcurrency.Value : null;
         EnableBlockMaxWand = snapshot.EnableBlockMaxWand.IsSet ? snapshot.EnableBlockMaxWand.Value : null;
         MaxCachedSegmentReaders = snapshot.MaxCachedSegmentReaders.IsSet ? snapshot.MaxCachedSegmentReaders.Value : null;
+        MaxCachedSegmentReaderBytes = snapshot.MaxCachedSegmentReaderBytes.IsSet ? snapshot.MaxCachedSegmentReaderBytes.Value : null;
         QueryCache = new(snapshot.QueryCache);
     }
 
@@ -391,6 +392,8 @@ public sealed class IndexSearcherDefaultOptions
     public bool? EnableBlockMaxWand { get; set; }
     /// <summary>Gets or sets the bounded segment-reader cache size.</summary>
     public int? MaxCachedSegmentReaders { get; set; }
+    /// <summary>Gets or sets the retained-byte limit for heavy segment-reader states.</summary>
+    public long? MaxCachedSegmentReaderBytes { get; set; }
     /// <summary>Gets query-cache defaults.</summary>
     public QueryCacheDefaultOptions QueryCache { get; }
 
@@ -401,6 +404,7 @@ public sealed class IndexSearcherDefaultOptions
             MaxConcurrency = ToOverride(MaxConcurrency),
             EnableBlockMaxWand = ToOverride(EnableBlockMaxWand),
             MaxCachedSegmentReaders = ToOverride(MaxCachedSegmentReaders),
+            MaxCachedSegmentReaderBytes = ToOverride(MaxCachedSegmentReaderBytes),
             QueryCache = QueryCache.ToSnapshot(),
         };
 

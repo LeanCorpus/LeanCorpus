@@ -110,16 +110,20 @@ internal static class Program
                 BenchmarkSuite.SpatialNearest,
                 BenchmarkSuite.ShapeSpatial,
                 BenchmarkSuite.DocValuesRead,
+                BenchmarkSuite.DocValuesWrite,
                 BenchmarkSuite.BKDTree,
                 BenchmarkSuite.FstLookup,
                 BenchmarkSuite.MMapIO,
                 BenchmarkSuite.HnswSearch,
+                BenchmarkSuite.VectorFirstTouch,
                 BenchmarkSuite.VectorQuantisation,
                 BenchmarkSuite.CompoundFile,
                 BenchmarkSuite.WindowsFileSystem,
                 BenchmarkSuite.WindowsStoragePath,
                 BenchmarkSuite.IncrementalBackup,
                 BenchmarkSuite.ReaderManagerLifecycle,
+                BenchmarkSuite.QualifiedTermCache,
+                BenchmarkSuite.BoundedLruCacheFailure,
                 BenchmarkSuite.MultiReader,
                 BenchmarkSuite.OrdinalMap,
                 BenchmarkSuite.SearchSession,
@@ -147,8 +151,17 @@ internal static class Program
         if (runAll || suites.Contains(BenchmarkSuite.Query))
             RunSuite<TermQueryBenchmarks>("query", runDir, benchmarkArgs, suiteSummaries, gcDump);
 
+        if (runAll || suites.Contains(BenchmarkSuite.Parser))
+        {
+            RunSuite<QueryParserBenchmarks>("parser", runDir, benchmarkArgs, suiteSummaries, gcDump);
+            RunSuite<QueryParserHotPathBenchmarks>("parser-hot-path", runDir, benchmarkArgs, suiteSummaries, gcDump);
+        }
+
         if (runAll || suites.Contains(BenchmarkSuite.Index))
+        {
             RunSuite<IndexingBenchmarks>("index", runDir, benchmarkArgs, suiteSummaries, gcDump);
+            RunSuite<LanguageAnalysisIndexingBenchmarks>("index-language-analysis", runDir, benchmarkArgs, suiteSummaries, gcDump);
+        }
 
         if (runAll || suites.Contains(BenchmarkSuite.Boolean))
             RunSuite<BooleanQueryBenchmarks>("boolean", runDir, benchmarkArgs, suiteSummaries, gcDump);
@@ -307,7 +320,13 @@ internal static class Program
 
         // Subsystem benchmarks: explicit only, not included in --suite all.
         if (suites.Contains(BenchmarkSuite.Merge))
+        {
             RunSuite<MergeBenchmarks>("merge", runDir, benchmarkArgs, suiteSummaries, gcDump);
+            RunSuite<VectorMergeMemoryBenchmarks>("merge-vector-memory", runDir, benchmarkArgs, suiteSummaries, gcDump);
+        }
+
+        if (suites.Contains(BenchmarkSuite.MergePayload))
+            RunSuite<MergePayloadBenchmarks>("merge-payload", runDir, benchmarkArgs, suiteSummaries, gcDump);
 
         if (suites.Contains(BenchmarkSuite.Flush))
             RunSuite<FlushBenchmarks>("flush", runDir, benchmarkArgs, suiteSummaries, gcDump);
@@ -337,6 +356,16 @@ internal static class Program
         if (suites.Contains(BenchmarkSuite.DocValuesRead))
             RunSuite<DocValuesReadBenchmarks>("docvalues-read", runDir, benchmarkArgs, suiteSummaries, gcDump);
 
+        if (suites.Contains(BenchmarkSuite.DocValuesWrite))
+            RunSuite<BinaryDocValuesWriteBenchmarks>("docvalues-write", runDir, benchmarkArgs, suiteSummaries, gcDump);
+
+        if (runAll || suites.Contains(BenchmarkSuite.StoredFieldsRead))
+        {
+            RunSuite<StoredFieldsReadBenchmarks>("stored-fields", runDir, benchmarkArgs, suiteSummaries, gcDump);
+            RunSuite<StoredFieldsWriteBenchmarks>("stored-fields-write", runDir, benchmarkArgs, suiteSummaries, gcDump);
+            RunSuite<StoredFieldsByteBoundedBenchmarks>("stored-fields-byte-bounded", runDir, benchmarkArgs, suiteSummaries, gcDump);
+        }
+
         if (suites.Contains(BenchmarkSuite.BKDTree))
             RunSuite<BKDTreeBenchmarks>("bkd", runDir, benchmarkArgs, suiteSummaries, gcDump);
 
@@ -360,6 +389,21 @@ internal static class Program
 
         if (suites.Contains(BenchmarkSuite.ReaderManagerLifecycle))
             RunSuite<ReaderManagerLifecycleBenchmarks>("reader-manager", runDir, benchmarkArgs, suiteSummaries, gcDump);
+
+        if (suites.Contains(BenchmarkSuite.QualifiedTermCache))
+            RunSuite<QualifiedTermCacheBenchmarks>("term-caches", runDir, benchmarkArgs, suiteSummaries, gcDump);
+
+        if (suites.Contains(BenchmarkSuite.BoundedLruCacheFailure))
+            RunSuite<BoundedLruCacheFailureBenchmarks>("bounded-lru-cache", runDir, benchmarkArgs, suiteSummaries, gcDump);
+
+        if (suites.Contains(BenchmarkSuite.SegmentReaderCache))
+            RunSuite<SegmentReaderCacheBenchmarks>("segment-reader-cache", runDir, benchmarkArgs, suiteSummaries, gcDump);
+
+        if (suites.Contains(BenchmarkSuite.SegmentReaderResourceCache))
+            RunSuite<SegmentReaderResourceCacheBenchmarks>("segment-reader-resource-cache", runDir, benchmarkArgs, suiteSummaries, gcDump);
+
+        if (suites.Contains(BenchmarkSuite.VectorFirstTouch))
+            RunSuite<VectorFirstTouchBenchmarks>("vector-first-touch", runDir, benchmarkArgs, suiteSummaries, gcDump);
 
         if (suites.Contains(BenchmarkSuite.MultiReader))
             RunSuite<MultiReaderBenchmarks>("multi-reader", runDir, benchmarkArgs, suiteSummaries, gcDump);
@@ -525,6 +569,9 @@ internal static class Program
     {
         foreach (var summary in summaries)
         {
+            if (!summary.BenchmarksCases.Any())
+                continue;
+
             var benchmarkType = summary.BenchmarksCases.First().Descriptor.Type;
             var suite = pendingSuites.First(item => item.Type == benchmarkType);
             suiteSummaries.Add((suite.Name, summary));
@@ -693,6 +740,7 @@ internal static class Program
               explicit         Run all explicit-only suites, including subsystem and recent-feature benchmarks
               index            IndexingBenchmarks -- bulk indexing throughput (vs Lucene.NET)
               query            TermQueryBenchmarks -- single-term search (vs Lucene.NET)
+              parser           QueryParserBenchmarks -- bounded rejection of oversized query text
               boolean          BooleanQueryBenchmarks -- deterministic clause shapes
               phrase           PhraseQueryBenchmarks -- exact and slop phrase matching
               prefix           PrefixQueryBenchmarks -- prefix matching (vs Lucene.NET)
@@ -718,6 +766,8 @@ internal static class Program
               mlt                 MoreLikeThisBenchmarks and MoreLikeThisSingleSegmentBenchmarks -- MoreLikeThis query
               highlighter         HighlighterBenchmarks -- snippet highlighting
               searcher-mgr        SearcherManagerBenchmarks -- acquire/release hot path
+              term-caches         QualifiedTermCacheBenchmarks -- qualified-term interning and collection-frequency cache workload (explicit only)
+              bounded-lru-cache  BoundedLruCacheFailureBenchmarks -- cache acquisition after an unrelated disposal failure (explicit only)
               combined            CombinedFieldsQueryBenchmarks -- BM25F multi-field search
               terminset           TermInSetQueryBenchmarks -- set membership search
               aggregation         AggregationBenchmarks and SpatialAggregationBenchmarks -- numeric and spatial aggregation overhead
@@ -730,7 +780,9 @@ internal static class Program
               async-index         AsyncIndexingBenchmarks -- sync vs async indexing
               vq                  VectorQuantisationBenchmarks -- HNSW search with vector quantisation (vs Lucene.NET flat scan)
               hnsw                HnswSearchBenchmarks -- HNSW graph search vs flat scan (vs Lucene.NET baseline)
+              vector-first-touch  VectorFirstTouchBenchmarks -- serial and parallel cold vector/HNSW first touch (explicit only)
               hybrid              HybridSearchBenchmarks -- vector filters and text-vector RRF
+              stored-fields       StoredFieldsReadBenchmarks, StoredFieldsWriteBenchmarks, and StoredFieldsByteBoundedBenchmarks -- read allocation and wide-document flush encoding
               tokenbudget         TokenBudgetBenchmarks -- token budget enforcement overhead (explicit only)
               diagnostics         DiagnosticsBenchmarks -- SlowQueryLog + Analytics hook overhead (explicit only)
               packed-int-codec    PackedIntCodecBenchmarks -- Pack/Unpack scalar loop throughput (explicit only)
@@ -741,13 +793,15 @@ internal static class Program
               index-writer        IndexWriterContentionBenchmarks -- concurrent AddDocument throughput (explicit only)
               concurrent-write    ConcurrentVsSequentialBenchmarks -- DWPT parallel vs sequential indexing (explicit only)
 
-              merge               MergeBenchmarks -- segment merge throughput (explicit only)
+              merge               MergeBenchmarks and VectorMergeMemoryBenchmarks -- segment merge throughput and high-dimensional vector allocation (explicit only)
+              merge-payload       MergePayloadBenchmarks -- wide sparse per-field payload remapping (explicit only)
               flush               FlushBenchmarks -- segment flush latency per doc count (explicit only)
               postings-arena       PostingsArenaBenchmarks -- DWPT postings arena workload matrix (explicit only)
               packed-bkd           PackedBkdBenchmarks -- full Packed BKD build, spill and traversal matrix (explicit only)
               nearest              SpatialNearestBenchmarks and compatibility suite -- exact sort vs best-first Geo/XY Top-N, with legacy/packed comparison (explicit only)
               shape                Shape indexing/relations, Shape DocValues serialisation/read/traversal/merge-copy, and WKT/simplification (explicit only)
               docvalues-read      DocValuesReadBenchmarks -- DocValues read throughput (explicit only)
+              docvalues-write     BinaryDocValuesWriteBenchmarks -- binary payload-offset accounting and block writing (explicit only)
               bkd                 BKDTreeBenchmarks -- BKD range search throughput (explicit only)
               fst-lookup          FstLookupBenchmarks -- FST term dictionary lookup (explicit only)
               mmap-io             MMapDirectoryIOBenchmarks -- raw I/O throughput (explicit only)
@@ -881,6 +935,7 @@ internal static class Program
             "explicit" => BenchmarkSuite.Explicit,
             "index" => BenchmarkSuite.Index,
             "query" => BenchmarkSuite.Query,
+            "parser" => BenchmarkSuite.Parser,
             "packedintcodec" or "packed-int-codec" => BenchmarkSuite.PackedIntCodec,
             "codecframe" or "codec-frame" => BenchmarkSuite.CodecFrame,
             "codecframeread" or "codec-frame-read" => BenchmarkSuite.CodecFrameRead,
@@ -889,12 +944,15 @@ internal static class Program
             "indexwriter" or "index-writer" => BenchmarkSuite.IndexWriterContention,
             "concurrentwrite" or "concurrent-write" => BenchmarkSuite.ConcurrentWrite,
             "merge" => BenchmarkSuite.Merge,
+            "merge-payload" or "mergepayload" => BenchmarkSuite.MergePayload,
             "flush" => BenchmarkSuite.Flush,
             "postings-arena" or "postingsarena" => BenchmarkSuite.PostingsArena,
             "packed-bkd" or "packedbkd" => BenchmarkSuite.PackedBkd,
             "nearest" or "spatial-nearest" => BenchmarkSuite.SpatialNearest,
             "shape" or "shapes" => BenchmarkSuite.ShapeSpatial,
             "docvalues-read" or "docvaluesread" => BenchmarkSuite.DocValuesRead,
+            "docvalues-write" or "docvalueswrite" => BenchmarkSuite.DocValuesWrite,
+            "stored-fields" or "storedfields" => BenchmarkSuite.StoredFieldsRead,
             "bkd" or "bkd-tree" => BenchmarkSuite.BKDTree,
             "fst-lookup" or "fstlookup" => BenchmarkSuite.FstLookup,
             "mmap-io" or "mmapio" => BenchmarkSuite.MMapIO,
@@ -903,6 +961,10 @@ internal static class Program
             "windows-storage" or "windowsstorage" => BenchmarkSuite.WindowsStoragePath,
             "incremental-backup" or "incrementalbackup" => BenchmarkSuite.IncrementalBackup,
             "reader-manager" or "readermanager" => BenchmarkSuite.ReaderManagerLifecycle,
+            "term-caches" or "termcaches" => BenchmarkSuite.QualifiedTermCache,
+            "bounded-lru-cache" or "boundedlrucache" => BenchmarkSuite.BoundedLruCacheFailure,
+            "segment-reader-cache" or "segmentreadercache" => BenchmarkSuite.SegmentReaderCache,
+            "segment-reader-resource-cache" or "segmentreaderresourcecache" => BenchmarkSuite.SegmentReaderResourceCache,
             "multi-reader" or "multireader" => BenchmarkSuite.MultiReader,
             "ordinal-map" or "ordinalmap" => BenchmarkSuite.OrdinalMap,
             "search-session" or "searchsession" => BenchmarkSuite.SearchSession,
@@ -948,6 +1010,7 @@ internal static class Program
             "similarity" => BenchmarkSuite.Similarity,
             "vectorquantisation" or "vq" => BenchmarkSuite.VectorQuantisation,
             "hnsw" or "hnsw-search" => BenchmarkSuite.HnswSearch,
+            "vector-first-touch" or "vectorfirsttouch" => BenchmarkSuite.VectorFirstTouch,
             "hybrid" => BenchmarkSuite.Hybrid,
             "async-index" or "asyncindex" => BenchmarkSuite.AsyncIndex,
             _ => throw new ArgumentException($"Unknown benchmark suite '{value}'. Use --help to list available suites.")
@@ -979,6 +1042,7 @@ internal static class Program
         Explicit,
         Index,
         Query,
+        Parser,
         Boolean,
         Phrase,
         Prefix,
@@ -1020,6 +1084,7 @@ internal static class Program
         AsyncIndex,
         VectorQuantisation,
         HnswSearch,
+        VectorFirstTouch,
         Hybrid,
         PackedIntCodec,
         CodecFrame,
@@ -1035,6 +1100,8 @@ internal static class Program
         SpatialNearest,
         ShapeSpatial,
         DocValuesRead,
+        DocValuesWrite,
+        StoredFieldsRead,
         BKDTree,
         FstLookup,
         MMapIO,
@@ -1043,9 +1110,14 @@ internal static class Program
         WindowsStoragePath,
         IncrementalBackup,
         ReaderManagerLifecycle,
+        QualifiedTermCache,
+        BoundedLruCacheFailure,
+        SegmentReaderCache,
+        SegmentReaderResourceCache,
         MultiReader,
         OrdinalMap,
         SearchSession,
+        MergePayload,
         RankingEvaluation,
         RankingPipeline,
     }

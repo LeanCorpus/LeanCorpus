@@ -3,7 +3,6 @@ using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Codecs.Bkd;
 using Rowles.LeanCorpus.Codecs.Postings;
 using Rowles.LeanCorpus.Codecs.StoredFields;
-using Rowles.LeanCorpus.Codecs.Vectors;
 using Rowles.LeanCorpus.Serialization;
 using Rowles.LeanCorpus.Store;
 
@@ -53,7 +52,7 @@ public static class IndexRecovery
             if (result is not null)
             {
                 if (cleanupOrphans)
-                    CleanupOrphanedSegments(directoryPath, result.SegmentIds);
+                    CleanupOrphanedSegments(directoryPath, result.SegmentInfos, catalog);
                 return result;
             }
         }
@@ -91,23 +90,9 @@ public static class IndexRecovery
     }
 
     /// <summary>
-    /// Required logical codec files checked during recovery. Their descriptors are the authority
-    /// for both current frames and supported historical frames.
-    /// </summary>
-    private static readonly RequiredSegmentFile[] RequiredSegmentFiles =
-    [
-        new(".dic"),
-        new(".pos"),
-        new(".nrm"),
-        new(".fdt"),
-        new(".fdx"),
-    ];
-
-    /// <summary>
     /// Tries to load and validate a specific commit file.
     /// Returns null if the file is corrupt or references missing or unreadable segments.
-    /// Validates the required per-segment files (.seg, .dic, .pos, .nrm) as well as any
-    /// vector and HNSW files declared in the segment metadata.
+    /// Validates required logical structure and codec bodies for every referenced segment.
     /// </summary>
     private static RecoveryResult? TryLoadCommit(
         string directoryPath,
@@ -130,12 +115,20 @@ public static class IndexRecovery
             if (commitData.Generation != generation)
                 return null;
 
-            var validSegments = new List<string>();
-            foreach (var segId in commitData.Segments)
+            var validSegments = new List<string>(commitData.Segments.Count);
+            var resolvedSegments = new List<Segment.SegmentInfo>(commitData.Segments.Count);
+            for (int i = 0; i < commitData.Segments.Count; i++)
             {
-                if (!ValidateSegment(directoryPath, segId, catalog))
+                string segId = commitData.Segments[i];
+                var segmentInfo = Segment.SegmentInfo.ReadFrom(Path.Combine(directoryPath, segId + ".seg"));
+                if (!string.Equals(segmentInfo.SegmentId, segId, StringComparison.Ordinal))
+                    return null;
+                commitData.GetSegmentState(i)?.ApplyTo(segmentInfo);
+
+                if (!ValidateSegment(directoryPath, segmentInfo, catalog))
                     return null;
                 validSegments.Add(segId);
+                resolvedSegments.Add(segmentInfo);
             }
 
             return new RecoveryResult
@@ -143,6 +136,7 @@ public static class IndexRecovery
                 Generation = generation,
                 ContentToken = commitData.ContentToken,
                 SegmentIds = validSegments,
+                SegmentInfos = resolvedSegments,
                 CommitFilePath = commitFilePath,
                 WasFallback = wasFallback
             };
@@ -155,28 +149,28 @@ public static class IndexRecovery
         {
             return null;
         }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
-    private static bool ValidateSegment(string directoryPath, string segId, CodecCatalog catalog)
+    private static bool ValidateSegment(string directoryPath, Segment.SegmentInfo segInfo, CodecCatalog catalog)
     {
         try
         {
+            string segId = segInfo.SegmentId;
             var basePath = Path.Combine(directoryPath, segId);
-            var segInfo = Segment.SegmentInfo.ReadFrom(basePath + ".seg");
+
+            if (!Segment.DeletionStateValidator.Validate(basePath, segInfo).IsValid)
+                return false;
 
             using var directory = new MMapDirectory(directoryPath);
             using Segment.ISegmentFileSource source = segInfo.IsCompoundFile
                 ? new Segment.CompoundSegmentFileSource(directory, segId)
                 : new Segment.LooseSegmentFileSource(directory, segId);
-
-            foreach (var required in RequiredSegmentFiles)
-            {
-                string fileName = segId + required.Extension;
-                if (!source.FileExists(fileName) || source.GetFileLength(fileName) == 0)
-                    return false;
-            }
-
-            EnsureVectorFilesExist(segInfo, source);
+            Segment.SegmentStructureValidator.ValidateRequiredFiles(
+                new Segment.SegmentDescriptor(segInfo), source);
 
             foreach (var fileName in source.EnumerateFiles())
             {
@@ -206,26 +200,6 @@ public static class IndexRecovery
     private static bool IsRecoverableQueryAccelerator(CodecFileDescriptor descriptor)
         => descriptor.FormatId is "leancorpus.numeric-structures.bkd"
             or "leancorpus.numeric-structures.int64-bkd";
-
-    private static void EnsureVectorFilesExist(Segment.SegmentInfo segment, Segment.ISegmentFileSource source)
-    {
-        foreach (var vector in segment.VectorFields)
-        {
-            bool quantised = vector.Quantisation != VectorQuantisation.None;
-            string vectorFile = quantised
-                ? Path.GetFileName(VectorFilePaths.QuantisedVectorFile(segment.SegmentId, vector.FieldName))
-                : Path.GetFileName(VectorFilePaths.VectorFile(segment.SegmentId, vector.FieldName));
-            if (!source.FileExists(vectorFile))
-                throw new InvalidDataException($"Segment '{segment.SegmentId}' is missing vector file '{vectorFile}'.");
-
-            if (!vector.HasHnsw)
-                continue;
-
-            string hnswFile = Path.GetFileName(VectorFilePaths.HnswFile(segment.SegmentId, vector.FieldName));
-            if (!source.FileExists(hnswFile))
-                throw new InvalidDataException($"Segment '{segment.SegmentId}' is missing HNSW file '{hnswFile}'.");
-        }
-    }
 
     private static void ValidateCodecFile(IndexInput input, CodecFileDescriptor descriptor, int maxDoc)
     {
@@ -305,8 +279,6 @@ public static class IndexRecovery
         }
     }
 
-    private sealed record RequiredSegmentFile(string Extension);
-
     /// <summary>
     /// Promotes orphaned <c>segments_N.pending</c> files to full commits.
     /// An orphaned pending file (no corresponding <c>segments_N</c>) indicates a crash
@@ -344,46 +316,123 @@ public static class IndexRecovery
         if (!FileOpenRetry.DirectoryExists(directoryPath))
             return;
 
-        foreach (var tmpFile in FileOpenRetry.GetFiles(directoryPath, "*.tmp"))
+        foreach (var tmpFile in FileOpenRetry.EnumerateFiles(directoryPath, "*"))
         {
-            if (!IsRecognisedTemporaryFile(Path.GetFileName(tmpFile), catalog))
+            if (!SegmentFileSet.IsRegisteredTemporaryFileName(Path.GetFileName(tmpFile), catalog))
                 continue;
 
             try { FileOpenRetry.Delete(tmpFile); } catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "temp file cleanup"); }
         }
     }
 
-    private static bool IsRecognisedTemporaryFile(string fileName, CodecCatalog catalog)
-        => catalog.TryMatchTemporaryFile(fileName, out _);
-
     /// <summary>
-    /// Removes segment files that are not referenced by the active commit. Uses a
-    /// pattern-based match so all sidecar files for the orphaned segment are cleaned,
-    /// including stats, vector, and HNSW files that may have been added by later codecs.
+    /// Removes unreferenced segment files and prunes obsolete deletion generations for
+    /// active segments. SegmentFileSet is the physical file ownership authority.
     /// </summary>
-    private static void CleanupOrphanedSegments(string directoryPath, List<string> activeSegmentIds)
+    private static void CleanupOrphanedSegments(
+        string directoryPath,
+        List<Segment.SegmentInfo> activeSegments,
+        CodecCatalog catalog)
     {
-        var activeSet = new HashSet<string>(activeSegmentIds, StringComparer.Ordinal);
+        var activeSegmentIds = activeSegments.Select(static segment => segment.SegmentId).ToList();
+        var retainedSegmentIds = GetRetainedSegmentIds(directoryPath);
+        retainedSegmentIds.UnionWith(activeSegmentIds);
+        string[] fileNames = FileOpenRetry.EnumerateFiles(directoryPath, "*")
+            .Select(Path.GetFileName)
+            .Where(static fileName => fileName is not null)
+            .Select(static fileName => fileName!)
+            .ToArray();
+        using var directory = new MMapDirectory(directoryPath);
 
-        // Find all segment IDs on disk by looking for .seg files
-        foreach (var segFile in FileOpenRetry.GetFiles(directoryPath, "*.seg"))
+        foreach (string segmentId in SegmentFileSet.FindSegmentIds(fileNames, catalog))
         {
-            var segId = Path.GetFileNameWithoutExtension(segFile);
-            if (activeSet.Contains(segId))
+            if (retainedSegmentIds.Contains(segmentId))
                 continue;
 
-            // Pattern: segId.* and segId_v_*.* (per-field vector and HNSW files).
-            DeleteByPattern(directoryPath, segId + ".*");
-            DeleteByPattern(directoryPath, segId + "_v_*.*");
+            SegmentFileSet.FromFileNames(segmentId, fileNames, catalog)
+                .DeleteAllOwnedFiles(directory, "orphan cleanup");
+        }
+
+        var segmentInfosById = activeSegments.ToDictionary(static segment => segment.SegmentId, StringComparer.Ordinal);
+        foreach (string segmentId in retainedSegmentIds)
+        {
+            if (!segmentInfosById.TryGetValue(segmentId, out var segmentInfo))
+            {
+                string segmentPath = Path.Combine(directoryPath, segmentId + ".seg");
+                if (!FileOpenRetry.FileExists(segmentPath))
+                    continue;
+                segmentInfo = Segment.SegmentInfo.ReadFrom(segmentPath);
+            }
+
+            var protectedGenerations = new HashSet<int?> { segmentInfo.DelGeneration };
+            protectedGenerations.UnionWith(GetRetainedDeletionGenerations(directoryPath, segmentInfo));
+            SegmentFileSet.FromFileNames(segmentId, fileNames, catalog)
+                .PruneDeletionFiles(directory, protectedGenerations, "obsolete deletion generation cleanup");
         }
     }
 
-    private static void DeleteByPattern(string directoryPath, string pattern)
+    internal static HashSet<string> GetRetainedSegmentIds(string directoryPath)
     {
-        foreach (var path in FileOpenRetry.GetFiles(directoryPath, pattern))
+        var segmentIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (generation, commitPath) in FindCommitFiles(directoryPath))
         {
-            try { FileOpenRetry.Delete(path); } catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "orphan cleanup"); }
+            try
+            {
+                string? json = CommitFileFormat.TryReadJson(commitPath);
+                if (json is null)
+                    continue;
+                var commitData = JsonSerializer.Deserialize(json, LeanCorpusJsonContext.Default.CommitData);
+                if (commitData is null || commitData.Generation != generation)
+                    continue;
+                commitData.Validate();
+                segmentIds.UnionWith(commitData.Segments);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or JsonException)
+            {
+                // A malformed historical commit cannot be selected by recovery.
+            }
         }
+
+        return segmentIds;
+    }
+
+    internal static HashSet<int?> GetRetainedDeletionGenerations(
+        string directoryPath,
+        Segment.SegmentInfo segmentInfo)
+    {
+        var generations = new HashSet<int?>();
+        foreach (var (generation, commitPath) in FindCommitFiles(directoryPath))
+        {
+            try
+            {
+                string? json = CommitFileFormat.TryReadJson(commitPath);
+                if (json is null)
+                    continue;
+                var commitData = JsonSerializer.Deserialize(json, LeanCorpusJsonContext.Default.CommitData);
+                if (commitData is null || commitData.Generation != generation)
+                    continue;
+                commitData.Validate();
+
+                for (int i = 0; i < commitData.Segments.Count; i++)
+                {
+                    if (!string.Equals(commitData.Segments[i], segmentInfo.SegmentId, StringComparison.Ordinal))
+                        continue;
+
+                    SegmentCommitState state = commitData.GetSegmentState(i)
+                        ?? SegmentCommitState.FromSegmentInfo(segmentInfo);
+                    var resolved = segmentInfo.DeepCopy();
+                    state.ApplyTo(resolved);
+                    if (Segment.DeletionStateValidator.RequiresFile(resolved))
+                        generations.Add(resolved.DelGeneration);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or JsonException)
+            {
+                // A malformed historical commit cannot be selected by recovery.
+            }
+        }
+
+        return generations;
     }
 
     /// <summary>Result of crash recovery.</summary>
@@ -397,6 +446,9 @@ public static class IndexRecovery
 
         /// <summary>Gets the segment IDs referenced by the recovered commit.</summary>
         public List<string> SegmentIds { get; init; } = [];
+
+        /// <summary>Gets immutable segment metadata overlaid with this commit's deletion state.</summary>
+        internal List<Segment.SegmentInfo> SegmentInfos { get; init; } = [];
 
         /// <summary>Gets the file path of the commit file that was successfully loaded.</summary>
         public string CommitFilePath { get; init; } = "";
