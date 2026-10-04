@@ -72,6 +72,8 @@
 
 ### Fixed
 
+- Let reader and searcher managers shut down without waiting for a queued background refresh, while still draining active refreshes before retiring readers.
+
 - Keep compound segment member selection in Index so the Store writer no longer depends on Index types.
 
 - Keep prepared collection statistics isolated under their pending commit generation and reserve segment IDs above occupied files even when orphan cleanup is deferred.

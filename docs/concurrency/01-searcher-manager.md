@@ -100,6 +100,11 @@ released. `GetDiagnostics()` reports active readers, leases, refreshes, failures
 and disposed readers. `SearcherManager` is implemented on this lifecycle so the
 searcher-specific API remains compatible.
 
+Disposing either manager rejects new acquisitions, stops future refreshes and waits
+for any executing refresh before retiring its readers. Shutdown can complete while
+an idle background refresh is still queued. Held leases remain usable until their
+final release, which disposes the retired reader.
+
 ## Composing directory snapshots
 
 `MultiReader` opens one immutable `IndexSearcher` per directory and assigns global

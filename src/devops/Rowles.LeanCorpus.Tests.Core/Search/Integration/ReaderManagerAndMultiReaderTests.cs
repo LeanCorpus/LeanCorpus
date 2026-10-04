@@ -89,6 +89,90 @@ public sealed class ReaderManagerAndMultiReaderTests : IDisposable
         Assert.False(manager.TryAcquire(reader => reader.Generation == 0, out _));
     }
 
+    [Fact(Timeout = 30_000)]
+    public async Task ReaderManagerDisposesBeforeAQueuedRefreshLoopStarts()
+    {
+        var scheduler = new QueuedTaskScheduler();
+        var reader = new TestReader(0);
+        int refreshes = 0;
+        var manager = new ReaderManager<TestReader>(
+            () => reader,
+            _ => { Interlocked.Increment(ref refreshes); return null; },
+            TimeSpan.FromMilliseconds(1),
+            scheduler);
+        var dispose = Task.Factory.StartNew(manager.Dispose,
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+
+        try
+        {
+            // Shutdown must not need a worker to start the queued background loop.
+            await dispose.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.True(reader.Disposed);
+            Assert.Equal(0, Volatile.Read(ref refreshes));
+            Assert.Throws<ObjectDisposedException>(() => manager.Acquire());
+        }
+        finally
+        {
+            // Also execute the queued delegate after shutdown to check that it can exit
+            // without accessing a disposed cancellation source or opening another reader.
+            await scheduler.RunQueuedAsync();
+            await dispose;
+        }
+        Assert.Equal(0, Volatile.Read(ref refreshes));
+    }
+
+    [Fact(Timeout = 30_000)]
+    public async Task ReaderManagerDisposalWaitsForAnExecutingRefresh()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reader = new TestReader(0);
+        var replacement = new TestReader(1);
+        var manager = new ReaderManager<TestReader>(
+            () => reader,
+            _ =>
+            {
+                entered.TrySetResult();
+                release.Task.GetAwaiter().GetResult();
+                return replacement;
+            },
+            TimeSpan.FromMilliseconds(1));
+        Task? dispose = null;
+
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            dispose = Task.Factory.StartNew(manager.Dispose,
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            await WaitUntilClosing().WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+            Assert.False(dispose.IsCompleted);
+            Assert.False(reader.Disposed);
+            Assert.False(replacement.Disposed);
+            release.TrySetResult();
+            await dispose.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.True(reader.Disposed);
+            Assert.True(replacement.Disposed);
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (dispose is not null)
+                await dispose;
+            manager.Dispose();
+        }
+
+        async Task WaitUntilClosing()
+        {
+            while (true)
+            {
+                try { using var lease = manager.AcquireLease(); }
+                catch (ObjectDisposedException) { return; }
+                await Task.Delay(1, TestContext.Current.CancellationToken);
+            }
+        }
+    }
+
     [Fact]
     public void MultiReaderUsesStableGlobalIdsAndUnionResults()
     {
@@ -241,5 +325,23 @@ public sealed class ReaderManagerAndMultiReaderTests : IDisposable
         public int Generation { get; } = generation;
         public bool Disposed { get; private set; }
         public void Dispose() => Disposed = true;
+    }
+
+    private sealed class QueuedTaskScheduler : TaskScheduler
+    {
+        private readonly List<Task> _tasks = [];
+
+        protected override IEnumerable<Task> GetScheduledTasks() => _tasks.ToArray();
+        protected override void QueueTask(Task task) => _tasks.Add(task);
+        protected override bool TryExecuteTaskInline(Task task, bool taskWasPreviouslyQueued) => false;
+
+        internal Task RunQueuedAsync()
+        {
+            var tasks = _tasks.ToArray();
+            foreach (var task in tasks)
+                TryExecuteTask(task);
+            _tasks.Clear();
+            return Task.WhenAll(tasks.Cast<Task<Task>>().Select(static task => task.Unwrap()));
+        }
     }
 }

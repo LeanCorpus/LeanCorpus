@@ -12,9 +12,7 @@ public sealed class ReaderManager<TReader> : IDisposable
     private readonly Lock _lock = new();
     private readonly Lock _refreshLock = new();
     private readonly CancellationTokenSource _cts = new();
-    private readonly ManualResetEventSlim _refreshLoopExited = new(false);
     private readonly List<ReaderRef> _readers = [];
-    private readonly Task _refreshTask;
     private volatile ReaderRef _current;
     private int _disposed;
     private long _refreshes;
@@ -32,6 +30,15 @@ public sealed class ReaderManager<TReader> : IDisposable
     /// <param name="refreshFactory">Returns a replacement reader, or <c>null</c> when the current reader is still current.</param>
     /// <param name="refreshInterval">The background refresh interval.</param>
     public ReaderManager(Func<TReader> openFactory, Func<TReader, TReader?> refreshFactory, TimeSpan? refreshInterval = null)
+        : this(openFactory, refreshFactory, refreshInterval, TaskScheduler.Default)
+    {
+    }
+
+    internal ReaderManager(
+        Func<TReader> openFactory,
+        Func<TReader, TReader?> refreshFactory,
+        TimeSpan? refreshInterval,
+        TaskScheduler refreshScheduler)
     {
         ArgumentNullException.ThrowIfNull(openFactory);
         ArgumentNullException.ThrowIfNull(refreshFactory);
@@ -43,7 +50,12 @@ public sealed class ReaderManager<TReader> : IDisposable
         var reader = openFactory() ?? throw new InvalidOperationException("The reader factory returned null.");
         _current = new ReaderRef(reader, this);
         _readers.Add(_current);
-        _refreshTask = Task.Run(() => RefreshLoop(_cts.Token));
+        var cancellationToken = _cts.Token;
+        _ = Task.Factory.StartNew(
+            () => RefreshLoop(cancellationToken),
+            CancellationToken.None,
+            TaskCreationOptions.DenyChildAttach,
+            refreshScheduler).Unwrap();
     }
 
     /// <summary>Gets the most recent refresh exception, or <c>null</c> when none has failed.</summary>
@@ -221,14 +233,18 @@ public sealed class ReaderManager<TReader> : IDisposable
             return;
 
         _cts.Cancel();
-        _refreshLoopExited.Wait();
-        _cts.Dispose();
-        lock (_lock)
+        // A cancelled delay's continuation may still be queued on a busy ThreadPool.
+        // Drain executing refreshes instead of waiting for that idle continuation.
+        // TryRefresh uses this same lock and rejects work once disposal has begun.
+        lock (_refreshLock)
         {
-            foreach (var reader in _readers.ToArray())
-                reader.Retire();
+            _cts.Dispose();
+            lock (_lock)
+            {
+                foreach (var reader in _readers.ToArray())
+                    reader.Retire();
+            }
         }
-        _refreshLoopExited.Dispose();
     }
 
     private async Task RefreshLoop(CancellationToken cancellationToken)
@@ -246,10 +262,6 @@ public sealed class ReaderManager<TReader> : IDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
         catch (ObjectDisposedException) when (Volatile.Read(ref _disposed) != 0) { }
-        finally
-        {
-            _refreshLoopExited.Set();
-        }
     }
 
     private void RecordRefreshFailure(Exception exception)
