@@ -142,7 +142,7 @@ public sealed class SegmentStructureValidationTests : IDisposable
                 }
             }
 
-            Assert.True(CompoundFileWriter.Pack(unpackedPath, segmentId));
+            Assert.True(SegmentFileSet.Pack(unpackedPath, segmentId));
             File.Copy(Path.Combine(unpackedPath, segmentId + ".cfs"), cfsPath, overwrite: true);
         }
         finally

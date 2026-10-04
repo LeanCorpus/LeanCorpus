@@ -531,7 +531,7 @@ internal static class SegmentFlusher
 
     internal static void CompleteSegment(SegmentInfo segment, IndexWriterConfig config, string directoryPath)
     {
-        if (config.UseCompoundFile && CompoundFileWriter.Pack(directoryPath, segment.SegmentId, config.CodecCatalog))
+        if (config.UseCompoundFile && SegmentFileSet.Pack(directoryPath, segment.SegmentId, config.CodecCatalog))
             segment.IsCompoundFile = true;
         RefreshSegmentSize(segment, directoryPath, config.CodecCatalog);
     }

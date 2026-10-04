@@ -318,7 +318,7 @@ public sealed class SegmentMerger
             MaxSequenceNumber = ComputeMergedMaxSeqNo(segments),
             EarliestSoftDeleteTimestamp = mergedLiveDocs?.EarliestSoftDeleteTimestamp,
         };
-        if (_useCompoundFile && CompoundFileWriter.Pack(_directory.DirectoryPath, newSegId, FileCatalog))
+        if (_useCompoundFile && SegmentFileSet.Pack(_directory.DirectoryPath, newSegId, FileCatalog))
             mergedInfo.IsCompoundFile = true;
         SegmentFlusher.RefreshSegmentSize(mergedInfo, _directory.DirectoryPath, FileCatalog);
 

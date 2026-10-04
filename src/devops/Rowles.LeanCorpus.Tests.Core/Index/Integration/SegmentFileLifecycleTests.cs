@@ -35,6 +35,31 @@ public sealed class SegmentFileLifecycleTests : IClassFixture<TestDirectoryFixtu
         Assert.Equal(["seg_1"], SegmentFileSet.FindSegmentIds(["seg_1_gen_4.stats.json"]));
     }
 
+    [Fact(DisplayName = "Compound Packing: Preserves Segment Ownership And Mutable Sidecars")]
+    public void CompoundPacking_PreservesSegmentOwnershipAndMutableSidecars()
+    {
+        string path = SubDir(nameof(CompoundPacking_PreservesSegmentOwnershipAndMutableSidecars));
+        const string segmentId = "seg_1";
+        string[] members = ["seg_1.dic", "seg_1.pos", "seg_1_v_embedding.vec", "seg_1_v_embedding.hnsw"];
+        string[] sidecars = ["seg_1.seg", "seg_1.del", "seg_1_gen_4.del", "seg_1.stats.json",
+            "seg_1_gen_4.stats.json", "seg_1.dic.tmp", "seg_1.unknown", "seg_10.dic", "seg_1_extra.dic"];
+        foreach (string name in members.Concat(sidecars))
+            File.WriteAllBytes(Path.Combine(path, name), [1, 2, 3]);
+
+        Assert.True(SegmentFileSet.Pack(path, segmentId));
+
+        using var directory = new MMapDirectory(path);
+        using var compound = CompoundFileReader.Open(directory, segmentId + ".cfs");
+        Assert.Equal(members.OrderBy(static name => name, StringComparer.Ordinal), compound.FileNames);
+        foreach (string name in members)
+        {
+            Assert.False(File.Exists(Path.Combine(path, name)));
+            using var input = compound.OpenInput(directory, name);
+            Assert.Equal(new byte[] { 1, 2, 3 }, input.ReadBytes(3).ToArray());
+        }
+        Assert.All(sidecars, name => Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(Path.Combine(path, name))));
+    }
+
     [Fact(DisplayName = "Searcher Snapshot: Does Not Retain Catalogue-Declared Temporary Segment Files")]
     public void SearcherSnapshot_DoesNotRetainCatalogueDeclaredTemporarySegmentFiles()
     {

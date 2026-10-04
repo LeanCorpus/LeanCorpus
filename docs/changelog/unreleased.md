@@ -72,6 +72,8 @@
 
 ### Fixed
 
+- Keep compound segment member selection in Index so the Store writer no longer depends on Index types.
+
 - Keep prepared collection statistics isolated under their pending commit generation and reserve segment IDs above occupied files even when orphan cleanup is deferred.
 - Reject snapshot backups and manifests whose NRT descriptors differ from their selected published commit, preserving NRT search and older committed backups.
 - Reconcile vector imports with target admission dimensions before flushing and register imported dimensions only after successful publication.

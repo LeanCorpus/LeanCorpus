@@ -1,7 +1,5 @@
 using System.Buffers;
 using System.Text;
-using Rowles.LeanCorpus.Codecs.CodecKit;
-using Rowles.LeanCorpus.Index.Segment;
 
 namespace Rowles.LeanCorpus.Store;
 
@@ -12,10 +10,13 @@ internal static class CompoundFileWriter
     internal const int Version = 1;
     internal const int MaxEntries = 4096;
 
-    internal static bool Pack(string directoryPath, string segmentId, CodecCatalog? catalog = null)
+    internal static bool Pack(string directoryPath, string segmentId, IEnumerable<string> fileNames)
     {
-        var sourceFiles = SegmentFileSet.Enumerate(directoryPath, segmentId, catalog, includeTemporary: false)
-            .ImmutableCodecFileNames
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        ArgumentException.ThrowIfNullOrWhiteSpace(segmentId);
+        ArgumentNullException.ThrowIfNull(fileNames);
+
+        var sourceFiles = fileNames
             .OrderBy(static name => name, StringComparer.Ordinal)
             .ToArray();
 

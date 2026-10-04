@@ -56,6 +56,13 @@ internal sealed class SegmentFileSet
     internal IEnumerable<string> ImmutableCodecFileNames
         => Files.Where(static file => file.IsImmutableCodec).Select(static file => file.FileName);
 
+    /// <summary>Packs the segment's immutable codec members using the Store container writer.</summary>
+    internal static bool Pack(string directoryPath, string segmentId, CodecCatalog? catalog = null)
+        => CompoundFileWriter.Pack(
+            directoryPath,
+            segmentId,
+            Enumerate(directoryPath, segmentId, catalog, includeTemporary: false).ImmutableCodecFileNames);
+
     internal static SegmentFileSet Enumerate(
         string directoryPath,
         string segmentId,

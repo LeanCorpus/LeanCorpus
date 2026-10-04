@@ -902,7 +902,7 @@ public static class IndexCodecMigrator
                      .Distinct(StringComparer.Ordinal))
         {
             var targetSegmentId = segmentIdMap.TryGetValue(sourceSegmentId, out var mapped) ? mapped : sourceSegmentId;
-            _ = CompoundFileWriter.Pack(targetDirectory, targetSegmentId, catalog);
+            _ = SegmentFileSet.Pack(targetDirectory, targetSegmentId, catalog);
         }
     }
 

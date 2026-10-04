@@ -508,7 +508,7 @@ public sealed class IndexCodecMigratorResilienceTests : IClassFixture<TestDirect
         {
             var segmentPath = Directory.GetFiles(path, "*.seg").Single();
             var segmentInfo = SegmentInfo.ReadFrom(segmentPath);
-            Assert.True(CompoundFileWriter.Pack(path, segmentInfo.SegmentId));
+            Assert.True(SegmentFileSet.Pack(path, segmentInfo.SegmentId));
             segmentInfo.IsCompoundFile = true;
             segmentInfo.WriteTo(segmentPath);
         }

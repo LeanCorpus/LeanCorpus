@@ -31,7 +31,7 @@ public sealed class SegmentFileSourceTests : IDisposable
             Assert.Equal(2, loose.GetFileLength(segmentId + ".dic"));
         }
 
-        Assert.True(CompoundFileWriter.Pack(_path, segmentId));
+        Assert.True(SegmentFileSet.Pack(_path, segmentId));
         using var compound = new CompoundSegmentFileSource(directory, segmentId);
 
         Assert.Equal(looseNames, compound.EnumerateFiles());

@@ -59,7 +59,7 @@ public sealed class NumericIndexAndParentBitSetFrameTests : IClassFixture<TestDi
         parents.Set(11);
         parents.WriteTo(parentsPath);
 
-        Assert.True(CompoundFileWriter.Pack(_fixture.Path, segmentId));
+        Assert.True(SegmentFileSet.Pack(_fixture.Path, segmentId));
 
         using var directory = new MMapDirectory(_fixture.Path);
         using var compound = CompoundFileReader.Open(directory, segmentId + ".cfs");
