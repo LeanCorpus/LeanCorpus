@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Codecs.DocValues;
 using Rowles.LeanCorpus.Codecs.Hnsw;
@@ -223,18 +224,7 @@ public sealed class SegmentMergerTests : IClassFixture<TestDirectoryFixture>
         string targetPath = SubDir(nameof(Merge_RejectsMixedVectorDimensionsBeforeWritingDestinationFiles));
         using var targetDirectory = new MMapDirectory(targetPath);
 
-        using (var writer = new IndexWriter(targetDirectory, new IndexWriterConfig
-        {
-            MergePolicy = NoMergePolicy.Instance,
-            MergeThreshold = 100,
-        }))
-        {
-            using (var sourceDirectory = new MMapDirectory(source2D))
-                writer.AddIndexes(sourceDirectory);
-            using (var sourceDirectory = new MMapDirectory(source3D))
-                writer.AddIndexes(sourceDirectory);
-            writer.Commit();
-        }
+        IndexWriterVectorImportAuditTests.CreateMixedVectorIndex(targetPath, source2D, source3D);
 
         List<SegmentInfo> segments = Directory.GetFiles(targetPath, "seg_*.seg")
             .Select(SegmentInfo.ReadFrom)
@@ -1050,6 +1040,90 @@ public sealed class SegmentMergerTests : IClassFixture<TestDirectoryFixture>
     }
 
     /// <summary>
+    /// Verifies merge ordering distinguishes a missing sorted value from a present empty string,
+    /// and that the merged physical order agrees with full and early-terminated string sorting.
+    /// </summary>
+    [Fact(DisplayName = "Merge: String Sort Preserves Missing And Present Empty Values")]
+    public void Merge_StringSortPreservesMissingAndPresentEmptyValues()
+    {
+        var dir = SubDir(nameof(Merge_StringSortPreservesMissingAndPresentEmptyValues));
+        var mmap = new MMapDirectory(dir);
+        var sort = new IndexSort(SortField.String("category"));
+
+        using (var writer = new IndexWriter(mmap, new IndexWriterConfig
+        {
+            IndexSort = sort,
+            MaxBufferedDocs = 2,
+            MergeThreshold = 100,
+        }))
+        {
+            // Both source segments contain the sort field. The second segment has one document
+            // without a value, so merge must compare its null against the first segment's empty
+            // string rather than treating the two values as equal.
+            AddStringSortDocument(writer, "empty", string.Empty);
+            AddStringSortDocument(writer, "alpha", "alpha");
+            AddStringSortDocument(writer, "missing", null);
+            AddStringSortDocument(writer, "zeta", "zeta");
+            writer.Commit();
+        }
+
+        var sourceSegments = IndexRecovery.RecoverLatestCommit(dir, cleanupOrphans: false)!
+            .SegmentInfos
+            .OrderBy(segment => SegmentOrdinal(segment.SegmentId))
+            .ToArray();
+        Assert.Equal(2, sourceSegments.Length);
+        Assert.Equal(
+            ["empty", "alpha", "missing", "zeta"],
+            sourceSegments.Select(segment =>
+            {
+                using var reader = new SegmentReader(mmap, segment);
+                return Enumerable.Range(0, reader.Info.DocCount)
+                    .Select(docId => reader.GetStoredFields(docId)["id"][0]).ToArray();
+            }).SelectMany(static ids => ids).ToArray());
+
+        string mergedId = MergeSegmentsForTest(dir, mmap);
+        var mergedInfo = SegmentInfo.ReadFrom(Path.Combine(dir, mergedId + ".seg"));
+        Assert.Equal("String:category:False", Assert.Single(mergedInfo.IndexSortFields!));
+
+        using (var reader = new SegmentReader(mmap, mergedInfo))
+        {
+            string[] ids = Enumerable.Range(0, mergedInfo.DocCount)
+                .Select(docId => reader.GetStoredFields(docId)["id"][0])
+                .ToArray();
+            Assert.Equal(["missing", "empty", "alpha", "zeta"], ids);
+
+            Assert.False(reader.TryGetSortedDocValue("category", 0, out _));
+            Assert.True(reader.TryGetSortedDocValue("category", 1, out string emptyValue));
+            Assert.Equal(string.Empty, emptyValue);
+            Assert.True(reader.TryGetSortedDocValue("category", 2, out string alphaValue));
+            Assert.Equal("alpha", alphaValue);
+            Assert.True(reader.TryGetSortedDocValue("category", 3, out string zetaValue));
+            Assert.Equal("zeta", zetaValue);
+        }
+
+        using var searcher = new IndexSearcher(mmap);
+        var earlyTerminated = searcher.Search(
+            new TermQuery("title", "item"),
+            1,
+            SortField.String("category"));
+        var fullSort = searcher.Search(
+            new WildcardQuery("title", "*"),
+            1,
+            SortField.String("category"));
+        string[] earlyIds = earlyTerminated.ScoreDocs
+            .Select(scoreDoc => searcher.GetStoredFields(scoreDoc.DocId)["id"][0])
+            .ToArray();
+        string[] fullIds = fullSort.ScoreDocs
+            .Select(scoreDoc => searcher.GetStoredFields(scoreDoc.DocId)["id"][0])
+            .ToArray();
+
+        Assert.True(earlyTerminated.IsPartial);
+        Assert.False(fullSort.IsPartial);
+        Assert.Equal(["missing"], earlyIds);
+        Assert.Equal(fullIds, earlyIds);
+    }
+
+    /// <summary>
     /// Verifies missing or differing source sort definitions do not get copied to a merged segment.
     /// </summary>
     [Theory(DisplayName = "Merge: Sort Metadata Requires Matching Source Definitions")]
@@ -1086,16 +1160,17 @@ public sealed class SegmentMergerTests : IClassFixture<TestDirectoryFixture>
     }
 
     /// <summary>
-    /// Verifies merges drop descending DocId metadata because its pre-flush key is not persisted.
+    /// Verifies merges drop legacy DocId metadata because its pre-flush key is not persisted.
     /// </summary>
-    [Fact(DisplayName = "Merge: Descending DocId Sort Metadata Is Not Reused")]
-    public void Merge_DescendingDocIdSortMetadataIsNotReused()
+    [Theory(DisplayName = "Merge: Legacy DocId Sort Metadata Is Not Reused")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Merge_DocIdSortMetadataIsNotReused(bool descending)
     {
-        var dir = SubDir(nameof(Merge_DescendingDocIdSortMetadataIsNotReused));
+        var dir = SubDir($"{nameof(Merge_DocIdSortMetadataIsNotReused)}_{descending}");
         var mmap = new MMapDirectory(dir);
 
-        using (var writer = new IndexWriter(mmap, SmallSegmentMergeConfig(sort: new IndexSort(
-                   new SortField(SortFieldType.DocId, string.Empty, descending: true)))))
+        using (var writer = new IndexWriter(mmap, SmallSegmentMergeConfig()))
         {
             var first = new LeanDocument();
             first.Add(new StoredField("id", "first"));
@@ -1106,9 +1181,35 @@ public sealed class SegmentMergerTests : IClassFixture<TestDirectoryFixture>
             writer.Commit();
         }
 
+        var sourceSegments = IndexRecovery.RecoverLatestCommit(dir, cleanupOrphans: false)!
+            .SegmentInfos;
+        Assert.Equal(2, sourceSegments.Count);
+        foreach (var sourceSegment in sourceSegments)
+            SetLegacySortMetadata(
+                Path.Combine(dir, sourceSegment.SegmentId + ".seg"),
+                $"DocId::{descending}");
+
         string mergedId = MergeSegmentsForTest(dir, mmap);
         var mergedInfo = SegmentInfo.ReadFrom(Path.Combine(dir, mergedId + ".seg"));
         Assert.Null(mergedInfo.IndexSortFields);
+    }
+
+    private static void AddStringSortDocument(IndexWriter writer, string id, string? category)
+    {
+        var document = new LeanDocument();
+        document.Add(new TextField("title", "item"));
+        document.Add(new StoredField("id", id));
+        if (category is not null)
+            document.Add(new StringField("category", category));
+        writer.AddDocument(document);
+    }
+
+    private static void SetLegacySortMetadata(string segmentPath, string serialisedSortField)
+    {
+        var metadata = JsonNode.Parse(File.ReadAllText(segmentPath))?.AsObject()
+            ?? throw new InvalidDataException($"Could not read segment metadata from '{segmentPath}'.");
+        metadata["IndexSortFields"] = JsonSerializer.SerializeToNode(new[] { serialisedSortField });
+        File.WriteAllText(segmentPath, metadata.ToJsonString());
     }
 
     private static void AddSortedDocument(IndexWriter writer, double price, string body, double? rank = null)

@@ -28,6 +28,12 @@ public sealed record QueryParserOptions
     /// <summary>Gets the maximum syntax nodes created while parsing and lowering one query.</summary>
     public int MaxSyntaxNodes { get; init; } = 16_384;
 
+    /// <summary>Gets the maximum number of tokens emitted by analysis across one query.</summary>
+    public int MaxAnalysedTokens { get; init; } = 16_384;
+
+    /// <summary>Gets the maximum total number of UTF-16 characters retained in analysed tokens across one query.</summary>
+    public long MaxAnalysedTokenChars { get; init; } = 1_048_576;
+
     /// <summary>Gets the maximum query clauses accepted after analysis and lowering.</summary>
     public int MaxQueryClauses { get; init; } = 4_096;
 
@@ -66,6 +72,8 @@ public sealed record QueryParserOptions
         MaxInputChars = int.MaxValue,
         MaxTokens = int.MaxValue,
         MaxSyntaxNodes = int.MaxValue,
+        MaxAnalysedTokens = int.MaxValue,
+        MaxAnalysedTokenChars = long.MaxValue,
         MaxQueryClauses = int.MaxValue,
         MaxWildcardPatternChars = int.MaxValue,
         MaxRegexpPatternChars = int.MaxValue
@@ -78,6 +86,8 @@ public sealed record QueryParserOptions
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxSyntaxDepth, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(MaxSyntaxDepth, MaximumSupportedSyntaxDepth);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxSyntaxNodes, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxAnalysedTokens, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(MaxAnalysedTokenChars, 1L);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxQueryClauses, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxPhraseTokens, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(MaxGraphEdges, 1);

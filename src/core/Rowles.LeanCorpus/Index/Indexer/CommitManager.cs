@@ -210,7 +210,7 @@ internal static class CommitManager
     private static bool BelongsToCommittedSegment(string fileName, HashSet<string> segmentIds)
         => SegmentFileSet.IsOwnedByAnySegment(fileName, segmentIds);
 
-    public static void WriteCommitStats(IndexWriter writer)
+    public static void WriteCommitStats(IndexWriter writer, int? generationOverride = null)
     {
         var dirPath = writer.Directory.DirectoryPath;
         var segmentStatsForCommit = new List<SegmentStats>(writer.CommittedSegments.Count);
@@ -233,7 +233,7 @@ internal static class CommitManager
         }
 
         var stats = IndexStats.FromSegmentStats(segmentStatsForCommit);
-        stats.WriteTo(IndexStats.GetStatsPath(dirPath, writer.CommitGeneration));
+        stats.WriteTo(IndexStats.GetStatsPath(dirPath, generationOverride ?? writer.CommitGeneration));
     }
 
     private static SegmentStats? AccumulateSegmentStatsByScan(
@@ -265,6 +265,9 @@ internal static class CommitManager
         var recovery = IndexRecovery.RecoverLatestCommit(
             directory.DirectoryPath,
             catalog: config.CodecCatalog);
+        var occupiedSegmentIds = SegmentFileSet.FindSegmentIds(directory.ListAll(), config.CodecCatalog);
+        writer.InitialiseNextSegmentOrdinal(GetNextSegmentOrdinal(
+            (recovery?.SegmentIds ?? []).Concat(occupiedSegmentIds)));
         if (recovery is null) return;
         IndexOpenGuard.EnsureCanOpenSegments(
             directory,
@@ -275,7 +278,6 @@ internal static class CommitManager
 
         writer.CommitGeneration = recovery.Generation;
         writer.ContentToken = recovery.ContentToken;
-        writer.InitialiseNextSegmentOrdinal(GetNextSegmentOrdinal(recovery.SegmentIds));
 
         var dirPath = directory.DirectoryPath;
         writer.CommittedSegments.AddRange(recovery.SegmentInfos);
@@ -358,7 +360,7 @@ internal static class CommitManager
                 continue;
             }
 
-            nextOrdinal = Math.Max(nextOrdinal, ordinal + 1);
+            nextOrdinal = Math.Max(nextOrdinal, checked(ordinal + 1));
         }
 
         return nextOrdinal;
@@ -559,7 +561,7 @@ internal static class CommitManager
                 writer.ContentToken++;
 
             int gen = writer.CommitGeneration + 1;
-            WriteCommitStats(writer);
+            WriteCommitStats(writer, generationOverride: gen);
             WriteCommitFile(writer, pending: true, generationOverride: gen);
             writer.ContentChangedSinceCommit = false;
 

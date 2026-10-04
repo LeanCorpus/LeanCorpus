@@ -577,6 +577,11 @@ public sealed partial class IndexSearcher
                 return false;
             }
 
+            // Legacy segments may advertise DocId ordering, but that pre-flush key is not
+            // persisted through physical reordering. It cannot safely justify early termination.
+            if (readerSort.Type == SortFieldType.DocId)
+                return false;
+
             if (commonSort is not null && !MatchesSort(commonSort, readerSort))
                 return false;
 

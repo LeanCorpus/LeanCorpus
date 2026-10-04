@@ -555,11 +555,18 @@ internal sealed class QuerySyntaxBudget(QueryParserOptions options, bool limitsA
     {
         if (count < 0)
             throw new ArgumentOutOfRangeException(nameof(count));
+        EnsureQueryClausesCanBeConsumed(count, offset);
+
+        _queryClauseCount += count;
+    }
+
+    internal void EnsureQueryClausesCanBeConsumed(int count, int? offset = null)
+    {
+        if (count < 0)
+            throw new ArgumentOutOfRangeException(nameof(count));
         if (count > options.MaxQueryClauses - _queryClauseCount)
             ThrowQueryParseLimitExceeded(
                 $"The query exceeds the configured query-clause limit of {options.MaxQueryClauses}.", offset);
-
-        _queryClauseCount += count;
     }
 
     internal void ThrowQueryParseLimitExceeded(string message, int? offset = null)

@@ -84,7 +84,7 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
         }
         catch
         {
-            RemoveFailedEntry(entry);
+            RetireFailedAcquire(entry);
             throw;
         }
 
@@ -93,41 +93,69 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
         return lease;
     }
 
-    private void RemoveFailedEntry(Entry entry)
+    private void RetireFailedAcquire(Entry entry)
     {
-        lock (_lock)
-        {
-            entry.LeaseCount--;
-            if (_entries.TryGetValue(entry.Key, out var current) && ReferenceEquals(current, entry))
-            {
-                _entries.Remove(entry.Key);
-                if (entry.Node is not null)
-                    _lru.Remove(entry.Node);
-                entry.Node = null;
-            }
-        }
-    }
-
-    private void Release(Entry entry)
-    {
-        if (_resourceUsageSelector is not null && entry.TryGetCreated(out var value))
-            RefreshResourceUsage(entry, value);
-
-        List<TValue>? toDispose;
+        List<TValue>? toDispose = null;
         lock (_lock)
         {
             if (entry.LeaseCount > 0)
                 entry.LeaseCount--;
-            toDispose = CollectEvictions();
+            RetireEntry(entry);
+            AddForDisposal(ref toDispose, TakeRetiredValue(entry));
         }
+
         ReportDisposalFailure(DisposeValues(toDispose));
+    }
+
+    private void Release(Entry entry)
+    {
+        Exception? accountingFailure = null;
+        if (_resourceUsageSelector is not null && IsTracked(entry) && entry.TryGetCreated(out var value))
+        {
+            try
+            {
+                RefreshResourceUsage(entry, value);
+            }
+            catch (Exception exception)
+            {
+                accountingFailure = exception;
+            }
+        }
+
+        List<TValue>? toDispose = null;
+        lock (_lock)
+        {
+            if (entry.LeaseCount > 0)
+                entry.LeaseCount--;
+            if (accountingFailure is not null)
+                RetireEntry(entry);
+
+            AddForDisposal(ref toDispose, TakeRetiredValue(entry));
+            List<TValue>? evicted = CollectEvictions();
+            if (evicted is not null)
+                (toDispose ??= []).AddRange(evicted);
+        }
+
+        AggregateException? disposalFailure = DisposeValues(toDispose);
+        ReportDisposalFailure(disposalFailure);
+        if (accountingFailure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(accountingFailure).Throw();
     }
 
     void ILifetimeLeaseOwner.ReleaseLease(object token) => Release((Entry)token);
 
+    private bool IsTracked(Entry entry)
+    {
+        lock (_lock)
+            return _entries.TryGetValue(entry.Key, out var current) && ReferenceEquals(current, entry);
+    }
+
     private void RefreshResourceUsage(Entry entry, TValue value)
     {
         if (_resourceUsageSelector is null)
+            return;
+
+        if (!IsTracked(entry))
             return;
 
         SegmentReaderCacheResourceUsage resources = _resourceUsageSelector(value);
@@ -140,6 +168,41 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
             entry.Resources = resources;
             _retainedResources += resources;
         }
+    }
+
+    private void RetireEntry(Entry entry)
+    {
+        if (entry.Retired)
+            return;
+
+        entry.Retired = true;
+        if (_entries.TryGetValue(entry.Key, out var current) && ReferenceEquals(current, entry))
+        {
+            _entries.Remove(entry.Key);
+            _retainedResources -= entry.Resources;
+            entry.Resources = default;
+        }
+
+        if (entry.Node is not null)
+        {
+            _lru.Remove(entry.Node);
+            entry.Node = null;
+        }
+    }
+
+    private TValue? TakeRetiredValue(Entry entry)
+    {
+        if (!entry.Retired || entry.LeaseCount != 0 || entry.DisposalStarted)
+            return null;
+
+        entry.DisposalStarted = true;
+        return entry.TryGetCreated(out var value) ? value : null;
+    }
+
+    private static void AddForDisposal(ref List<TValue>? values, TValue? value)
+    {
+        if (value is not null)
+            (values ??= []).Add(value);
     }
 
     private void Trim()
@@ -163,13 +226,9 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
                 break;
 
             var entry = node.Value;
-            _lru.Remove(node);
-            _entries.Remove(entry.Key);
-            entry.Node = null;
-            _retainedResources -= entry.Resources;
+            RetireEntry(entry);
             _evictionCount++;
-            if (entry.TryGetCreated(out var value))
-                (values ??= []).Add(value);
+            AddForDisposal(ref values, TakeRetiredValue(entry));
         }
         return values;
     }
@@ -212,7 +271,7 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
 
         if (_cleanupFailureReporter is null)
         {
-            System.Diagnostics.Trace.TraceError("Bounded LRU cache cleanup failed: {0}", failure);
+            TraceCleanupFailure("Bounded LRU cache cleanup failed: {0}", failure);
             return;
         }
 
@@ -224,7 +283,19 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
         {
             var combined = new AggregateException(
                 "The cache cleanup failure reporter also failed.", failure, reporterFailure);
-            System.Diagnostics.Trace.TraceError("Bounded LRU cache cleanup reporting failed: {0}", combined);
+            TraceCleanupFailure("Bounded LRU cache cleanup reporting failed: {0}", combined);
+        }
+    }
+
+    private static void TraceCleanupFailure(string message, Exception failure)
+    {
+        try
+        {
+            System.Diagnostics.Trace.TraceError(message, failure);
+        }
+        catch
+        {
+            // Diagnostic listeners must not replace the cache operation's failure.
         }
     }
 
@@ -308,6 +379,8 @@ internal sealed class BoundedLruCache<TKey, TValue> : IDisposable, ILifetimeLeas
         internal int LeaseCount { get; set; }
         internal LinkedListNode<Entry>? Node { get; set; }
         internal SegmentReaderCacheResourceUsage Resources { get; set; }
+        internal bool Retired { get; set; }
+        internal bool DisposalStarted { get; set; }
 
         internal bool MarkLoaded() => Interlocked.Exchange(ref _loaded, 1) == 0;
 

@@ -265,9 +265,18 @@ public class QueryParser
     protected IReadOnlyList<Analysis.Token> AnalyseTerm(string field, string term) =>
         AnalyseTermBuffer(field, term);
 
-    private QueryAnalysisTokenBuffer AnalyseTermBuffer(string field, string term)
+    private QueryAnalysisTokenBuffer AnalyseTermBuffer(
+        string field,
+        string term,
+        QueryCompiler? budgetOwner = null,
+        int sourceOffset = 0,
+        bool preflightQueryClauses = false)
     {
-        var tokens = new QueryAnalysisTokenBuffer();
+        var tokens = new QueryAnalysisTokenBuffer(
+            budgetOwner,
+            sourceOffset,
+            countPhraseTokens: false,
+            preflightQueryClauses: preflightQueryClauses);
         ResolveFieldContext(field).QueryAnalyser.Analyse(term.AsSpan(), tokens);
         return tokens;
     }
@@ -415,8 +424,17 @@ public class QueryParser
     internal Func<string, QueryFieldCompilationContext>? FieldContextResolverForCompilation => _fieldContextResolver;
     internal IAnalyser CurrentAnalyserForCompilation => Analyser;
 
-    internal QueryAnalysisTokenBuffer AnalyseTermForCompilation(string field, string term) =>
-        AnalyseTermBuffer(field, term);
+    internal QueryAnalysisTokenBuffer AnalyseTermForCompilation(
+        string field,
+        string term,
+        int sourceOffset = 0,
+        bool preflightQueryClauses = false) =>
+        AnalyseTermBuffer(
+            field,
+            term,
+            GetCompiler(),
+            sourceOffset,
+            preflightQueryClauses);
 
     internal string AnalyseMultiTermLiteralForCompilation(string pattern) =>
         AnalyseMultiTerm(pattern);

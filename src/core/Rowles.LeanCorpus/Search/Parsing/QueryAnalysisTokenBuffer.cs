@@ -5,15 +5,25 @@ namespace Rowles.LeanCorpus.Search.Parsing;
 /// <summary>Captures analysed tokens inline until a second token requires overflow storage.</summary>
 internal sealed class QueryAnalysisTokenBuffer : IReadOnlyList<Analysis.Token>, Analysis.ISpanTokenSink
 {
-    private readonly QueryCompiler? _phraseOwner;
+    private readonly QueryCompiler? _budgetOwner;
     private readonly int _sourceOffset;
+    private readonly bool _countPhraseTokens;
+    private readonly bool _preflightQueryClauses;
+    private bool _hasGraphEdge;
+    private bool _queryClausePreflightDisabled;
     private Analysis.Token _first;
     private List<Analysis.Token>? _overflow;
 
-    internal QueryAnalysisTokenBuffer(QueryCompiler? phraseOwner = null, int sourceOffset = 0)
+    internal QueryAnalysisTokenBuffer(
+        QueryCompiler? budgetOwner = null,
+        int sourceOffset = 0,
+        bool countPhraseTokens = true,
+        bool preflightQueryClauses = false)
     {
-        _phraseOwner = phraseOwner;
+        _budgetOwner = budgetOwner;
         _sourceOffset = sourceOffset;
+        _countPhraseTokens = countPhraseTokens;
+        _preflightQueryClauses = preflightQueryClauses;
     }
 
     public int Count { get; private set; }
@@ -48,7 +58,25 @@ internal sealed class QueryAnalysisTokenBuffer : IReadOnlyList<Analysis.Token>, 
         int positionLength,
         byte[]? payload)
     {
-        _phraseOwner?.ConsumeAnalysedPhraseToken(_sourceOffset);
+        bool hasGraphEdge = positionLength != 1;
+        if (Count > 0 && positionIncrement != 0)
+            _queryClausePreflightDisabled = true;
+
+        int unquotedClauseCount = _preflightQueryClauses
+            && !_queryClausePreflightDisabled
+            && !_hasGraphEdge
+            && !hasGraphEdge
+            ? checked(Count + 1)
+            : 0;
+        _hasGraphEdge |= hasGraphEdge;
+
+        _budgetOwner?.ConsumeAnalysedToken(
+            _sourceOffset,
+            unquotedClauseCount,
+            text.Length);
+        if (_countPhraseTokens)
+            _budgetOwner?.ConsumeAnalysedPhraseToken(_sourceOffset);
+
         var token = new Analysis.Token(
             text.ToString(),
             startOffset,

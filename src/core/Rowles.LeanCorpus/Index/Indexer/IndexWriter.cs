@@ -377,26 +377,50 @@ public sealed partial class IndexWriter : IDisposable
                 .Select(static segment => segment.DeepCopy())
                 .ToList();
 
+            var incomingDimensions = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var segment in sourceSegments)
+            {
+                foreach (var field in segment.VectorFields)
+                {
+                    if (incomingDimensions.TryGetValue(field.FieldName, out int dimension)
+                        && dimension != field.Dimension)
+                        throw new InvalidDataException($"Source vector field '{field.FieldName}' has incompatible dimensions.");
+                    incomingDimensions[field.FieldName] = field.Dimension;
+                }
+            }
+
             lock (_writeLock)
             {
+                // Reject incompatible imports before flushing. Do not hold the registry
+                // lock while waiting for DWPTs: admission acquires it from inside a DWPT.
+                lock (_vectorDimensionLock)
+                    EnsureImportedVectorDimensionsMatch(incomingDimensions);
+
                 DwptManager.FlushDwptPool(this);
                 DwptManager.WaitForPendingFlushes(this);
 
-                var merger = new SegmentMerger(_directory, _config.MergePolicy, _config.PostingsSkipInterval,
-                    _config.SoftDeleteRetentionSeconds, _config.HnswBuildConfig,
-                    useCompoundFile: _config.UseCompoundFile,
-                    destinationVectorQuantisation: _config.VectorQuantisation)
+                lock (_vectorDimensionLock)
                 {
-                    FileCatalog = _config.CodecCatalog
-                };
-                int localOrdinal = ReserveSegmentOrdinalRange(sourceSegments.Count + 8);
+                    // Admission may have registered a field during the flush barrier.
+                    EnsureImportedVectorDimensionsMatch(incomingDimensions);
+                    var merger = new SegmentMerger(_directory, _config.MergePolicy, _config.PostingsSkipInterval,
+                        _config.SoftDeleteRetentionSeconds, _config.HnswBuildConfig,
+                        useCompoundFile: _config.UseCompoundFile,
+                        destinationVectorQuantisation: _config.VectorQuantisation)
+                    {
+                        FileCatalog = _config.CodecCatalog
+                    };
+                    int localOrdinal = ReserveSegmentOrdinalRange(sourceSegments.Count + 8);
 
-                var merged = merger.MergeSegmentsFromDirectory(
-                    sourceDirectory, sourceSegments, ref localOrdinal, _config, _commitGeneration);
-                if (merged is not null)
-                {
-                    _committedSegments.Add(merged);
-                    _contentChangedSinceCommit = true;
+                    var merged = merger.MergeSegmentsFromDirectory(
+                        sourceDirectory, sourceSegments, ref localOrdinal, _config, _commitGeneration);
+                    if (merged is not null)
+                    {
+                        _committedSegments.Add(merged);
+                        foreach (var (fieldName, dimension) in incomingDimensions)
+                            _vectorDimensions.TryAdd(fieldName, dimension);
+                        _contentChangedSinceCommit = true;
+                    }
                 }
             }
         }
@@ -792,13 +816,31 @@ public sealed partial class IndexWriter : IDisposable
     {
         lock (_vectorDimensionLock)
         {
-            foreach (var (fieldName, dimension) in incoming)
-            {
-                if (_vectorDimensions.TryGetValue(fieldName, out int existingDimension) && existingDimension != dimension)
-                    throw new ArgumentException($"Vector field '{fieldName}' has dimension {dimension}, but the index requires {existingDimension}.");
-            }
+            EnsureVectorDimensionsMatch(incoming);
             foreach (var (fieldName, dimension) in incoming)
                 _vectorDimensions.TryAdd(fieldName, dimension);
+        }
+    }
+
+    private void EnsureImportedVectorDimensionsMatch(Dictionary<string, int> incoming)
+    {
+        EnsureVectorDimensionsMatch(incoming);
+        foreach (var segment in _committedSegments)
+        {
+            foreach (var field in segment.VectorFields)
+            {
+                if (incoming.TryGetValue(field.FieldName, out int dimension) && dimension != field.Dimension)
+                    throw new ArgumentException($"Imported vector field '{field.FieldName}' conflicts with an existing segment's dimension {field.Dimension}.");
+            }
+        }
+    }
+
+    private void EnsureVectorDimensionsMatch(Dictionary<string, int> incoming)
+    {
+        foreach (var (fieldName, dimension) in incoming)
+        {
+            if (_vectorDimensions.TryGetValue(fieldName, out int existingDimension) && existingDimension != dimension)
+                throw new ArgumentException($"Vector field '{fieldName}' has dimension {dimension}, but the index requires {existingDimension}.");
         }
     }
 

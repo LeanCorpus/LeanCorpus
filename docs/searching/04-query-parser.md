@@ -19,6 +19,8 @@ var options = QueryParserOptions.Default with
     MaxTokens = 2_048,
     MaxSyntaxDepth = 32,
     MaxQueryClauses = 1_024,
+    MaxAnalysedTokens = 4_096,
+    MaxAnalysedTokenChars = 262_144,
     MaxWildcardPatternChars = 256,
     MaxRegexpPatternChars = 512
 };
@@ -39,6 +41,13 @@ edge count, traversal steps, paths, compiled terms and generated clauses. Limit
 violations throw `QueryParseException`; parser instances remain reusable after
 a rejected input. The existing constructors do not apply the default options,
 so applications that accept untrusted text should pass an options object.
+
+Analysis shares `MaxAnalysedTokens` and `MaxAnalysedTokenChars` across ordinary
+terms and quoted phrases. The defaults are 16,384 emitted tokens and 1,048,576
+UTF-16 characters. The sink checks both limits before copying token text, so an
+expanding analyser cannot buffer all its output before the compiler rejects it.
+Use these limits alongside `MaxQueryClauses`; graph tokens can compile into fewer
+clauses than the analyser emits.
 
 `QueryParseException.Offset` is the zero-based UTF-16 code-unit offset in the
 original query string. It includes field prefixes and phrase quotes, and errors

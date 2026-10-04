@@ -181,7 +181,11 @@ internal sealed class QueryCompiler
         QuerySyntax? lowered = LowerAnalysedTokens(
             field,
             term,
-            _parser.AnalyseTermForCompilation(field, term),
+            _parser.AnalyseTermForCompilation(
+                field,
+                term,
+                sourceOffset,
+                preflightQueryClauses: true),
             fuzzyMaxEdits,
             modifierOffset,
             sourceOffset);
@@ -459,6 +463,21 @@ internal sealed class QueryCompiler
         string? tokenLimit = GetQueryCompilationBudget().TryConsumePhraseTokens(1);
         if (tokenLimit is not null)
             ThrowPhraseGraphLimitExceeded(tokenLimit, sourceOffset);
+    }
+
+    internal void ConsumeAnalysedToken(int sourceOffset, int unquotedClauseCount, int tokenCharCount)
+    {
+        QueryCompilationBudget budget = GetQueryCompilationBudget();
+        string? tokenLimit = budget.TryConsumeAnalysedTokens(1);
+        if (tokenLimit is not null)
+            ThrowQueryParseLimitExceeded(tokenLimit, sourceOffset);
+
+        string? tokenCharLimit = budget.TryConsumeAnalysedTokenChars(tokenCharCount);
+        if (tokenCharLimit is not null)
+            ThrowQueryParseLimitExceeded(tokenCharLimit, sourceOffset);
+
+        if (unquotedClauseCount > 0)
+            _syntaxBudget.EnsureQueryClausesCanBeConsumed(unquotedClauseCount, sourceOffset);
     }
 
     private void ThrowPhraseGraphLimitExceeded(string message, int sourceOffset)
@@ -760,6 +779,8 @@ internal sealed class QueryCompiler
     private sealed class QueryCompilationBudget(QueryParserOptions options)
     {
         private int _analysedPhraseTokenCount;
+        private int _analysedTokenCount;
+        private long _analysedTokenCharCount;
         private int _graphEdgesRead;
         private int _traversalSteps;
         private int _pathsEmitted;
@@ -772,6 +793,26 @@ internal sealed class QueryCompiler
                 return $"Analysed phrase token count exceeds the maximum of {options.MaxPhraseTokens}.";
 
             _analysedPhraseTokenCount += count;
+            return null;
+        }
+
+        public string? TryConsumeAnalysedTokens(int count)
+        {
+            if (count > options.MaxAnalysedTokens - _analysedTokenCount)
+                return $"Analysed token count exceeds the configured maximum of {options.MaxAnalysedTokens}.";
+
+            _analysedTokenCount += count;
+            return null;
+        }
+
+        public string? TryConsumeAnalysedTokenChars(int count)
+        {
+            if (count > options.MaxAnalysedTokenChars - _analysedTokenCharCount)
+            {
+                return $"Analysed token text character count exceeds the configured maximum of {options.MaxAnalysedTokenChars}.";
+            }
+
+            _analysedTokenCharCount += count;
             return null;
         }
 

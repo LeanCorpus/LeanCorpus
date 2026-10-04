@@ -408,8 +408,15 @@ public sealed class SegmentMerger
                 || !Enum.TryParse(parts[0], ignoreCase: false, out SortFieldType type)
                 || !Enum.IsDefined(type)
                 || type is not (SortFieldType.DocId or SortFieldType.Numeric or SortFieldType.Int64 or SortFieldType.String)
-                || (type == SortFieldType.DocId ? parts[1].Length != 0 : string.IsNullOrWhiteSpace(parts[1]))
                 || !bool.TryParse(parts[2], out bool descending))
+                return false;
+
+            // Legacy segments may persist DocId sort metadata, but the pre-flush key is not
+            // retained after physical reordering. Keep it readable in SegmentInfo while
+            // refusing to reuse it as a merge key.
+            if (type == SortFieldType.DocId)
+                return false;
+            if (string.IsNullOrWhiteSpace(parts[1]))
                 return false;
 
             SortValueSelector selector = SortValueSelector.Min;
@@ -420,12 +427,6 @@ public sealed class SegmentMerger
 
             parsed[i] = new SortField(type, parts[1], descending, selector);
         }
-
-        // A descending DocId key is the pre-flush document ID. That value is not
-        // persisted after SegmentFlusher physically reorders a segment, so a merge
-        // cannot reconstruct a globally correct key from the source segments.
-        if (parsed.Any(static field => field.Type == SortFieldType.DocId && field.Descending))
-            return false;
 
         sortFields = parsed;
         return true;
@@ -701,7 +702,7 @@ public sealed class SegmentMerger
                         return MergeSortValue.String(
                             _reader.TryGetSortedDocValue(_field.FieldName, oldDocId, out var value)
                                 ? value
-                                : string.Empty);
+                                : null);
                     }
                     if (_reader.TryGetSortedSetDocValues(_field.FieldName, oldDocId, out var sortedSetValues)
                         && sortedSetValues.Count > 0)

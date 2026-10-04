@@ -50,6 +50,177 @@ public sealed class IndexCodecMigratorResilienceTests : IClassFixture<TestDirect
         Assert.True(Directory.Exists(result.StagingDirectory));
     }
 
+    [Theory(DisplayName = "Migrate: A failed commit publication preserves the source and can resume")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Migrate_CommitPublicationFails_SourceRemainsReadableAndMigrationResumes(bool useCompoundFile)
+    {
+        var path = CreateLegacyVersionIndex("resilience_publish_failure_" + useCompoundFile, useCompoundFile);
+        var originalCommit = Assert.Single(IndexFileInspector.FindCommitFiles(path));
+        var originalSegmentId = IndexRecovery.RecoverLatestCommit(path, cleanupOrphans: false)!.SegmentIds.Single();
+        var preservedFiles = Directory.GetFiles(path, originalSegmentId + ".*")
+            .Append(originalCommit.FilePath)
+            .Distinct(StringComparer.Ordinal)
+            .ToDictionary(static filePath => Path.GetFileName(filePath)!, File.ReadAllBytes, StringComparer.Ordinal);
+
+        var blockedCommitPath = Path.Combine(path, $"segments_{originalCommit.Generation + 1}");
+        Directory.CreateDirectory(blockedCommitPath);
+
+        var failed = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = false,
+            });
+
+        Assert.False(failed.Succeeded);
+        Assert.Equal(IndexMigrationState.Failed, IndexMigrationRecovery.GetState(path).State);
+        Assert.Equal(originalCommit.Generation, Assert.Single(IndexFileInspector.FindCommitFiles(path)).Generation);
+        foreach (var (fileName, bytes) in preservedFiles)
+        {
+            var filePath = Path.Combine(path, fileName);
+            Assert.True(File.Exists(filePath), $"The source file '{fileName}' was removed before commit publication.");
+            Assert.Equal(bytes, File.ReadAllBytes(filePath));
+        }
+        AssertMigrationBlocksDefaultOpenButAllowsUnsafeInspection(path);
+
+        Directory.Delete(blockedCommitPath);
+
+        var resumed = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = true,
+            });
+
+        Assert.True(resumed.Succeeded,
+            string.Join("; ", resumed.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+        Assert.Equal(originalCommit.Generation + 1, IndexFileInspector.FindCommitFiles(path)[0].Generation);
+        AssertIndexReadable(path);
+        var migratedSegmentId = IndexRecovery.RecoverLatestCommit(path, cleanupOrphans: false)!.SegmentIds.Single();
+        Assert.Equal(useCompoundFile, SegmentInfo.ReadFrom(Path.Combine(path, migratedSegmentId + ".seg")).IsCompoundFile);
+    }
+
+    [Theory(DisplayName = "Migrate: A staged data-file publication failure preserves the source and can resume")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Migrate_DataFilePublicationFails_SourceRemainsReadableAndMigrationResumes(bool useCompoundFile)
+    {
+        var path = CreateLegacyVersionIndex("resilience_data_publish_failure_" + useCompoundFile, useCompoundFile);
+        var originalCommit = Assert.Single(IndexFileInspector.FindCommitFiles(path));
+        var originalSegmentId = IndexRecovery.RecoverLatestCommit(path, cleanupOrphans: false)!.SegmentIds.Single();
+        var originalSegmentFiles = Directory.GetFiles(path, originalSegmentId + ".*");
+        var preservedFiles = originalSegmentFiles
+            .Append(originalCommit.FilePath)
+            .Distinct(StringComparer.Ordinal)
+            .ToDictionary(static filePath => Path.GetFileName(filePath)!, File.ReadAllBytes, StringComparer.Ordinal);
+        var migratedSegmentId = $"{originalSegmentId}_migrated_{originalCommit.Generation}";
+        var blockedTargets = originalSegmentFiles
+            .Select(filePath => Path.Combine(
+                path,
+                migratedSegmentId + Path.GetFileName(filePath)![originalSegmentId.Length..]))
+            .ToArray();
+        Assert.NotEmpty(blockedTargets);
+        foreach (var blockedTarget in blockedTargets)
+            Directory.CreateDirectory(blockedTarget);
+
+        var failed = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = false,
+            });
+
+        Assert.False(failed.Succeeded);
+        Assert.Equal(IndexMigrationState.Failed, IndexMigrationRecovery.GetState(path).State);
+        Assert.Equal(originalCommit.Generation, Assert.Single(IndexFileInspector.FindCommitFiles(path)).Generation);
+        foreach (var (fileName, bytes) in preservedFiles)
+        {
+            var filePath = Path.Combine(path, fileName);
+            Assert.True(File.Exists(filePath), $"The source file '{fileName}' was removed before commit publication.");
+            Assert.Equal(bytes, File.ReadAllBytes(filePath));
+        }
+        AssertMigrationBlocksDefaultOpenButAllowsUnsafeInspection(path);
+
+        foreach (var blockedTarget in blockedTargets)
+            Directory.Delete(blockedTarget, recursive: true);
+
+        var resumed = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = true,
+            });
+
+        Assert.True(resumed.Succeeded,
+            string.Join("; ", resumed.Issues.Select(issue => $"{issue.Code}: {issue.Message}")));
+        Assert.Equal(originalCommit.Generation + 1, IndexFileInspector.FindCommitFiles(path)[0].Generation);
+        AssertIndexReadable(path);
+        Assert.True(File.Exists(Path.Combine(path, migratedSegmentId + ".seg")));
+    }
+
+    [Fact(DisplayName = "Migrate: A post-rename directory-sync failure retains staging until durability recovery")]
+    public void Migrate_PostRenameDirectorySyncFails_RecoveryReestablishesDurability()
+    {
+        var path = CreateLegacyVersionIndex("resilience_post_rename_sync_failure", useCompoundFile: false);
+        var originalCommit = Assert.Single(IndexFileInspector.FindCommitFiles(path));
+        var originalSegmentId = IndexRecovery.RecoverLatestCommit(path, cleanupOrphans: false)!.SegmentIds.Single();
+        var originalSegmentFiles = Directory.GetFiles(path, originalSegmentId + ".*")
+            .Append(originalCommit.FilePath)
+            .Distinct(StringComparer.Ordinal)
+            .ToDictionary(static filePath => Path.GetFileName(filePath)!, File.ReadAllBytes, StringComparer.Ordinal);
+        var newCommitName = $"segments_{originalCommit.Generation + 1}";
+        IndexCodecMigrationResult failed;
+        using (PlatformFileSystem.OverrideForTesting(new FailOnceAfterCommitRenameFileSystem(path, newCommitName)))
+        {
+            failed = IndexCodecMigrator.Migrate(
+                new MMapDirectory(path),
+                new IndexCodecMigrationOptions
+                {
+                    DryRun = false,
+                    ValidateBeforeMigration = false,
+                    ValidateAfterMigration = false,
+                });
+        }
+
+        Assert.False(failed.Succeeded);
+        Assert.Contains(failed.Issues, issue => issue.Message.Contains("injected post-rename directory sync failure", StringComparison.Ordinal));
+        Assert.Equal(IndexMigrationState.Failed, IndexMigrationRecovery.GetState(path).State);
+        Assert.Equal(originalCommit.Generation + 1, IndexRecovery.RecoverLatestCommit(path, cleanupOrphans: false)!.Generation);
+        Assert.NotNull(failed.StagingDirectory);
+        Assert.True(Directory.Exists(failed.StagingDirectory));
+        foreach (var (fileName, bytes) in originalSegmentFiles)
+        {
+            var filePath = Path.Combine(path, fileName);
+            Assert.True(File.Exists(filePath), $"The source file '{fileName}' was removed before migration recovery completed.");
+            Assert.Equal(bytes, File.ReadAllBytes(filePath));
+        }
+        AssertMigrationBlocksDefaultOpenButAllowsUnsafeInspection(path);
+
+        var recovered = IndexCodecMigrator.Migrate(
+            new MMapDirectory(path),
+            new IndexCodecMigrationOptions
+            {
+                DryRun = false,
+                ValidateBeforeMigration = false,
+                ValidateAfterMigration = false,
+            });
+
+        Assert.True(recovered.Succeeded);
+        Assert.Equal(IndexMigrationState.Published, IndexMigrationRecovery.GetState(path).State);
+        Assert.False(Directory.Exists(failed.StagingDirectory));
+        Assert.Equal(originalCommit.Generation + 1, IndexFileInspector.FindCommitFiles(path)[0].Generation);
+        AssertIndexReadable(path);
+    }
+
     [Fact(DisplayName = "Migrate: Throwing rewrite handler mid-sequence leaves the source intact and recoverable")]
     public void Migrate_RewriteHandlerThrows_PartialFailureLeavesSourceIntact()
     {
@@ -328,6 +499,23 @@ public sealed class IndexCodecMigratorResilienceTests : IClassFixture<TestDirect
         return path;
     }
 
+    private string CreateLegacyVersionIndex(string name, bool useCompoundFile)
+    {
+        var path = CreateCurrentVersionIndex(name);
+        DowngradeVersionByte(path, "*.fln", 0);
+
+        if (useCompoundFile)
+        {
+            var segmentPath = Directory.GetFiles(path, "*.seg").Single();
+            var segmentInfo = SegmentInfo.ReadFrom(segmentPath);
+            Assert.True(CompoundFileWriter.Pack(path, segmentInfo.SegmentId));
+            segmentInfo.IsCompoundFile = true;
+            segmentInfo.WriteTo(segmentPath);
+        }
+
+        return path;
+    }
+
     private string CreateIndexWithMultipleDocuments(string name)
     {
         var path = Path.Combine(_fixture.Path, name);
@@ -345,6 +533,36 @@ public sealed class IndexCodecMigratorResilienceTests : IClassFixture<TestDirect
 
         writer.Commit();
         return path;
+    }
+
+    private sealed class FailOnceAfterCommitRenameFileSystem(string indexDirectory, string commitFileName) : IPlatformFileSystem
+    {
+        private bool _failed;
+
+        public void SyncFile(string path)
+        {
+        }
+
+        public DirectorySyncResult SyncDirectory(string path)
+        {
+            if (!_failed &&
+                PathsEqual(path, indexDirectory) &&
+                File.Exists(Path.Combine(indexDirectory, commitFileName)))
+            {
+                _failed = true;
+                throw new IOException("injected post-rename directory sync failure");
+            }
+
+            return DirectorySyncResult.Succeeded;
+        }
+
+        public bool IsTransient(Exception exception) => false;
+
+        private static bool PathsEqual(string left, string right)
+            => string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
     }
 
     private static void DowngradeVersionByte(string indexPath, string pattern, byte version)
@@ -450,7 +668,7 @@ public sealed class IndexCodecMigratorResilienceTests : IClassFixture<TestDirect
 
     private static byte ReadVersionByte(string indexPath, string pattern)
     {
-        var path = Directory.GetFiles(indexPath, pattern).Single();
+        var path = GetLatestSegmentFile(indexPath, pattern);
         using (var input = new IndexInput(path))
         {
             if (input.Length >= sizeof(int) && unchecked((uint)input.ReadInt32()) == CodecFileWriter.Magic)
@@ -490,11 +708,54 @@ public sealed class IndexCodecMigratorResilienceTests : IClassFixture<TestDirect
         using var directory = new MMapDirectory(indexPath);
         var compatibility = IndexCompatibility.Check(directory);
         Assert.True(
-            compatibility.Status == IndexCompatibilityStatus.Compatible,
+            compatibility.CanRead && !compatibility.MustReject,
             $"Compatibility was {compatibility.Status}: {string.Join("; ", compatibility.Issues.Select(i => $"{i.Code}: {i.Message}"))}");
         using var searcher = new IndexSearcher(directory);
         var results = searcher.Search(new TermQuery("body", term), 10);
         Assert.True(results.TotalHits > 0);
+    }
+
+    private static string GetLatestSegmentFile(string indexPath, string pattern)
+    {
+        var commits = IndexFileInspector.FindCommitFiles(indexPath);
+        if (commits.Count == 0)
+            throw new InvalidDataException($"Index at '{indexPath}' has no commit file.");
+        var latestCommit = commits[0];
+        var commitCheck = new IndexCheckResult();
+        var commitData = IndexFileInspector.TryReadCommit(
+            latestCommit.FilePath,
+            latestCommit.Generation,
+            commitCheck)
+            ?? throw new InvalidDataException(
+                $"Latest commit '{latestCommit.FilePath}' could not be read: {string.Join("; ", commitCheck.Issues)}");
+        var segmentIds = commitData.Segments.ToHashSet(StringComparer.Ordinal);
+        var paths = Directory.GetFiles(indexPath, pattern)
+            .Where(path => SegmentFileSet.IsOwnedByAnySegment(Path.GetFileName(path)!, segmentIds));
+        return Assert.Single(paths);
+    }
+
+    private static void AssertMigrationBlocksDefaultOpenButAllowsUnsafeInspection(
+        string indexPath,
+        string term = "hello")
+    {
+        using (var strictDirectory = new MMapDirectory(indexPath))
+        {
+            var compatibility = IndexCompatibility.Check(strictDirectory);
+            Assert.Contains(compatibility.Issues, issue => issue.Code == IndexCheckIssueCodes.MigrationInProgress);
+            Assert.DoesNotContain(
+                compatibility.Issues,
+                issue => issue.Severity == IndexCheckSeverity.Error &&
+                         issue.Code != IndexCheckIssueCodes.MigrationInProgress);
+            var error = Assert.Throws<InvalidDataException>(() => new IndexSearcher(strictDirectory));
+            Assert.Contains("incomplete migration marker", error.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        using var unsafeDirectory = new MMapDirectory(indexPath);
+        using var searcher = new IndexSearcher(unsafeDirectory, new IndexSearcherConfig
+        {
+            CompatibilityMode = IndexOpenCompatibilityMode.UnsafeIgnoreCompatibility
+        });
+        Assert.True(searcher.Search(new TermQuery("body", term), 10).TotalHits > 0);
     }
 
     private static byte ReadSingleBodyByte(string path, CodecFileDescriptor descriptor)

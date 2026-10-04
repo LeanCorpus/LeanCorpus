@@ -684,9 +684,16 @@ internal struct SegmentReaderLease : IDisposable
 
     public void Dispose()
     {
-        _lease.Dispose();
-        _operationLease.Dispose();
-        _directoryLease.Dispose();
+        Exception? firstFailure = null;
+        try { _lease.Dispose(); }
+        catch (Exception exception) { firstFailure = exception; }
+        try { _operationLease.Dispose(); }
+        catch (Exception exception) { firstFailure ??= exception; }
+        try { _directoryLease.Dispose(); }
+        catch (Exception exception) { firstFailure ??= exception; }
+
+        if (firstFailure is not null)
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(firstFailure).Throw();
     }
 }
 

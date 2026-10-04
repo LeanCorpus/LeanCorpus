@@ -117,7 +117,12 @@ public static class IndexCodecMigrator
     {
         var actions = new List<IndexCodecMigrationAction>();
         AddActions(inventory.Segments.SelectMany(static segment => segment.Files), catalog, actions);
-        AddActions(inventory.OrphanFiles, catalog, actions);
+        var retainedSegmentIds = IndexRecovery.GetRetainedSegmentIds(inventory.DirectoryPath);
+        AddActions(
+            inventory.OrphanFiles.Where(file =>
+                !SegmentFileSet.IsOwnedByAnySegment(file.FileName, retainedSegmentIds)),
+            catalog,
+            actions);
 
         return new IndexCodecMigrationPlan
         {
@@ -171,7 +176,6 @@ public static class IndexCodecMigrator
     {
         usesStaging = true;
         var plan = PlanCore(directory, options);
-        TryRecoverInterruptedMigration(directory.DirectoryPath, plan);
 
         if (options.DryRun)
         {
@@ -182,6 +186,26 @@ public static class IndexCodecMigrator
                 SourceDirectory = directory.DirectoryPath,
                 StagingDirectory = options.StagingDirectory,
                 ExecutedActions = plan.Actions,
+                ValidationResult = null,
+                Issues = plan.Issues
+            };
+        }
+
+        var resumableStagingDirectory = TryRecoverInterruptedMigration(
+            directory.DirectoryPath,
+            plan,
+            options.Catalog,
+            out var recoveredPublication);
+
+        if (recoveredPublication)
+        {
+            return new IndexCodecMigrationResult
+            {
+                Succeeded = true,
+                DryRun = false,
+                SourceDirectory = directory.DirectoryPath,
+                StagingDirectory = options.StagingDirectory,
+                ExecutedActions = [],
                 ValidationResult = null,
                 Issues = plan.Issues
             };
@@ -281,7 +305,8 @@ public static class IndexCodecMigrator
             };
         }
 
-        var targetDirectory = ResolveStagingDirectory(sourceDirectory, options.StagingDirectory);
+        var targetDirectory = resumableStagingDirectory ??
+            ResolveStagingDirectory(sourceDirectory, options.StagingDirectory);
         var segmentIdMap = BuildSegmentIdMap(plan.Actions, sourceCommitGeneration);
         var now = DateTimeOffset.UtcNow;
         var marker = new IndexMigrationMarker
@@ -294,42 +319,51 @@ public static class IndexCodecMigrator
             UpdatedAtUtc = now,
             PlannedActions = plan.Actions
         };
+        var newCommitGeneration = sourceCommitGeneration + 1;
 
         var executed = new List<IndexCodecMigrationAction>();
         var currentState = marker.State;
         try
         {
             IndexMigrationRecovery.WriteMarker(sourceDirectory, marker, durable: true);
-            PrepareStagingDirectory(sourceDirectory, targetDirectory);
+            if (resumableStagingDirectory is null)
+                PrepareStagingDirectory(sourceDirectory, targetDirectory);
             IndexMigrationRecovery.WriteMarker(
                 sourceDirectory,
                 marker with { State = IndexMigrationState.InProgress, UpdatedAtUtc = DateTimeOffset.UtcNow },
                 durable: true);
             currentState = IndexMigrationState.InProgress;
 
-            CleanupTemporaryFiles(targetDirectory, options.Catalog);
-            MaterialiseCompoundMembers(targetDirectory, plan.Actions);
-
-            var rewrittenTargetPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var rewrittenCoordinatedFamilies = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var action in plan.Actions)
+            if (resumableStagingDirectory is null)
             {
-                ExecuteRewrite(
-                    targetDirectory,
-                    action,
-                    options.Catalog,
-                    rewrittenCoordinatedFamilies,
-                    segmentIdMap,
-                    rewrittenTargetPaths);
-                executed.Add(action);
+                CleanupTemporaryFiles(targetDirectory, options.Catalog);
+                MaterialiseCompoundMembers(targetDirectory, plan.Actions);
+
+                var rewrittenTargetPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var rewrittenCoordinatedFamilies = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var action in plan.Actions)
+                {
+                    ExecuteRewrite(
+                        targetDirectory,
+                        action,
+                        options.Catalog,
+                        rewrittenCoordinatedFamilies,
+                        segmentIdMap,
+                        rewrittenTargetPaths);
+                    executed.Add(action);
+                }
+
+                MigrateSegmentSidecars(targetDirectory, segmentIdMap, rewrittenTargetPaths, options.Catalog);
+                RepackMigratedCompoundSegments(targetDirectory, plan.Actions, segmentIdMap, options.Catalog);
+
+                WriteMigratedCommit(targetDirectory, plan, segmentIdMap, newCommitGeneration);
+                CopyMigratedStats(sourceDirectory, targetDirectory, sourceCommitGeneration, newCommitGeneration);
             }
-
-            MigrateSegmentSidecars(targetDirectory, segmentIdMap, rewrittenTargetPaths, options.Catalog);
-            RepackMigratedCompoundSegments(targetDirectory, plan.Actions, segmentIdMap, options.Catalog);
-
-            var newCommitGeneration = sourceCommitGeneration + 1;
-            WriteMigratedCommit(targetDirectory, plan, segmentIdMap, newCommitGeneration);
-            CopyMigratedStats(sourceDirectory, targetDirectory, sourceCommitGeneration, newCommitGeneration);
+            else
+            {
+                // Recovery verified this staged generation and every file it references.
+                executed.AddRange(plan.Actions);
+            }
 
             IndexCheckResult? validationResult = null;
             if (options.ValidateAfterMigration)
@@ -355,8 +389,7 @@ public static class IndexCodecMigrator
                 }
             }
 
-            PublishStagingFiles(sourceDirectory, targetDirectory);
-            DirectoryFsync.Sync(sourceDirectory, strict: false);
+            PublishStagingFiles(sourceDirectory, targetDirectory, newCommitGeneration);
 
             IndexMigrationRecovery.WriteMarker(
                 sourceDirectory,
@@ -365,12 +398,22 @@ public static class IndexCodecMigrator
             currentState = IndexMigrationState.Published;
 
             var resultIssues = new List<IndexCheckIssue>(plan.Issues);
-            CleanupMigratedSourceFiles(
-                sourceDirectory,
-                segmentIdMap,
-                sourceCommitGeneration,
-                resultIssues,
-                options.Catalog);
+            try
+            {
+                CleanupMigratedSourceFiles(sourceDirectory, options.Catalog);
+            }
+            catch (Exception ex) when (IsMigrationFailure(ex))
+            {
+                resultIssues.Add(new IndexCheckIssue
+                {
+                    Severity = IndexCheckSeverity.Warning,
+                    Code = IndexCheckIssueCodes.MigrationStagingCleanupFailed,
+                    Message = $"Migration was published, but post-publication cleanup could not be completed: {ex.Message}",
+                    IsRepairable = true,
+                    SuggestedActions = IndexRepairRecommendations.ForIssue(IndexCheckIssueCodes.MigrationStagingCleanupFailed)
+                });
+            }
+
             if (TryDeleteStagingDirectory(targetDirectory, out var cleanupIssue))
                 resultIssues.Add(cleanupIssue);
 
@@ -420,22 +463,57 @@ public static class IndexCodecMigrator
         }
     }
 
-    private static void TryRecoverInterruptedMigration(string sourceDirectory, IndexCodecMigrationPlan plan)
+    private static string? TryRecoverInterruptedMigration(
+        string sourceDirectory,
+        IndexCodecMigrationPlan plan,
+        CodecCatalog catalog,
+        out bool recoveredPublication)
     {
+        recoveredPublication = false;
         var marker = IndexMigrationRecovery.GetState(sourceDirectory);
-        if (marker.State is IndexMigrationState.None or IndexMigrationState.Published)
-            return;
+        if (marker.State is IndexMigrationState.None)
+            return null;
+
+        if (!PathsEqual(marker.SourceDirectory, sourceDirectory))
+        {
+            throw new InvalidDataException(
+                $"Migration recovery marker belongs to '{marker.SourceDirectory}', not '{sourceDirectory}'. Staging data has been preserved.");
+        }
 
         if (marker.SourceCommitGeneration is int sourceGen)
         {
-            var commits = IndexFileInspector.FindCommitFiles(sourceDirectory);
-            var maxGen = commits.Count > 0 ? commits[0].Generation : (int?)null;
-            if (maxGen > sourceGen)
+            var expectedGeneration = sourceGen + 1;
+            var published = IndexRecovery.RecoverLatestCommit(
+                sourceDirectory,
+                cleanupOrphans: false,
+                catalog);
+            if (published?.Generation == expectedGeneration)
             {
-                IndexMigrationRecovery.WriteMarker(
-                    sourceDirectory,
-                    marker with { State = IndexMigrationState.Published, UpdatedAtUtc = DateTimeOffset.UtcNow },
-                    durable: true);
+                var publishedCommitPath = Path.Combine(sourceDirectory, $"segments_{expectedGeneration}");
+                if (!string.IsNullOrWhiteSpace(marker.StagingDirectory) &&
+                    FileOpenRetry.DirectoryExists(marker.StagingDirectory) &&
+                    !PathsEqual(marker.StagingDirectory, sourceDirectory))
+                {
+                    var stagedCommitPath = Path.Combine(marker.StagingDirectory, $"segments_{expectedGeneration}");
+                    if (FileOpenRetry.FileExists(stagedCommitPath) &&
+                        !FilesEqual(publishedCommitPath, stagedCommitPath))
+                    {
+                        throw new InvalidDataException(
+                            $"Migration recovery found a valid generation {expectedGeneration} commit that differs from staged publication data. The previous commit and staging data have been preserved.");
+                    }
+                }
+
+                // The commit rename may have succeeded even when the directory
+                // barrier failed. Re-establish all referenced file and directory
+                // barriers, then validate before discarding the staged recovery copy.
+                CompletePublishedMigration(sourceDirectory, expectedGeneration, catalog);
+                if (marker.State is not IndexMigrationState.Published)
+                {
+                    IndexMigrationRecovery.WriteMarker(
+                        sourceDirectory,
+                        marker with { State = IndexMigrationState.Published, UpdatedAtUtc = DateTimeOffset.UtcNow },
+                        durable: true);
+                }
 
                 if (!string.IsNullOrWhiteSpace(marker.StagingDirectory) &&
                     FileOpenRetry.DirectoryExists(marker.StagingDirectory) &&
@@ -444,7 +522,30 @@ public static class IndexCodecMigrator
                     TryDeleteDirectory(marker.StagingDirectory);
                 }
 
-                return;
+                recoveredPublication = true;
+                return null;
+            }
+
+            if (plan.Inventory.CommitGeneration == sourceGen &&
+                PathsEqual(marker.SourceDirectory, sourceDirectory) &&
+                MigrationActionsMatch(marker.PlannedActions, plan.Actions) &&
+                !string.IsNullOrWhiteSpace(marker.StagingDirectory) &&
+                FileOpenRetry.DirectoryExists(marker.StagingDirectory) &&
+                !PathsEqual(marker.StagingDirectory, sourceDirectory) &&
+                IsReusableStagingDirectory(
+                    sourceDirectory,
+                    marker.StagingDirectory,
+                    sourceGen,
+                    catalog))
+            {
+                return marker.StagingDirectory;
+            }
+
+            var intendedCommitPath = Path.Combine(sourceDirectory, $"segments_{expectedGeneration}");
+            if (FileOpenRetry.FileExists(intendedCommitPath) || FileOpenRetry.DirectoryExists(intendedCommitPath))
+            {
+                throw new InvalidDataException(
+                    $"Migration cannot resume because '{intendedCommitPath}' exists but is not the validated published migration commit. The previous commit and staging data have been preserved.");
             }
         }
 
@@ -456,6 +557,127 @@ public static class IndexCodecMigrator
         }
 
         IndexMigrationRecovery.Abandon(sourceDirectory);
+        return null;
+    }
+
+    private static void CompletePublishedMigration(
+        string sourceDirectory,
+        int generation,
+        CodecCatalog catalog)
+    {
+        var recovery = IndexRecovery.RecoverLatestCommit(
+            sourceDirectory,
+            cleanupOrphans: false,
+            catalog);
+        if (recovery?.Generation != generation)
+        {
+            throw new InvalidDataException(
+                $"Migration commit generation {generation} is not the latest valid commit in '{sourceDirectory}'. Staging data has been preserved.");
+        }
+
+        var segmentIds = new HashSet<string>(recovery.SegmentIds, StringComparer.Ordinal);
+        foreach (var file in FileOpenRetry.EnumerateFiles(sourceDirectory, "*"))
+        {
+            var fileName = Path.GetFileName(file);
+            if (SegmentFileSet.IsOwnedByAnySegment(fileName, segmentIds) &&
+                !SegmentFileSet.IsTemporaryFileName(fileName, catalog))
+            {
+                DirectoryFsync.SyncFile(file, strict: true);
+            }
+        }
+
+        var statsPath = Path.Combine(sourceDirectory, $"stats_{generation}.json");
+        if (FileOpenRetry.FileExists(statsPath))
+            DirectoryFsync.SyncFile(statsPath, strict: true);
+
+        var commitPath = Path.Combine(sourceDirectory, $"segments_{generation}");
+        DirectoryFsync.SyncFile(commitPath, strict: true);
+        DirectoryFsync.Sync(sourceDirectory, strict: true);
+        DirtyFileTracker.Forget(commitPath);
+        DirtyFileTracker.MarkDurableGeneration(sourceDirectory, generation);
+
+        using var directory = new MMapDirectory(sourceDirectory);
+        var validation = IndexValidator.Check(
+            directory,
+            new IndexCheckOptions { Deep = true, Catalog = catalog });
+        if (validation.DetailedIssues.Any(static issue =>
+                issue.Severity == IndexCheckSeverity.Error &&
+                issue.Code != IndexCheckIssueCodes.MigrationInProgress))
+        {
+            throw new InvalidDataException(
+                $"Published migration commit generation {generation} failed deep validation. Staging data has been preserved.");
+        }
+    }
+
+    private static bool IsReusableStagingDirectory(
+        string sourceDirectory,
+        string stagingDirectory,
+        int sourceCommitGeneration,
+        CodecCatalog catalog)
+    {
+        try
+        {
+            var sourceCommitPath = Path.Combine(sourceDirectory, $"segments_{sourceCommitGeneration}");
+            var stagedSourceCommitPath = Path.Combine(stagingDirectory, $"segments_{sourceCommitGeneration}");
+            if (!FileOpenRetry.FileExists(sourceCommitPath) ||
+                !FileOpenRetry.FileExists(stagedSourceCommitPath) ||
+                !FilesEqual(sourceCommitPath, stagedSourceCommitPath))
+            {
+                return false;
+            }
+
+            var recovery = IndexRecovery.RecoverLatestCommit(
+                stagingDirectory,
+                cleanupOrphans: false,
+                catalog);
+            if (recovery?.Generation != sourceCommitGeneration + 1)
+                return false;
+
+            using var directory = new MMapDirectory(stagingDirectory);
+            var validation = IndexValidator.Check(
+                directory,
+                new IndexCheckOptions { Deep = true, Catalog = catalog });
+            return !HasErrors(validation);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or System.Text.Json.JsonException or FileNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static bool MigrationActionsMatch(
+        IReadOnlyList<IndexCodecMigrationAction> previous,
+        IReadOnlyList<IndexCodecMigrationAction> current)
+    {
+        if (previous.Count != current.Count)
+            return false;
+
+        var pathComparer = OperatingSystem.IsWindows()
+            ? StringComparer.OrdinalIgnoreCase
+            : StringComparer.Ordinal;
+        for (var i = 0; i < previous.Count; i++)
+        {
+            var left = previous[i];
+            var right = current[i];
+            if (left.Kind != right.Kind ||
+                !pathComparer.Equals(left.SourcePath, right.SourcePath) ||
+                !pathComparer.Equals(left.TargetPath, right.TargetPath) ||
+                !left.SourcePaths.SequenceEqual(right.SourcePaths, pathComparer) ||
+                !string.Equals(left.SegmentId, right.SegmentId, StringComparison.Ordinal) ||
+                !string.Equals(left.FileName, right.FileName, StringComparison.Ordinal) ||
+                !string.Equals(left.FormatId, right.FormatId, StringComparison.Ordinal) ||
+                !string.Equals(left.FamilyId, right.FamilyId, StringComparison.Ordinal) ||
+                !string.Equals(left.CompoundFileName, right.CompoundFileName, StringComparison.Ordinal) ||
+                left.FromVersion != right.FromVersion ||
+                left.ToVersion != right.ToVersion ||
+                left.CanExecute != right.CanExecute ||
+                !string.Equals(left.ReasonCannotExecute, right.ReasonCannotExecute, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static bool TryDeleteStagingDirectory(string stagingDirectory, out IndexCheckIssue issue)
@@ -744,10 +966,15 @@ public static class IndexCodecMigrator
         });
     }
 
-    private static void PublishStagingFiles(string sourceDirectory, string stagingDirectory)
+    private static void PublishStagingFiles(
+        string sourceDirectory,
+        string stagingDirectory,
+        int newCommitGeneration)
     {
-        // Collect staging file names, excluding the recovery marker.
-        var stagingFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Publish data files and sidecars first. The new commit is the only
+        // visibility boundary, so it must be durably renamed after every file it
+        // references. Source files absent from staging remain intact until then.
+        var stagingFiles = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in FileOpenRetry.EnumerateFiles(stagingDirectory, "*"))
         {
             var name = Path.GetFileName(file);
@@ -756,50 +983,106 @@ public static class IndexCodecMigrator
             stagingFiles.Add(name);
         }
 
-        // Delete source files absent from staging (preserve write.lock and marker).
-        foreach (var file in FileOpenRetry.EnumerateFiles(sourceDirectory, "*"))
-        {
-            var name = Path.GetFileName(file);
-            if (string.Equals(name, "write.lock", StringComparison.Ordinal) ||
-                string.Equals(name, IndexMigrationRecovery.MarkerFileName, StringComparison.Ordinal))
-                continue;
-            if (!stagingFiles.Contains(name))
-                TryDeleteFile(file);
-        }
+        var newCommitName = $"segments_{newCommitGeneration}";
+        if (!stagingFiles.Contains(newCommitName))
+            throw new InvalidDataException($"Staging directory '{stagingDirectory}' has no migrated commit '{newCommitName}'.");
 
-        // Copy all staging files to source, overwriting when content differs.
         foreach (var name in stagingFiles)
         {
-            PublishFileAtomically(Path.Combine(stagingDirectory, name), Path.Combine(sourceDirectory, name));
+            if (string.Equals(name, newCommitName, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            PublishFileAtomically(
+                Path.Combine(stagingDirectory, name),
+                Path.Combine(sourceDirectory, name),
+                syncDirectory: false);
         }
+
+        DirectoryFsync.Sync(sourceDirectory, strict: true);
+
+        PublishFileAtomically(
+            Path.Combine(stagingDirectory, newCommitName),
+            Path.Combine(sourceDirectory, newCommitName),
+            syncDirectory: true);
     }
 
-    private static void PublishFileAtomically(string sourcePath, string targetPath)
+    private static void PublishFileAtomically(string sourcePath, string targetPath, bool syncDirectory)
     {
-        IndexAtomicFileWriter.Write(targetPath, durable: true, stream =>
+        if (FileOpenRetry.FileExists(targetPath))
+        {
+            if (!FilesEqual(sourcePath, targetPath))
+            {
+                throw new IOException(
+                    $"Migration cannot replace existing immutable file '{targetPath}' with different staged bytes.");
+            }
+
+            DirectoryFsync.SyncFile(targetPath, strict: true);
+            if (syncDirectory)
+                DirectoryFsync.Sync(Path.GetDirectoryName(targetPath) ?? string.Empty, strict: true);
+
+            return;
+        }
+
+        if (FileOpenRetry.DirectoryExists(targetPath))
+            throw new IOException($"Migration cannot publish file '{targetPath}' because a directory already exists at that path.");
+
+        IndexAtomicFileWriter.Write(targetPath, durable: true, syncDirectory: syncDirectory, write: stream =>
         {
             using var source = FileOpenRetry.OpenReadDelete(sourcePath);
             source.CopyTo(stream);
         });
     }
 
-    private static void CleanupMigratedSourceFiles(
-        string sourceDirectory,
-        IReadOnlyDictionary<string, string> segmentIdMap,
-        int oldGeneration,
-        List<IndexCheckIssue> issues,
-        CodecCatalog catalog)
+    private static bool FilesEqual(string firstPath, string secondPath)
     {
-        foreach (var oldSegmentId in segmentIdMap.Keys)
-        {
-            foreach (var file in FindSegmentFiles(sourceDirectory, oldSegmentId, catalog))
-            {
-                TryDeleteFile(file);
-            }
-        }
+        using var first = FileOpenRetry.OpenReadDelete(firstPath);
+        using var second = FileOpenRetry.OpenReadDelete(secondPath);
+        if (first.Length != second.Length)
+            return false;
 
-        TryDeleteFile(Path.Combine(sourceDirectory, $"segments_{oldGeneration}"));
-        TryDeleteFile(Path.Combine(sourceDirectory, $"stats_{oldGeneration}.json"));
+        Span<byte> firstBuffer = stackalloc byte[16 * 1024];
+        Span<byte> secondBuffer = stackalloc byte[16 * 1024];
+        while (true)
+        {
+            var firstRead = ReadChunk(first, firstBuffer);
+            var secondRead = ReadChunk(second, secondBuffer);
+            if (firstRead != secondRead)
+                return false;
+            if (firstRead == 0)
+                return true;
+            if (!firstBuffer[..firstRead].SequenceEqual(secondBuffer[..secondRead]))
+                return false;
+        }
+    }
+
+    private static int ReadChunk(Stream stream, Span<byte> buffer)
+    {
+        var total = 0;
+        while (total < buffer.Length)
+        {
+            var read = stream.Read(buffer[total..]);
+            if (read == 0)
+                break;
+            total += read;
+        }
+        return total;
+    }
+
+    private static void CleanupMigratedSourceFiles(string sourceDirectory, CodecCatalog catalog)
+    {
+        // Recovery owns orphan cleanup and routes deletion through MMapDirectory,
+        // which honours active file leases and retains files referenced by any
+        // retained commit. Migration has no authority to prune older commits.
+        _ = IndexRecovery.RecoverLatestCommit(sourceDirectory, cleanupOrphans: true, catalog)
+            ?? throw new InvalidDataException($"Published migration at '{sourceDirectory}' has no readable commit.");
+
+        using var directory = new MMapDirectory(sourceDirectory);
+        foreach (var filePath in FileOpenRetry.EnumerateFiles(sourceDirectory, "*"))
+        {
+            var fileName = Path.GetFileName(filePath);
+            if (SegmentFileSet.IsTemporaryFileName(fileName, catalog))
+                directory.DeleteFile(fileName);
+        }
     }
 
     private static void ExecuteRewrite(

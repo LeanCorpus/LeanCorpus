@@ -187,6 +187,103 @@ public sealed class BoundedLruCacheTests
     }
 
     [Fact]
+    public void Acquire_ResourceUsageFailure_DisposesCreatedValueAndPreservesAccountingFailure()
+    {
+        var accountingFailure = new InvalidOperationException("resource accounting failed");
+        var cleanupFailures = new List<AggregateException>();
+        using var cache = new BoundedLruCache<string, TestState>(
+            1,
+            StringComparer.Ordinal,
+            cleanupFailures.Add,
+            resourceUsageSelector: _ => throw accountingFailure);
+        var state = new TestState(throwOnDispose: true, name: "value disposal failed");
+
+        Exception? failure = Record.Exception(() => cache.Acquire("state", () => state));
+
+        Assert.Same(accountingFailure, failure);
+        Assert.Equal(0, cache.Count);
+        Assert.Equal(1, state.DisposeCount);
+        Assert.Collection(Assert.Single(cleanupFailures).InnerExceptions,
+            exception => Assert.Equal("value disposal failed", exception.Message));
+    }
+
+    [Fact]
+    public void Acquire_ResourceUsageFailure_RetiresUntilOtherLeaseIsReleased()
+    {
+        var accountingFailure = new InvalidOperationException("resource accounting failed");
+        int accountingCalls = 0;
+        using var cache = new BoundedLruCache<string, TestState>(
+            1,
+            StringComparer.Ordinal,
+            resourceUsageSelector: _ =>
+            {
+                if (Interlocked.Increment(ref accountingCalls) == 1)
+                    return default;
+                throw accountingFailure;
+            });
+        var state = new TestState();
+
+        var activeLease = cache.Acquire("state", () => state);
+        Exception? failure = Record.Exception(() => cache.Acquire(
+            "state", static () => throw new InvalidOperationException("unexpected second load")));
+
+        Assert.Same(accountingFailure, failure);
+        Assert.Equal(0, cache.Count);
+        Assert.Equal(0, state.DisposeCount);
+
+        activeLease.Dispose();
+
+        Assert.Equal(1, state.DisposeCount);
+    }
+
+    [Fact]
+    public void Acquire_ResourceUsageAndCleanupReporterFailures_PreserveAccountingFailure()
+    {
+        var accountingFailure = new InvalidOperationException("resource accounting failed");
+        using var cache = new BoundedLruCache<string, TestState>(
+            1,
+            StringComparer.Ordinal,
+            cleanupFailureReporter: _ => throw new InvalidOperationException("reporter failed"),
+            resourceUsageSelector: _ => throw accountingFailure);
+        var state = new TestState(throwOnDispose: true, name: "value disposal failed");
+
+        Exception? failure = Record.Exception(() => cache.Acquire("state", () => state));
+
+        Assert.Same(accountingFailure, failure);
+        Assert.Equal(1, state.DisposeCount);
+    }
+
+    [Fact]
+    public void LeaseRelease_ResourceUsageFailureReleasesAndDisposesValueOnce()
+    {
+        var accountingFailure = new InvalidOperationException("resource accounting failed");
+        var cleanupFailures = new List<AggregateException>();
+        int accountingCalls = 0;
+        using var cache = new BoundedLruCache<string, TestState>(
+            1,
+            StringComparer.Ordinal,
+            cleanupFailures.Add,
+            resourceUsageSelector: _ =>
+            {
+                if (Interlocked.Increment(ref accountingCalls) == 1)
+                    return default;
+                throw accountingFailure;
+            });
+        var state = new TestState(throwOnDispose: true, name: "value disposal failed");
+        var lease = cache.Acquire("state", () => state);
+        var leaseCopy = lease;
+
+        Exception? failure = Record.Exception(lease.Dispose);
+        leaseCopy.Dispose();
+
+        Assert.Same(accountingFailure, failure);
+        Assert.Equal(0, cache.Count);
+        Assert.Equal(1, state.DisposeCount);
+        Assert.Collection(Assert.Single(cleanupFailures).InnerExceptions,
+            exception => Assert.Equal("value disposal failed", exception.Message));
+    }
+
+    [Fact]
     public void Dispose_AttemptsEveryValueAndAggregatesFailures()
     {
         using var cache = new BoundedLruCache<string, TestState>(3, StringComparer.Ordinal);
@@ -233,10 +330,12 @@ public sealed class BoundedLruCacheTests
         }
 
         internal bool Disposed { get; private set; }
+        internal int DisposeCount { get; private set; }
         internal long RetainedBytes { get; set; }
 
         public void Dispose()
         {
+            DisposeCount++;
             Disposed = true;
             if (_throwOnDispose)
                 throw new InvalidOperationException(_name);

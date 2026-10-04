@@ -21,7 +21,7 @@ public sealed class IndexSort : IEquatable<IndexSort>
     /// <summary>
     /// Initialises a new <see cref="IndexSort"/> with the specified sort fields.
     /// </summary>
-    /// <param name="fields">One or more sort fields that define the document ordering. Score and point-distance sort types are not allowed.</param>
+    /// <param name="fields">One or more sort fields that define the document ordering. Score, DocId, and point-distance sort types are not allowed.</param>
     /// <exception cref="ArgumentException">Thrown if fields are missing, unsupported, or cannot be represented by the persisted sort format.</exception>
     public IndexSort(params SortField[] fields)
     {
@@ -32,8 +32,8 @@ public sealed class IndexSort : IEquatable<IndexSort>
         {
             if (f is null)
                 throw new ArgumentException("Index sort fields cannot contain null entries.", nameof(fields));
-            if (f.Type is SortFieldType.Score or SortFieldType.GeoDistance or SortFieldType.XYDistance)
-                throw new ArgumentException("Index sort cannot use score or point-distance sort types.", nameof(fields));
+            if (f.Type is SortFieldType.Score or SortFieldType.DocId or SortFieldType.GeoDistance or SortFieldType.XYDistance)
+                throw new ArgumentException("Index sort cannot use score, DocId, or point-distance sort types.", nameof(fields));
         }
         Fields = fields.ToArray();
         var serialised = new List<string>(fields.Length);

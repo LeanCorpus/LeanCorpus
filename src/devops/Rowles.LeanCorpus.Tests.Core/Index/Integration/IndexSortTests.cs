@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Rowles.LeanCorpus.Document;
 using Rowles.LeanCorpus.Document.Fields;
 using Rowles.LeanCorpus.Index.Indexer;
@@ -219,6 +221,45 @@ public sealed class IndexSortTests : IClassFixture<TestDirectoryFixture>
         Assert.Equal([1.0, 2.0, 100.0], GetStoredDoubles(searcher, results, "price"));
     }
 
+    [Fact(DisplayName = "Index Sort: Legacy Descending DocId Metadata Does Not Enable Early Termination")]
+    public void IndexSort_LegacyDescendingDocIdMetadataDoesNotEnableEarlyTermination()
+    {
+        var dir = Path.Combine(_path, nameof(IndexSort_LegacyDescendingDocIdMetadataDoesNotEnableEarlyTermination));
+        Directory.CreateDirectory(dir);
+        var mmap = new MMapDirectory(dir);
+
+        using (var writer = new IndexWriter(mmap, new IndexWriterConfig
+        {
+            MaxBufferedDocs = 100,
+            MergeThreshold = 100,
+        }))
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                var document = new LeanDocument();
+                document.Add(new TextField("title", "item"));
+                document.Add(new StoredField("id", $"doc-{i}"));
+                writer.AddDocument(document);
+            }
+            writer.Commit();
+        }
+
+        string[] segmentPaths = Directory.GetFiles(dir, "seg_*.seg");
+        Assert.Single(segmentPaths);
+        foreach (string segmentPath in segmentPaths)
+            SetLegacySortMetadata(segmentPath, "DocId::True");
+
+        using var searcher = new IndexSearcher(mmap);
+        var results = searcher.Search(
+            new TermQuery("title", "item"),
+            1,
+            new SortField(SortFieldType.DocId, string.Empty, descending: true));
+
+        Assert.False(results.IsPartial);
+        Assert.Equal(6, results.TotalHits);
+        Assert.Equal("doc-5", searcher.GetStoredFields(results.ScoreDocs[0].DocId)["id"][0]);
+    }
+
     /// <summary>
     /// Verifies the Int64 index sort is physically applied before early termination.
     /// </summary>
@@ -364,6 +405,15 @@ public sealed class IndexSortTests : IClassFixture<TestDirectoryFixture>
         Assert.Throws<ArgumentException>(() => new IndexSort(SortField.Score));
     }
 
+    [Fact(DisplayName = "Index Sort: Constructor Rejects DocId Sorts")]
+    public void IndexSort_Constructor_RejectsDocIdSorts()
+    {
+        Assert.Throws<ArgumentException>(() => new IndexSort(
+            new SortField(SortFieldType.DocId, string.Empty)));
+        Assert.Throws<ArgumentException>(() => new IndexSort(
+            new SortField(SortFieldType.DocId, string.Empty, descending: true)));
+    }
+
     /// <summary>
     /// Verifies the Index Sort: Constructor Rejects Empty scenario.
     /// </summary>
@@ -395,6 +445,14 @@ public sealed class IndexSortTests : IClassFixture<TestDirectoryFixture>
                 values.Add(vals[0]);
         }
         return values;
+    }
+
+    private static void SetLegacySortMetadata(string segmentPath, string serialisedSortField)
+    {
+        var metadata = JsonNode.Parse(File.ReadAllText(segmentPath))?.AsObject()
+            ?? throw new InvalidDataException($"Could not read segment metadata from '{segmentPath}'.");
+        metadata["IndexSortFields"] = JsonSerializer.SerializeToNode(new[] { serialisedSortField });
+        File.WriteAllText(segmentPath, metadata.ToJsonString());
     }
 
     private static void AddDocWithPrice(IndexWriter writer, string title, double price)

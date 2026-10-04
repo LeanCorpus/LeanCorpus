@@ -72,6 +72,15 @@
 
 ### Fixed
 
+- Keep prepared collection statistics isolated under their pending commit generation and reserve segment IDs above occupied files even when orphan cleanup is deferred.
+- Reject snapshot backups and manifests whose NRT descriptors differ from their selected published commit, preserving NRT search and older committed backups.
+- Reconcile vector imports with target admission dimensions before flushing and register imported dimensions only after successful publication.
+- Preserve missing versus empty string DocValues during sorted merges, reject new DocId index sorts, and ignore unsafe legacy DocId metadata for early termination.
+
+
+- Preserve committed index files when codec migration publication fails, publish migrated commits after durable data files, and resume validated staging safely.
+- Retire reader-cache entries safely when resource accounting fails, defer disposal until active leases end, and release all reader leases before reporting cleanup errors.
+- Bound quoted and unquoted query analysis before copying emitted token text, with shared token and character budgets and preserved graph semantics.
 - Use one bulk `AddDocuments` call for verified append-only writes to non-empty Server Core indexes, avoiding per-document segment creation.
 - Batch Server Core replacements by applying ID deletions once before ordered additions, and preserve pinned snapshots with deletion-generation statistics sidecars.
 - Avoid serialising first-time vector reader and HNSW graph loading across independent vector fields.

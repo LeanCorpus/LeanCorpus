@@ -62,9 +62,11 @@ before files are copied.
 
 ## Backup a live writer
 
-Create a snapshot so merges and deletion policy cannot remove files while they are copied:
+Commit the changes to back up, then create a snapshot so merges and deletion policy
+cannot remove its files while they are copied:
 
 ```csharp
+writer.Commit();
 var snapshot = writer.CreateSnapshot();
 try
 {
@@ -77,6 +79,12 @@ finally
     writer.ReleaseSnapshot(snapshot);
 }
 ```
+
+Snapshots retain near-real-time search visibility and do not implicitly commit.
+`BackupSnapshot` and `CreateBackupManifest` reject a snapshot whose segment or
+deletion state differs from its selected durable commit, including a snapshot
+created before the first commit. If writes race the commit and snapshot capture,
+commit again and capture a new snapshot before retrying the backup.
 
 Keep the snapshot only for the copy window. A long-lived snapshot pins old segment files and can increase disk use.
 
