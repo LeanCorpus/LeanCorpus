@@ -124,11 +124,24 @@ function New-TestReportDocument {
             outcomeCounts = $Summary.OutcomeCounts
         }
         telemetry = [ordered]@{
-            tests = [int]$Summary.TelemetrySummary.tests
-            activities = [int]$Summary.TelemetrySummary.activities
-            metrics = [int]$Summary.TelemetrySummary.metrics
-            swallowedExceptions = [int]$Summary.TelemetrySummary.swallowedExceptions
-            orphanedActivities = [int]$Summary.TelemetrySummary.orphanedActivities
+            executions = [int]$Summary.TelemetrySummary.executions
+            testsStarted = [long]$Summary.TelemetrySummary.testsStarted
+            testsFinished = [long]$Summary.TelemetrySummary.testsFinished
+            testsPassed = [long]$Summary.TelemetrySummary.testsPassed
+            testsFailed = [long]$Summary.TelemetrySummary.testsFailed
+            testsSkipped = [long]$Summary.TelemetrySummary.testsSkipped
+            retainedTestSummaries = [long]$Summary.TelemetrySummary.retainedTestSummaries
+            activities = [long]$Summary.TelemetrySummary.activities
+            metrics = [long]$Summary.TelemetrySummary.metrics
+            swallowedExceptions = [long]$Summary.TelemetrySummary.swallowedExceptions
+            orphanedActivities = [long]$Summary.TelemetrySummary.orphanedActivities
+            telemetryErrors = [long]$Summary.TelemetrySummary.telemetryErrors
+            truncated = [bool]$Summary.TelemetrySummary.truncated
+            streams = @($Summary.TelemetrySummary.streams)
+            retainedTestSummaryPaths = @($Summary.TelemetrySummary.retainedTestSummaryPaths | ForEach-Object {
+                Get-TestArtifactRelativePath -Context $Context -Path $_
+            })
+            retainedTests = @($Summary.TelemetrySummary.retainedTests)
             summaryPaths = @($Summary.TelemetrySummary.summaryPaths | ForEach-Object {
                 Get-TestArtifactRelativePath -Context $Context -Path $_
             })
@@ -253,15 +266,6 @@ function New-TestMarkdownReport {
     }
     [void]$builder.AppendLine()
 
-    [void]$builder.AppendLine('## Telemetry')
-    [void]$builder.AppendLine()
-    [void]$builder.AppendLine("- Test summaries: $($Summary.TelemetrySummary.tests)")
-    [void]$builder.AppendLine("- Activities: $($Summary.TelemetrySummary.activities)")
-    [void]$builder.AppendLine("- Measurements: $($Summary.TelemetrySummary.metrics)")
-    [void]$builder.AppendLine("- Swallowed exceptions: $($Summary.TelemetrySummary.swallowedExceptions)")
-    [void]$builder.AppendLine("- Orphaned activity observations: $($Summary.TelemetrySummary.orphanedActivities)")
-    [void]$builder.AppendLine()
-
     foreach ($section in @(
         @{ Title = 'Intermittent failures'; Items = @($Summary.IntermittentFailures); Property = 'Classification' },
         @{ Title = 'Always-failing tests'; Items = @($Summary.AlwaysFailingTests); Property = 'Classification' },
@@ -303,6 +307,22 @@ function New-TestMarkdownReport {
         }
         [void]$builder.AppendLine()
     }
+
+    [void]$builder.AppendLine('## Telemetry summary')
+    [void]$builder.AppendLine()
+    $telemetry = $Summary.TelemetrySummary
+    [void]$builder.AppendLine("- Executions: $($telemetry.executions); tests: $($telemetry.testsFinished) finished of $($telemetry.testsStarted) started ($($telemetry.testsPassed) passed, $($telemetry.testsFailed) failed, $($telemetry.testsSkipped) skipped).")
+    [void]$builder.AppendLine("- Activities: $($telemetry.activities); metrics: $($telemetry.metrics); swallowed exceptions: $($telemetry.swallowedExceptions); orphaned activities: $($telemetry.orphanedActivities); telemetry errors: $($telemetry.telemetryErrors).")
+    [void]$builder.AppendLine("- Retained test summaries: $($telemetry.retainedTestSummaries).")
+    if ($telemetry.truncated) {
+        [void]$builder.AppendLine('- **TRUNCATED:** one or more telemetry streams reached their byte limit; see stream counters in `report.json`.')
+    } else {
+        [void]$builder.AppendLine('- Telemetry streams were not truncated.')
+    }
+    foreach ($retained in @($telemetry.retainedTests)) {
+        [void]$builder.AppendLine('- Retained: `' + (ConvertTo-MarkdownCell $retained.testName) + '` (' + (ConvertTo-MarkdownCell $retained.result) + ').')
+    }
+    [void]$builder.AppendLine()
 
     [void]$builder.AppendLine('## Diagnostics and artefacts')
     [void]$builder.AppendLine()

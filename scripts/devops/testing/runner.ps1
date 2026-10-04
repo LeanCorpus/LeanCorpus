@@ -90,7 +90,7 @@ function Invoke-TestPipeline {
         Write-Host "  Framework:     $($Options.RequestedFramework)"
     }
     if ($Options.Flaky) {
-        Write-Host '  Mode:          flaky diagnostics preset'
+        Write-Host '  Mode:          flaky repetition preset'
     }
     if ($Options.Ci) {
         Write-Host '  Mode:          CI prepared-output execution'

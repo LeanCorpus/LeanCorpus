@@ -56,34 +56,45 @@ or Native AOT process:
 ./devops test core --count 30 --fail-fast
 ```
 
-Repeated, flaky, diagnostic and CI runs write one run directory under
-`artifacts/test/runs/<run-id>/`. It contains the selected targets, environment,
-stdout and stderr, MTP TRX and CTRF files where supported, checkpoint state and
-the `report.md`, `report.json` and `timings.csv` reports. Diagnostic runs also
-stream per-test activities and metrics, plus execution-scoped runtime data. A failed test does not
-stop later repetitions unless `--fail-fast` is selected. `--flaky` is a preset
-for 30 repetitions unless `--count` supplies another value.
+Repeated, diagnostic and CI runs write one run directory under
+`artifacts/test/runs/<run-id>/`. It contains selected targets, environment,
+stdout and stderr, canonical MTP TRX results, checkpoint state and the
+`report.md`, `report.json` and `timings.csv` reports. CI and flaky runs use
+summary telemetry: one execution summary plus `tests.ndjson` entries only for
+failed or anomalous tests. Clean passing tests have no telemetry attachment.
+`--flaky` repeats 30 times by default, selects the stress parallel profile unless
+`--profile` overrides it, and keeps summary evidence.
+
+Only `--diagnostics` enables full managed telemetry and MTP diagnostic logging.
+It writes shared activity, metric, runtime and test streams with a combined
+128 MiB raw-stream limit per target execution. Each stream records written and
+dropped records, bytes and truncation status; hitting a limit does not fail the
+tests. `--diagnostics` also wins over `--ci` and `--flaky` for telemetry mode.
+A failed test does not stop later repetitions unless `--fail-fast` is selected.
 
 ## Use the GitHub stress workflow
 
-Open **Actions > Test Stress & Diagnostics > Run workflow** for deliberate
-repetition and investigation runs. Linux and Windows can be selected
-independently. `count` controls how many fresh test processes are run, while
-`CHAOS_ITERATIONS` controls the property or chaos cases inside each process.
+Open **Actions > Test Stress > Run workflow** for deliberate repeated runs.
+It always uses the stress parallel profile and summary telemetry. Open
+**Actions > Test Diagnostics > Run workflow** when full managed telemetry and
+MTP logs are needed. Linux and Windows can be selected independently in both
+workflows. `count` controls how many fresh test processes are run, while
+`CHAOS_ITERATIONS` controls property or chaos cases inside each process.
 
 Useful configurations include:
 
 ```text
-Quick repeat:                  count=5, chaos_iterations=25
-Flaky hunt:                    count=30, chaos_iterations=25, flaky=true
+Quick stress:                  count=5, chaos_iterations=25
+Repeated flaky hunt:           count=30, chaos_iterations=25
 Chaos stress:                  count=5, chaos_iterations=1000
-Windows Store investigation:  windows=true, linux=false, suite=core, area=Store
+Windows Store diagnostics:    windows=true, linux=false, suite=core, area=Store
 ```
 
-The workflow accepts suite, framework, area, category and filter inputs, plus
-optional diagnostics, fail-fast, hang-timeout and outer process-timeout
-settings. Download the `test-stress-linux` or `test-stress-windows` artefact;
-the run reports are under `artifacts/test/runs`.
+Both workflows accept suite, framework, area, category, filter, fail-fast,
+hang-timeout and outer process-timeout inputs. Download `test-stress-linux` or
+`test-stress-windows` for stress runs, or `test-diagnostics-linux` and
+`test-diagnostics-windows` for full telemetry. Reports are under
+`artifacts/test/runs`.
 
 For CI jobs whose managed output has already been built, use `--ci`. It skips
 managed restore and build, but still publishes Native AOT targets when they
@@ -95,8 +106,8 @@ are selected:
 
 ## Standalone diagnostics
 
-The test runner uses MTP's diagnostic extensions for its own process. For an
-explicitly selected .NET process, use the standard diagnostic tools:
+Use `--diagnostics` to enable MTP diagnostic logging for a test process. For
+an explicitly selected .NET process, use the standard diagnostic tools:
 
 ```bash
 ./devops diagnostics ps

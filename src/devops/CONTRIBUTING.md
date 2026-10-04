@@ -194,10 +194,15 @@ finalisation path so a failed target still leaves usable evidence.
 
 Use `-Profile unit` for test-case parallelisation, `-Profile integration` for
 the collection-parallel default, and `-Profile stress` only for deliberate
-contention. `-Diagnostics` and `-Flaky` stream LeanCorpus activities, meters and
-execution-scoped runtime evidence. Explicit tests remain excluded unless
-`-Explicit` or `-ExplicitOnly` is selected. Do not add retries to core,
-filesystem, concurrency, codec or indexing tests.
+contention. `-CI` and `-Flaky` select summary telemetry. `-Flaky` defaults to 30
+repetitions and the stress profile, unless the caller supplies a profile. Only
+`-Diagnostics` enables full managed telemetry and MTP diagnostic logging; it
+wins over CI and flaky mode for telemetry selection. Full activity, metric,
+runtime and test streams share a 128 MiB cap per target execution, and reports
+show record drops and truncation. Individual test summaries are retained and
+attached only for failures or telemetry anomalies. Explicit tests remain
+excluded unless `-Explicit` or `-ExplicitOnly` is selected. Do not add retries
+to core, filesystem, concurrency, codec or indexing tests.
 
 Useful local checks include:
 
@@ -212,12 +217,13 @@ Use `--diagnostics` for MTP diagnostic logs and the standalone
 `devops diagnostics` commands for an explicitly selected process. Do not add
 a full trace or memory dump to every repeated test iteration.
 
-The manual GitHub Actions workflow **Test Stress & Diagnostics** is the shared
-web entry point for repeated and platform-specific investigations. Keep it as
-a thin argument builder over `./devops.ps1 test`; add suite resolution,
+The manual GitHub Actions workflows **Test Stress** and **Test Diagnostics**
+are separate entry points. Stress always supplies `--ci --profile stress`;
+diagnostics supplies `--ci --diagnostics --profile integration`. Keep both as
+thin argument builders over `./devops.ps1 test`; add suite resolution,
 preparation or reporting behaviour to the DevOps pipeline and suite registry,
 not to workflow YAML. Keep `count` and `CHAOS_ITERATIONS` independent when
-documenting or reproducing a stress run.
+documenting or reproducing either run.
 
 ## Add or change a benchmark
 

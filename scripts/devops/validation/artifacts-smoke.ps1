@@ -207,6 +207,75 @@ try {
             Assert-Smoke ($stressTest.Contains($cleanupStage)) "stress cleanup timing is missing for $cleanupStage."
         }
 
+        # G. Test telemetry mode precedence and the MTP result contract.
+        $localOptions = [pscustomobject]@{ Ci = $false; Flaky = $false; Diagnostics = $false }
+        $ciOptions = [pscustomobject]@{ Ci = $true; Flaky = $false; Diagnostics = $false }
+        $flakyOptions = [pscustomobject]@{ Ci = $false; Flaky = $true; Diagnostics = $false }
+        $diagnosticOptions = [pscustomobject]@{ Ci = $false; Flaky = $false; Diagnostics = $true }
+        $combinedOptions = [pscustomobject]@{ Ci = $true; Flaky = $true; Diagnostics = $true }
+        Assert-Smoke ((Get-TestTelemetryMode $localOptions) -eq 'off') 'ordinary local mode did not disable telemetry.'
+        Assert-Smoke ((Get-TestTelemetryMode $ciOptions) -eq 'summary') 'CI did not select summary telemetry.'
+        Assert-Smoke ((Get-TestTelemetryMode $flakyOptions) -eq 'summary') 'Flaky mode did not select summary telemetry.'
+        Assert-Smoke ((Get-TestTelemetryMode $diagnosticOptions) -eq 'full') 'Diagnostics did not select full telemetry.'
+        Assert-Smoke ((Get-TestTelemetryMode $combinedOptions) -eq 'full') 'Diagnostics did not win over CI and flaky mode.'
+
+        $mtpTarget = [pscustomobject]@{
+            Filter = ''
+            Capabilities = @()
+            AdditionalArguments = @()
+            CoverageEligible = $false
+        }
+        $mtpContext = [pscustomobject]@{
+            ArtifactsEnabled = $true
+            RepoRoot = $RepositoryRoot
+            Options = [pscustomobject]@{
+                Verbosity = ''
+                ParallelProfile = 'integration'
+                ExplicitMode = ''
+                FailWarnings = $false
+                Ci = $true
+                CollectCoverage = $false
+                Flaky = $false
+                Diagnostics = $false
+                HangTimeout = 'off'
+            }
+        }
+        $mtpArguments = @(Get-MtpTestArguments -Target $mtpTarget -Context $mtpContext -ArtifactDirectory (Join-Path $Root 'mtp-arguments'))
+        Assert-Smoke ('--report-xunit-trx' -in $mtpArguments) 'MTP TRX output was removed.'
+        Assert-Smoke ('--report-xunit-trx-filename' -in $mtpArguments -and 'results.trx' -in $mtpArguments) 'MTP TRX filename is missing.'
+        Assert-Smoke (-not ($mtpArguments -contains '--report-xunit-ctrf')) 'MTP CTRF output remains enabled.'
+        Assert-Smoke (-not ($mtpArguments -contains '--report-xunit-ctrf-filename')) 'MTP CTRF filename remains configured.'
+        Assert-Smoke (-not ($mtpArguments -contains 'results.ctrf.json')) 'CTRF output remains configured.'
+
+        # H. Telemetry path discovery and workflow mode contracts.
+        $telemetryTarget = Join-Path $Root 'telemetry-target'
+        foreach ($relative in @(
+            'telemetry/summary.json',
+            'telemetry/tests.ndjson',
+            'telemetry/activities.ndjson',
+            'telemetry/metrics.ndjson',
+            'runtime/counters.ndjson',
+            'results.trx',
+            'results.ctrf.json'
+        )) {
+            Write-SmokeMarker (Join-Path $telemetryTarget $relative)
+        }
+        $telemetryPaths = @(Get-ExecutionDiagnosticPaths -ArtifactDirectory $telemetryTarget)
+        foreach ($relative in @('telemetry/summary.json', 'telemetry/tests.ndjson', 'telemetry/activities.ndjson', 'telemetry/metrics.ndjson', 'runtime/counters.ndjson')) {
+            $expectedPath = [System.IO.Path]::GetFullPath((Join-Path $telemetryTarget $relative))
+            Assert-Smoke ($expectedPath -in $telemetryPaths) "execution telemetry path was not discovered: $relative"
+        }
+        Assert-Smoke (@($telemetryPaths | Where-Object { [System.IO.Path]::GetFileName($_) -eq 'results.ctrf.json' }).Count -eq 0) 'CTRF result was classified as a diagnostic artefact.'
+
+        $stressWorkflow = Get-Content -LiteralPath (Join-Path $RepositoryRoot '.github/workflows/test-stress.yml') -Raw
+        $diagnosticsWorkflow = Get-Content -LiteralPath (Join-Path $RepositoryRoot '.github/workflows/test-diagnostics.yml') -Raw
+        Assert-Smoke ($stressWorkflow.Contains('name: Test Stress')) 'stress workflow displayed name is incorrect.'
+        Assert-Smoke ($stressWorkflow.Contains("'--ci',") -and $stressWorkflow.Contains("'--count',") -and $stressWorkflow.Contains("'--profile',") -and $stressWorkflow.Contains("'stress',")) 'stress workflow does not pass --ci, count and --profile stress.'
+        Assert-Smoke ($stressWorkflow -notmatch '(?m)^      (flaky|diagnostics):') 'stress workflow still has flaky or diagnostics inputs.'
+        Assert-Smoke ($diagnosticsWorkflow.Contains('name: Test Diagnostics')) 'diagnostics workflow displayed name is incorrect.'
+        Assert-Smoke ($diagnosticsWorkflow.Contains("'--diagnostics',") -and $diagnosticsWorkflow.Contains("'--profile',") -and $diagnosticsWorkflow.Contains("'integration',")) 'diagnostics workflow does not pass --diagnostics and --profile integration.'
+        Assert-Smoke ($diagnosticsWorkflow.Contains('name: test-diagnostics-linux') -and $diagnosticsWorkflow.Contains('name: test-diagnostics-windows')) 'diagnostics workflow artefact names are incorrect.'
+
         Write-Host 'Artefact infrastructure smoke validation passed.'
     } $temporaryRoot $generatorPath (Resolve-Path (Join-Path $PSScriptRoot '../../..'))
     exit 0

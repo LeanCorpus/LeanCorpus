@@ -1,4 +1,4 @@
-name: Test Stress
+name: Test Diagnostics
 
 on:
   workflow_dispatch:
@@ -21,12 +21,12 @@ on:
       count:
         description: Number of times to execute each resolved test target
         required: true
-        default: 5
+        default: 1
         type: number
       chaos_iterations:
         description: FsCheck/chaos iterations inside each test execution
         required: true
-        default: 100
+        default: 25
         type: number
       framework:
         description: Framework override. Blank = all supported frameworks
@@ -68,7 +68,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: test-stress-${{ github.ref }}
+  group: test-diagnostics-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -109,7 +109,7 @@ jobs:
         shell: pwsh
         run: ./devops.ps1 build
 
-      - name: Run Test Stress
+      - name: Run Test Diagnostics
         shell: pwsh
         env:
           CHAOS_ITERATIONS: ${{ inputs.chaos_iterations }}
@@ -127,10 +127,11 @@ jobs:
               'test',
               $env:TEST_SUITE,
               '--ci',
+              '--diagnostics',
+              '--profile',
+              'integration',
               '--count',
               $env:TEST_COUNT,
-              '--profile',
-              'stress',
               '--HangTimeout',
               $env:TEST_HANG_TIMEOUT
           )
@@ -161,7 +162,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-stress-linux
+          name: test-diagnostics-linux
           path: artifacts/test/runs
           if-no-files-found: warn
 
@@ -188,7 +189,7 @@ jobs:
         shell: pwsh
         run: ./devops.ps1 build
 
-      - name: Run Test Stress
+      - name: Run Test Diagnostics
         shell: pwsh
         env:
           CHAOS_ITERATIONS: ${{ inputs.chaos_iterations }}
@@ -206,10 +207,11 @@ jobs:
               'test',
               $env:TEST_SUITE,
               '--ci',
+              '--diagnostics',
+              '--profile',
+              'integration',
               '--count',
               $env:TEST_COUNT,
-              '--profile',
-              'stress',
               '--HangTimeout',
               $env:TEST_HANG_TIMEOUT
           )
@@ -240,6 +242,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-stress-windows
+          name: test-diagnostics-windows
           path: artifacts/test/runs
           if-no-files-found: warn

@@ -52,7 +52,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: linux-${{ matrix.framework }}-diagnostics
+          name: linux-${{ matrix.framework }}-test-results
           path: artifacts/test/runs
           if-no-files-found: warn
 
@@ -107,7 +107,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: windows-test-diagnostics
+          name: windows-test-results
           path: artifacts/test/runs
           if-no-files-found: warn
 
@@ -142,7 +142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: arm64-test-diagnostics
+          name: arm64-test-results
           path: artifacts/test/runs
           if-no-files-found: warn
 

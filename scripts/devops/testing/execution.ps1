@@ -66,9 +66,6 @@ function Get-MtpTestArguments {
         [void]$arguments.Add('--report-xunit-trx')
         [void]$arguments.Add('--report-xunit-trx-filename')
         [void]$arguments.Add('results.trx')
-        [void]$arguments.Add('--report-xunit-ctrf')
-        [void]$arguments.Add('--report-xunit-ctrf-filename')
-        [void]$arguments.Add('results.ctrf.json')
     }
 
     $configPath = Join-Path $Context.RepoRoot 'scripts/devops/testing/testconfig.json'
@@ -148,6 +145,18 @@ function Get-MtpTestArguments {
     }
 
     return @($arguments.ToArray())
+}
+
+function Get-TestTelemetryMode {
+    param([Parameter(Mandatory = $true)][object]$Options)
+
+    if ([bool]$Options.Diagnostics) {
+        return 'full'
+    }
+    if ([bool]$Options.Ci -or [bool]$Options.Flaky) {
+        return 'summary'
+    }
+    return 'off'
 }
 
 function New-EmptyMtpResultData {
@@ -246,17 +255,11 @@ function Invoke-TestTarget {
         Write-Host "  [$ExecutionNumber/$ExecutionCount] $($target.Key) still running ($elapsedText elapsed)..." -ForegroundColor DarkGray
     }.GetNewClosure()
 
+    $env:LEANCORPUS_TELEMETRY = Get-TestTelemetryMode -Options $Context.Options
     if ($Context.ArtifactsEnabled) {
         Set-ArtifactProcessEnvironment -RunId $Context.RunId -Kind test -ArtifactDirectory $artifactDirectory `
             -Target $target.Key -Suite $target.Suite -Iteration $Iteration -Ci ([bool]$Context.Options.Ci) `
             -Diagnostics ([bool]$Context.Options.Diagnostics)
-        $env:LEANCORPUS_TELEMETRY = if ([bool]$Context.Options.Diagnostics -or [bool]$Context.Options.Flaky) {
-            'full'
-        } elseif ([bool]$Context.Options.Ci) {
-            'summary'
-        } else {
-            'off'
-        }
     }
     try {
         $processResult = Invoke-ProcessWithLifecycle -FileName $fileName -Arguments $arguments `

@@ -43,16 +43,25 @@ unit and explicit stress profiles; integration remains collection-parallel and
 existing collection-level global-state exclusions remain authoritative.
 Explicit tests are excluded unless requested. Ordinary tests are never retried.
 
-Diagnostic test processes install first-party `ActivityListener` and
+Summary and full telemetry modes install first-party `ActivityListener` and
 `MeterListener` instances. Each test owns a `leancorpus.test` root activity and
 is indexed by trace identity, preventing concurrent tests from receiving one
-another's signals. Raw activity and metric records are streamed during the
-test, summaries and warnings are attached through `TestContext`, and runtime
-measurements remain at execution scope. Standard benchmark runs keep listeners
-disabled so diagnostic overhead cannot contaminate normal measurements.
-There is no benchmark `-Diagnostics` mode in this contract; benchmark-process
-telemetry requires a separate BenchmarkDotNet integration before it can be
-claimed as evidence.
+another's signals. CI, stress and flaky repetition retain aggregate summary
+telemetry. Clean passing tests create no individual files or attachments;
+failures and telemetry anomalies are written once to execution-scoped
+`tests.ndjson` and attached through `TestContext`.
+
+Only explicit `--diagnostics` enables raw activity, metric and runtime streams
+and MTP diagnostic logging. Raw streams are execution-scoped, correlated by
+test ID and/or trace ID, and capped at 64 MiB activities, 32 MiB metrics,
+16 MiB runtime counters and 16 MiB test summaries. A stream records its written
+and dropped record counts, byte count and truncation flag; reaching a cap does
+not fail tests. Stress parallelism and `--flaky` do not imply diagnostics, and
+explicit `--diagnostics` determines telemetry mode when options are combined.
+Standard benchmark runs keep listeners disabled so diagnostic overhead cannot
+contaminate normal measurements. There is no benchmark `-Diagnostics` mode in
+this contract; benchmark-process telemetry requires a separate
+BenchmarkDotNet integration before it can be claimed as evidence.
 
 `./devops benchmark` owns one run containing the Core, Rowles.Text and
 compression projects. A failure in one project does not remove earlier output.
@@ -91,7 +100,10 @@ the only safe correlation key once tests may execute concurrently.
   GitHub Actions reporter dependency. This is test infrastructure and does not
   change shipped LeanCorpus or Rowles.Text package APIs.
 - The Native AOT smoke project uses released xUnit 4 AOT and MTP v2 packages.
-- Raw diagnostic telemetry is intentionally more expensive and is confined to
-  diagnostic, flaky and stress profiles. CI retains summaries.
+- Normal CI, stress and flaky repetition use summary telemetry. Only explicit
+  diagnostics enables bounded raw activity, metric and runtime streams and MTP
+  diagnostic logging. Individual test evidence is kept for failures and
+  telemetry anomalies; test IDs and trace IDs retain correlation in shared
+  execution streams.
 - `./devops pack` writes packages and a checksum manifest to
   `artifacts/package/release/`.

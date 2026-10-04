@@ -283,7 +283,6 @@ function Get-ExecutionDiagnosticPaths {
     foreach ($file in @(Get-ChildItem -LiteralPath $ArtifactDirectory -File -Recurse -ErrorAction SilentlyContinue)) {
         $relativePath = [System.IO.Path]::GetRelativePath($ArtifactDirectory, $file.FullName).Replace('\', '/')
         if ($file.Extension.ToLowerInvariant() -in $diagnosticExtensions -or
-            $relativePath -eq 'results.ctrf.json' -or
             $relativePath.StartsWith('telemetry/', [StringComparison]::OrdinalIgnoreCase) -or
             $relativePath.StartsWith('runtime/', [StringComparison]::OrdinalIgnoreCase) -or
             $file.Name.StartsWith('leancorpus-', [StringComparison]::OrdinalIgnoreCase)) {
@@ -477,12 +476,40 @@ function New-TestRunSummary {
     $failingIterations = @($executions | Where-Object { $_.Outcome -ne 'Passed' } |
         ForEach-Object { [int]$_.Iteration } | Sort-Object -Unique)
     $diagnosticPaths = @($executions | ForEach-Object { @($_.DiagnosticPaths) } | Where-Object { $_ })
-    $telemetrySummaryPaths = @($diagnosticPaths | Where-Object {
-        $_.Replace('\', '/') -match '/telemetry/tests/[^/]+/summary\.json$'
-    })
-    $telemetrySummaries = @($telemetrySummaryPaths | ForEach-Object {
-        try { Get-Content -LiteralPath $_ -Raw | ConvertFrom-Json } catch { $null }
-    } | Where-Object { $null -ne $_ })
+    $telemetrySummaryPaths = [System.Collections.Generic.List[string]]::new()
+    $telemetrySummaries = [System.Collections.Generic.List[object]]::new()
+    $telemetryExecutionSummaries = [System.Collections.Generic.List[object]]::new()
+    foreach ($execution in $executions) {
+        if (-not $execution.ArtifactDirectory) { continue }
+        $summaryPath = Join-Path $execution.ArtifactDirectory 'telemetry/summary.json'
+        if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) { continue }
+        try {
+            [void]$telemetrySummaryPaths.Add($summaryPath)
+            $executionSummary = Get-Content -LiteralPath $summaryPath -Raw | ConvertFrom-Json
+            [void]$telemetrySummaries.Add($executionSummary)
+            [void]$telemetryExecutionSummaries.Add([pscustomobject]@{
+                targetKey = $execution.Target.Key
+                iteration = [int]$execution.Iteration
+                summary = $executionSummary
+            })
+        } catch {
+            [void]$Context.ReportErrors.Add("Telemetry summary read failed for '$summaryPath': $($_.Exception.Message)")
+        }
+    }
+    $retainedTestSummaries = [System.Collections.Generic.List[object]]::new()
+    $retainedTestSummaryPaths = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in @($diagnosticPaths | Where-Object { $_.Replace('\', '/') -match '/telemetry/tests\.ndjson$' })) {
+        [void]$retainedTestSummaryPaths.Add($path)
+        try {
+            foreach ($line in [System.IO.File]::ReadLines($path)) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) {
+                    [void]$retainedTestSummaries.Add(($line | ConvertFrom-Json))
+                }
+            }
+        } catch {
+            [void]$Context.ReportErrors.Add("Retained telemetry summary read failed for '$path': $($_.Exception.Message)")
+        }
+    }
     $attachmentPaths = @($diagnosticPaths | Where-Object {
         $normalised = $_.Replace('\', '/')
         [System.IO.Path]::GetFileName($_).StartsWith('leancorpus-', [StringComparison]::OrdinalIgnoreCase) -and
@@ -530,12 +557,28 @@ function New-TestRunSummary {
         DiagnosticArtifactPaths = $diagnosticPaths
         AttachmentPaths = $attachmentPaths
         TelemetrySummary = [ordered]@{
-            tests = $telemetrySummaries.Count
-            activities = [int](Get-TestSummaryPropertySum -Items $telemetrySummaries -Property activityCount)
-            metrics = [int](Get-TestSummaryPropertySum -Items $telemetrySummaries -Property metricCount)
-            swallowedExceptions = [int](Get-TestSummaryPropertySum -Items $telemetrySummaries -Property swallowedExceptions)
-            orphanedActivities = [int](Get-TestSummaryPropertySum -Items $telemetrySummaries -Property orphanedActivities)
-            summaryPaths = $telemetrySummaryPaths
+            executions = $telemetrySummaries.Count
+            testsStarted = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property testsStarted)
+            testsFinished = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property testsFinished)
+            testsPassed = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property testsPassed)
+            testsFailed = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property testsFailed)
+            testsSkipped = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property testsSkipped)
+            retainedTestSummaries = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property retainedTestSummaries)
+            activities = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property activities)
+            metrics = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property metrics)
+            swallowedExceptions = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property swallowedExceptions)
+            orphanedActivities = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property orphanedActivities)
+            telemetryErrors = [long](Get-TestSummaryPropertySum -Items @($telemetrySummaries.ToArray()) -Property telemetryErrors)
+            truncated = [bool](@($telemetrySummaries | Where-Object {
+                $streams = $_.streams
+                $streams -and @($streams.PSObject.Properties | Where-Object { [bool]$_.Value.truncated }).Count -gt 0
+            }).Count -gt 0)
+            streams = @($telemetryExecutionSummaries.ToArray() | ForEach-Object {
+                [pscustomobject]@{ targetKey = $_.targetKey; iteration = $_.iteration; mode = $_.summary.mode; streams = $_.summary.streams }
+            })
+            retainedTestSummaryPaths = @($retainedTestSummaryPaths.ToArray())
+            retainedTests = @($retainedTestSummaries.ToArray())
+            summaryPaths = @($telemetrySummaryPaths.ToArray())
         }
     }
 }

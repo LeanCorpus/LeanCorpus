@@ -20,6 +20,7 @@
 
 ### Changed
 
+- Separate stress and diagnostics test modes, bound full execution telemetry, retain individual evidence only for failures and anomalies, and keep TRX as the canonical result format.
 - Map storage, codec-migration and sparse-vector ADR documentation to their Core affected-test areas.
 
 - Advance float and quantised vector bodies to v2 with per-document presence; migrate reconstructable v1 fields using persisted HNSW membership without changing vector payload bytes, and reject migration without authoritative presence. HNSW remains v1.
