@@ -15,6 +15,7 @@ namespace Rowles.LeanCorpus.Codecs.Vectors;
 internal sealed class Int8QuantisedMemoryVectorSource : IVectorSource, IInt8VectorSource
 {
     private readonly byte[] _packed;
+    private readonly byte[] _presence;
     private readonly float _min;
     private readonly float _alpha;
     private readonly int _docCount;
@@ -37,12 +38,14 @@ internal sealed class Int8QuantisedMemoryVectorSource : IVectorSource, IInt8Vect
         ArgumentNullException.ThrowIfNull(vectorsByDoc);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(dimension);
 
-        _docCount = vectorsByDoc.Count;
+        _docCount = vectorsByDoc.Count == 0 ? 0 : checked(vectorsByDoc.Keys.Max() + 1);
+        VectorPresence.ValidateVectors(_docCount, dimension, vectorsByDoc);
+        _presence = VectorPresence.Create(_docCount, vectorsByDoc.Keys);
         _dimension = dimension;
         _min = min;
         _alpha = alpha;
 
-        _packed = new byte[_docCount * dimension];
+        _packed = new byte[checked(_docCount * dimension)];
 
         Span<float> zero = dimension <= 256 ? stackalloc float[dimension] : new float[dimension];
         zero.Clear();
@@ -65,6 +68,8 @@ internal sealed class Int8QuantisedMemoryVectorSource : IVectorSource, IInt8Vect
 
     public int Dimension => _dimension;
     public int Count => _docCount;
+    public bool HasVector(int docId) => (uint)docId < (uint)_docCount
+        && (_presence[docId >> 3] & (1 << (docId & 7))) != 0;
 
     /// <summary>
     /// Dequantises the stored int8 vector into a freshly allocated float array.

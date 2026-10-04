@@ -6,7 +6,7 @@ namespace Rowles.LeanCorpus.Codecs.Vectors;
 
 /// <summary>
 /// Writes dense float vectors with a fixed-dimension layout for implicit offset indexing.
-/// Format: [int: vectorCount][int: dimension][float[][]: vector data].
+/// Body v2: [docCount:int32][dimension:int32][dataFormat:byte][presence bitmap][dense vector data].
 /// </summary>
 internal static class VectorWriter
 {
@@ -18,11 +18,17 @@ internal static class VectorWriter
             if (vectors[i].Length > 0) { dimension = vectors[i].Length; break; }
         }
 
+        var present = vectors.Select((vector, docId) => (vector, docId)).Where(item => item.vector.Length > 0).Select(item => item.docId).ToArray();
+        foreach (int docId in present)
+            if (vectors[docId].Length != dimension)
+                throw new InvalidDataException("Vector dimensions do not match.");
+        var presence = VectorPresence.Create(vectors.Length, present);
         CodecFileWriter.WriteAtomically(filePath, VectorCodecFiles.Float32, durable: false, bodyOutput =>
         {
             bodyOutput.WriteInt32(vectors.Length);
             bodyOutput.WriteInt32(dimension);
             bodyOutput.WriteByte(0); // data-format: float32
+            bodyOutput.WriteBytes(presence, 0, presence.Length);
 
             Span<float> zero = dimension <= 256 ? stackalloc float[dimension] : new float[dimension];
             zero.Clear();
@@ -38,7 +44,7 @@ internal static class VectorWriter
 
     /// <summary>
     /// Writes a per-field dense vector file. Missing docs are zero-padded so reader offset arithmetic
-    /// remains valid; HNSW search never visits zero-padded docs because they are absent from the graph.
+    /// remains valid; presence distinguishes these rows from explicitly supplied zero vectors.
     /// </summary>
     internal static void WriteField(
         string filePath,
@@ -50,11 +56,16 @@ internal static class VectorWriter
         ArgumentOutOfRangeException.ThrowIfNegative(docCount);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(dimension);
 
+        if (quantisation is not VectorQuantisation.None and not VectorQuantisation.Int8)
+            throw new ArgumentOutOfRangeException(nameof(quantisation));
+        VectorPresence.ValidateVectors(docCount, dimension, vectorsByDoc);
+        var presence = VectorPresence.Create(docCount, vectorsByDoc.Keys);
         CodecFileWriter.WriteAtomically(filePath, VectorCodecFiles.Float32, durable: false, bodyOutput =>
         {
             bodyOutput.WriteInt32(docCount);
             bodyOutput.WriteInt32(dimension);
             bodyOutput.WriteByte((byte)quantisation); // data-format byte: 0 = float32, 1 = int8
+            bodyOutput.WriteBytes(presence, 0, presence.Length);
 
             Span<float> zero = dimension <= 256 ? stackalloc float[dimension] : new float[dimension];
             zero.Clear();
@@ -128,7 +139,8 @@ internal static class VectorWriter
         string filePath,
         int docCount,
         int dimension,
-        IVectorSource vectorsByDoc)
+        IVectorSource vectorsByDoc,
+        IReadOnlyList<int> vectorDocIds)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(docCount);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(dimension);
@@ -136,6 +148,8 @@ internal static class VectorWriter
         if (vectorsByDoc.Dimension != dimension || vectorsByDoc.Count < docCount)
             throw new ArgumentException("Vector source dimensions do not match the destination field.", nameof(vectorsByDoc));
 
+        _ = checked(9L + VectorPresence.ByteCount(docCount) + (long)docCount * dimension * sizeof(float));
+        var presence = VectorPresence.Create(docCount, vectorDocIds);
         float[] vectorBuffer = ArrayPool<float>.Shared.Rent(dimension);
         try
         {
@@ -144,6 +158,7 @@ internal static class VectorWriter
                 bodyOutput.WriteInt32(docCount);
                 bodyOutput.WriteInt32(dimension);
                 bodyOutput.WriteByte((byte)VectorQuantisation.None);
+                bodyOutput.WriteBytes(presence, 0, presence.Length);
 
                 Span<float> vector = vectorBuffer.AsSpan(0, dimension);
                 for (int docId = 0; docId < docCount; docId++)

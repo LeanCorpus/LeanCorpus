@@ -7,17 +7,21 @@
 internal sealed class InMemoryVectorSource : IVectorSource
 {
     private readonly Dictionary<int, ReadOnlyMemory<float>> _vectors;
+    private readonly int _count;
 
     public InMemoryVectorSource(Dictionary<int, ReadOnlyMemory<float>> vectors, int dimension)
     {
         ArgumentNullException.ThrowIfNull(vectors);
         _vectors = vectors;
+        _count = vectors.Count == 0 ? 0 : checked(vectors.Keys.Max() + 1);
         Dimension = dimension;
     }
 
     public int Dimension { get; }
 
-    public int Count => _vectors.Count;
+    public int Count => _count;
+
+    public bool HasVector(int docId) => _vectors.ContainsKey(docId);
 
     public ReadOnlySpan<float> GetVector(int docId)
     {

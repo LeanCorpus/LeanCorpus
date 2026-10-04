@@ -827,6 +827,22 @@ internal sealed partial class SegmentReaderState
         return null;
     }
 
+    internal bool HasVector(string fieldName, int docId)
+    {
+        if (string.IsNullOrEmpty(fieldName) && _vectorPaths.Count == 1)
+            fieldName = _vectorPaths.Keys.First();
+        if (!_vectorFieldStates.TryGetValue(fieldName, out var state) || !EnsureVectorReadersLoaded(fieldName, state))
+            return false;
+        if (state.Vector is { HasPersistedPresence: true } vector)
+            return vector.HasVector(docId);
+        if (state.QuantisedVector is { HasPersistedPresence: true } quantised)
+            return quantised.HasVector(docId);
+        // Legacy dense bodies have no presence. Persisted graph membership is authoritative.
+        if (_info.VectorFields.FirstOrDefault(field => field.FieldName == fieldName)?.HasHnsw == true)
+            return GetHnswGraph(fieldName)?.ContainsNode(docId) == true;
+        throw new InvalidDataException($"UnsupportedMigrationPath: v1 vector field '{fieldName}' has no authoritative persisted presence; rebuild it from source documents.");
+    }
+
     internal bool TryCopyVectorTo(string fieldName, int docId, Span<float> destination)
     {
         if (string.IsNullOrEmpty(fieldName) && _vectorPaths.Count == 1)
@@ -838,7 +854,7 @@ internal sealed partial class SegmentReaderState
             return false;
         }
 
-        if (!EnsureVectorReadersLoaded(fieldName, fieldState))
+        if (!EnsureVectorReadersLoaded(fieldName, fieldState) || !HasVector(fieldName, docId))
         {
             destination.Clear();
             return false;
@@ -863,7 +879,7 @@ internal sealed partial class SegmentReaderState
     private float[]? ReadVectorFromField(string fieldName, int docId)
     {
         if (!_vectorFieldStates.TryGetValue(fieldName, out VectorFieldState? fieldState)
-            || !EnsureVectorReadersLoaded(fieldName, fieldState))
+            || !EnsureVectorReadersLoaded(fieldName, fieldState) || !HasVector(fieldName, docId))
             return null;
 
         if (fieldState.Vector is { } vectorReader)
@@ -886,14 +902,35 @@ internal sealed partial class SegmentReaderState
             if (_vectorQuantisation.TryGetValue(fieldName, out var quantisation)
                 && quantisation != VectorQuantisation.None)
             {
-                fieldState.SetQuantisedVector(QuantisedVectorReader.Open(_files.OpenInput(path)));
+                var vector = QuantisedVectorReader.Open(_files.OpenInput(path));
+                try
+                {
+                    ValidateVectorMetadata(fieldName, vector.DocCount, vector.Dimension);
+                    if (vector.Quantisation != quantisation)
+                        throw new InvalidDataException("Vector quantisation does not match segment metadata.");
+                    fieldState.SetQuantisedVector(vector);
+                }
+                catch { vector.Dispose(); throw; }
             }
             else
             {
-                fieldState.SetVector(VectorReader.Open(_files.OpenInput(path)));
+                var vector = VectorReader.Open(_files.OpenInput(path));
+                try
+                {
+                    ValidateVectorMetadata(fieldName, vector.VectorCount, vector.Dimension);
+                    fieldState.SetVector(vector);
+                }
+                catch { vector.Dispose(); throw; }
             }
             return true;
         }
+    }
+
+    private void ValidateVectorMetadata(string fieldName, int docCount, int dimension)
+    {
+        var field = _info.VectorFields.FirstOrDefault(field => field.FieldName == fieldName);
+        if (docCount != _info.DocCount || (field is not null && dimension != field.Dimension))
+            throw new InvalidDataException("Vector body count or dimension does not match segment metadata.");
     }
 
     /// <summary>Returns the field names with vector data in this segment.</summary>

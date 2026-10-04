@@ -19,6 +19,10 @@ internal sealed class VectorReader : IDisposable
     private readonly float _int8Alpha;
     private readonly IDisposable _frame;
     private bool _disposed;
+    private byte[]? _presence;
+    internal bool HasPersistedPresence => _presence is not null;
+    internal bool HasVector(int docId)
+        => (uint)docId < (uint)_vectorCount && (_presence is null || (_presence[docId >> 3] & (1 << (docId & 7))) != 0);
 
     private VectorReader(
         IndexInput input,
@@ -60,6 +64,10 @@ internal sealed class VectorReader : IDisposable
             if (format is not (byte)VectorQuantisation.None and not (byte)VectorQuantisation.Int8)
                 throw new InvalidDataException($"Unsupported vector data format {format}.");
 
+            long presencePosition = input.Position;
+            byte[]? presence = frame.FormatVersion >= 2
+                ? VectorPresence.Read(input, vectorCount, ref presencePosition, checked(frame.BodyStart + frame.BodyLength)) : null;
+            input.Seek(presencePosition);
             float int8Min = 0f, int8Alpha = 0f;
             bool isInt8 = format == (byte)VectorQuantisation.Int8;
             if (isInt8)
@@ -74,7 +82,7 @@ internal sealed class VectorReader : IDisposable
             if (dataEnd != checked(frame.BodyStart + frame.BodyLength))
                 throw new InvalidDataException("Vector file body length does not match its declared vector count and dimension.");
 
-            return new VectorReader(input, vectorCount, dimension, dataStart, frame, isInt8, int8Min, int8Alpha);
+            return new VectorReader(input, vectorCount, dimension, dataStart, frame, isInt8, int8Min, int8Alpha) { _presence = presence };
         }
         catch
         {

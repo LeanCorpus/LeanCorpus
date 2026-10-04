@@ -209,6 +209,8 @@ internal sealed class HnswGraph : IDisposable
         if (IsReadOnly)
             throw new InvalidOperationException("HnswGraph is frozen; insert is not permitted.");
 
+        if (!_vectors.HasVector(docId))
+            throw new ArgumentOutOfRangeException(nameof(docId), "HNSW nodes require a present vector.");
         int newLevel = AssignLevel();
         var query = _vectors.GetVector(docId);
 
@@ -290,7 +292,7 @@ internal sealed class HnswGraph : IDisposable
     {
         ArgumentNullException.ThrowIfNull(options);
         stats = default;
-        if (NodeCount == 0 || EntryPoint == NoEntryPoint)
+        if (NodeCount == 0 || EntryPoint == NoEntryPoint || !_vectors.HasVector(EntryPoint))
             return Array.Empty<HnswSearchResult>();
 
         int currentEntry = EntryPoint;
@@ -382,6 +384,7 @@ internal sealed class HnswGraph : IDisposable
             improved = false;
             foreach (var n in NeighboursAt(current, level))
             {
+                if (!_vectors.HasVector(n)) continue;
                 float d = QueryDistance(query, n);
                 if (d < currentDist)
                 {
@@ -429,7 +432,7 @@ internal sealed class HnswGraph : IDisposable
 
         foreach (var ep in entryPoints)
         {
-            if (visited.Add(ep))
+            if (_vectors.HasVector(ep) && visited.Add(ep))
             {
                 float d = QueryDistance(query, ep);
                 frontier.Enqueue(ep, d);
@@ -451,7 +454,7 @@ internal sealed class HnswGraph : IDisposable
 
             foreach (var neighbour in NeighboursAt(current, level))
             {
-                if (!visited.Add(neighbour)) continue;
+                if (!_vectors.HasVector(neighbour) || !visited.Add(neighbour)) continue;
 
                 float d = QueryDistance(query, neighbour);
                 bool resultsFull = results.Count >= ef;

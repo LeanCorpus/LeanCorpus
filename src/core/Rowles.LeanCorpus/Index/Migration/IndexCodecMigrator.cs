@@ -32,6 +32,8 @@ public static class IndexCodecMigrator
     private static readonly IReadOnlyDictionary<string, BuiltInMigrationWriter> BuiltInMigrationWriters =
         new Dictionary<string, BuiltInMigrationWriter>(StringComparer.Ordinal)
         {
+            ["leancorpus.vectors.float32"] = static context => RewriteVectorPresence(context),
+            ["leancorpus.vectors.quantised"] = static context => RewriteVectorPresence(context),
             ["leancorpus.term-dictionary.data"] = static context => RewriteTermDictionary(context.SourcePath, context.TargetPath),
             ["leancorpus.postings.data"] = static context => RewritePostings(context.TargetDirectory, context.Action, context.SegmentIdMap, context.Catalog),
             ["leancorpus.norms.data"] = static context => RewriteNorms(context.SourcePath, context.TargetPath),
@@ -123,6 +125,25 @@ public static class IndexCodecMigrator
                 !SegmentFileSet.IsOwnedByAnySegment(file.FileName, retainedSegmentIds)),
             catalog,
             actions);
+
+        for (int i = 0; i < actions.Count; i++)
+        {
+            var action = actions[i];
+            if (action.FromVersion != 1 || action.FormatId is not ("leancorpus.vectors.float32" or "leancorpus.vectors.quantised"))
+                continue;
+            try
+            {
+                using var directory = new MMapDirectory(inventory.DirectoryPath);
+                using ISegmentFileSource files = action.CompoundFileName is null
+                    ? new LooseSegmentFileSource(directory, action.SegmentId ?? throw new InvalidDataException("Vector migration requires owning segment metadata."))
+                    : new CompoundSegmentFileSource(directory, action.SegmentId!);
+                _ = ReconstructVectorPresence(inventory.DirectoryPath, action, files.OpenInput);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException or OverflowException or InvalidOperationException or JsonException)
+            {
+                actions[i] = action with { CanExecute = false, ReasonCannotExecute = exception.Message };
+            }
+        }
 
         return new IndexCodecMigrationPlan
         {
@@ -1151,6 +1172,73 @@ public static class IndexCodecMigrator
         }
 
         throw new InvalidDataException($"No migration writer is registered for codec format '{descriptor.FormatId}'.");
+    }
+
+    private static byte[] ReconstructVectorPresence(string directoryPath, IndexCodecMigrationAction action,
+        Func<string, IndexInput> openInput)
+    {
+        string segmentId = action.SegmentId ?? throw new InvalidDataException("Vector migration requires owning segment metadata.");
+        var info = SegmentInfo.ReadFrom(Path.Combine(directoryPath, segmentId + ".seg"));
+        var field = info.VectorFields.SingleOrDefault(field =>
+            Path.GetFileName(action.SourcePath) == Path.GetFileName(action.FormatId == "leancorpus.vectors.float32"
+                ? VectorFilePaths.VectorFile(segmentId, field.FieldName)
+                : VectorFilePaths.QuantisedVectorFile(segmentId, field.FieldName)))
+            ?? throw new InvalidDataException("Vector migration cannot resolve owning field metadata.");
+        if (!field.HasHnsw)
+            throw new InvalidDataException($"UnsupportedMigrationPath: v1 vector field '{field.FieldName}' has no persisted HNSW presence; dense contents cannot reconstruct presence.");
+
+        using (var input = openInput(action.SourcePath))
+        using (var frame = CodecFileReader.OpenSupported(input, action.FormatId == "leancorpus.vectors.float32" ? VectorCodecFiles.Float32 : VectorCodecFiles.Quantised))
+            frame.ValidateChecksum();
+        using (var input = openInput(VectorFilePaths.HnswFile(segmentId, field.FieldName)))
+        using (var frame = CodecFileReader.OpenSupported(input, VectorCodecFiles.Hnsw))
+            frame.ValidateChecksum();
+
+        using var vector = action.FormatId == "leancorpus.vectors.float32" ? VectorReader.Open(openInput(action.SourcePath)) : null;
+        using var quantised = action.FormatId == "leancorpus.vectors.quantised" ? QuantisedVectorReader.Open(openInput(action.SourcePath)) : null;
+        int docCount = vector?.VectorCount ?? quantised!.DocCount;
+        int dimension = vector?.Dimension ?? quantised!.Dimension;
+        if (docCount != info.DocCount || dimension != field.Dimension ||
+            (quantised is not null && quantised.Quantisation != field.Quantisation))
+            throw new InvalidDataException("Vector body does not match owning segment metadata.");
+        IVectorSource source = vector is not null ? new VectorReaderSource(vector) : new QuantisedVectorSource(quantised!);
+        using var graph = Codecs.Hnsw.HnswReader.Read(openInput(VectorFilePaths.HnswFile(segmentId, field.FieldName)),
+            source, field.Normalised, docIdRemap: null);
+        int[] docIds = graph.GetNodesAtLevel(0).ToArray();
+        if (docIds.Length != graph.NodeCount)
+            throw new InvalidDataException("HNSW base membership does not match its declared node count.");
+        byte[] presence = VectorPresence.Create(docCount, docIds);
+        for (int level = 1; level < graph.LevelCount; level++)
+            foreach (int docId in graph.GetNodesAtLevel(level))
+                if ((uint)docId >= (uint)docCount || !graph.ContainsNode(docId))
+                    throw new InvalidDataException("HNSW upper-level membership is outside vector presence.");
+        return presence;
+    }
+
+    private static void RewriteVectorPresence(MigrationRewriteContext context)
+    {
+        byte[] presence = ReconstructVectorPresence(context.TargetDirectory, context.Action,
+            name => new IndexInput(Path.Combine(context.TargetDirectory, name)));
+        using var input = new IndexInput(context.SourcePath);
+        using var frame = CodecFileReader.OpenSupported(input, context.Descriptor);
+        frame.ValidateChecksum();
+        if (frame.FormatVersion != 1)
+            throw new InvalidDataException("Vector presence rewrite requires a v1 body.");
+        using var body = frame.OpenBodyInput();
+        byte[] header = new byte[9];
+        body.ReadBytes(header);
+        CodecFileWriter.WriteAtomically(context.TargetPath, context.Descriptor, durable: true, output =>
+        {
+            output.WriteBytes(header, 0, header.Length);
+            output.WriteBytes(presence, 0, presence.Length);
+            byte[] buffer = new byte[64 * 1024];
+            while (body.Position < body.Length)
+            {
+                int length = (int)Math.Min(buffer.Length, body.Length - body.Position);
+                body.ReadBytes(buffer.AsSpan(0, length));
+                output.WriteBytes(buffer, 0, length);
+            }
+        });
     }
 
     private static void RewriteTermDictionary(string sourcePath, string targetPath)

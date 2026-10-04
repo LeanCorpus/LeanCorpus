@@ -1050,7 +1050,7 @@ public sealed class SegmentMerger
                     for (int oldDocId = 0; oldDocId < segInfo.DocCount; oldDocId++)
                     {
                         int remapDocId = docIdMap[oldDocId];
-                        if (remapDocId < 0) continue;
+                        if (remapDocId < 0 || !reader.HasVector(vfName, oldDocId)) continue;
 
                         if (vectorDocIds is null)
                         {
@@ -1480,7 +1480,7 @@ public sealed class SegmentMerger
 
             if (quantisation == VectorQuantisation.None)
             {
-                VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, mergedSource);
+                VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, mergedSource, vectorDocIds);
                 if (shouldBuildHnsw)
                 {
                     using var vectorReader = VectorReader.Open(vecPath);
@@ -1501,7 +1501,7 @@ public sealed class SegmentMerger
                 string vecFileName = Path.GetFileName(vecPath);
                 try
                 {
-                    VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, mergedSource);
+                    VectorWriter.WriteField(vecPath, ctx.TotalDocs, dimension, mergedSource, vectorDocIds);
                     using (var vectorReader = VectorReader.Open(vecPath))
                     {
                         var vectorSource = new VectorReaderSource(vectorReader);

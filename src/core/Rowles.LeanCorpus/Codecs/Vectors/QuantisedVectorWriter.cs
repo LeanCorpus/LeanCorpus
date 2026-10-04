@@ -13,9 +13,9 @@ namespace Rowles.LeanCorpus.Codecs.Vectors;
 /// <remarks>
 /// File format:
 /// <code>
-/// [magic:int32][version:byte=1]
+/// Canonical CodecKit frame, body version 2:
 /// [docCount:int32][dimension:int32]
-/// [quantisation:byte]
+/// [quantisation:byte][presenceBitmap:ceil(docCount/8) bytes]
 /// -- int8 (quantisation=1) --
 /// [min:float32][alpha:float32]
 /// per doc: [correction:float32]
@@ -39,6 +39,7 @@ internal static class QuantisedVectorWriter
         IReadOnlyList<int> vectorDocIds)
     {
         ValidateSource(docCount, dimension, vectorsByDoc, vectorDocIds);
+        var presence = VectorPresence.Create(docCount, vectorDocIds);
         float[] vectorBuffer = ArrayPool<float>.Shared.Rent(dimension);
         byte[] packedBuffer = ArrayPool<byte>.Shared.Rent(dimension);
         try
@@ -76,6 +77,7 @@ internal static class QuantisedVectorWriter
                 bodyOutput.WriteInt32(docCount);
                 bodyOutput.WriteInt32(dimension);
                 bodyOutput.WriteByte((byte)VectorQuantisation.Int8);
+                bodyOutput.WriteBytes(presence, 0, presence.Length);
                 bodyOutput.WriteSingle(min);
                 bodyOutput.WriteSingle(alpha);
 
@@ -119,7 +121,8 @@ internal static class QuantisedVectorWriter
         IReadOnlyList<int> vectorDocIds)
     {
         ValidateSource(docCount, dimension, vectorsByDoc, vectorDocIds);
-        int packedBytes = (dimension + 7) / 8;
+        var presence = VectorPresence.Create(docCount, vectorDocIds);
+        int packedBytes = checked((dimension + 7) / 8);
         float[] vectorBuffer = ArrayPool<float>.Shared.Rent(dimension);
         float[] centroidBuffer = ArrayPool<float>.Shared.Rent(dimension);
         byte[] packedBuffer = ArrayPool<byte>.Shared.Rent(packedBytes);
@@ -148,6 +151,7 @@ internal static class QuantisedVectorWriter
                 bodyOutput.WriteInt32(docCount);
                 bodyOutput.WriteInt32(dimension);
                 bodyOutput.WriteByte((byte)VectorQuantisation.BBQ);
+                bodyOutput.WriteBytes(presence, 0, presence.Length);
                 for (int j = 0; j < dimension; j++)
                     bodyOutput.WriteSingle(writtenCentroid[j]);
 
@@ -225,6 +229,9 @@ internal static class QuantisedVectorWriter
         ArgumentOutOfRangeException.ThrowIfNegative(docCount);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(dimension);
 
+        VectorPresence.ValidateVectors(docCount, dimension, vectorsByDoc);
+        var presence = VectorPresence.Create(docCount, vectorsByDoc.Keys);
+
         // --- Pass 1: compute per-segment min / max ---
         float min = float.MaxValue;
         float max = float.MinValue;
@@ -258,6 +265,7 @@ internal static class QuantisedVectorWriter
         bodyOutput.WriteInt32(docCount);
         bodyOutput.WriteInt32(dimension);
         bodyOutput.WriteByte((byte)VectorQuantisation.Int8);
+        bodyOutput.WriteBytes(presence, 0, presence.Length);
         bodyOutput.WriteSingle(min);
         bodyOutput.WriteSingle(alpha);
 
@@ -326,14 +334,17 @@ internal static class QuantisedVectorWriter
         if (centroid.Length != dimension)
             throw new ArgumentException($"Centroid dimension {centroid.Length} != {dimension}.", nameof(centroid));
 
-        int packedBytes = (dimension + 7) / 8;
+        int packedBytes = checked((dimension + 7) / 8);
 
+        VectorPresence.ValidateVectors(docCount, dimension, vectorsByDoc);
+        var presence = VectorPresence.Create(docCount, vectorsByDoc.Keys);
         float[] centroidValues = centroid.ToArray();
         CodecFileWriter.WriteAtomically(filePath, VectorCodecFiles.Quantised, durable: false, bodyOutput =>
         {
         bodyOutput.WriteInt32(docCount);
         bodyOutput.WriteInt32(dimension);
         bodyOutput.WriteByte((byte)VectorQuantisation.BBQ);
+        bodyOutput.WriteBytes(presence, 0, presence.Length);
 
         // Write centroid
         for (int j = 0; j < dimension; j++)

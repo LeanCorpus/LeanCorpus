@@ -88,3 +88,28 @@ LeanCorpus 3.0 reads supported formats from 2.0 onwards and can migrate supporte
 - [Adding persistent formats](02-adding-formats.md)
 - [Validation and recovery](../../index-management/03-validation-recovery.md)
 - [Index checker CLI](../../index-management/04-cli-checker.md)
+
+## LeanCorpus 4.0 vector presence migration
+
+Float `.vec` and Int8/BBQ `.vq` bodies migrate from v1 to v2 by structural
+rewrite. The owning `.seg` metadata must declare a persisted HNSW graph for the
+field. The migrator validates graph membership, unique document IDs and document
+bounds, and inserts those presence bits into the vector data body. Dense vector
+bytes, quantisation parameters, corrections and packed bytes remain unchanged;
+legacy quantised vectors are never dequantised and requantised by migration.
+The HNSW body stays at v1 and is reassociated with the migrated segment.
+
+Without persisted HNSW membership, v1 presence cannot be reconstructed. Planning
+reports a non-executable action with `UnsupportedMigrationPath`; migration stops
+before changing source files. Non-zero dense contents are not presence evidence.
+Rebuild such indexes from the original documents instead.
+
+Compound members use the same staged rewrite and normal repacking protocol.
+Publication failure preserves the last committed source index and supports retry.
+
+The 3.1.1 to 4.0 release acceptance in GitLab issue 8 requires frozen loose and
+compound fixtures with a sparse unquantised field and persisted HNSW graph. Its
+manifest records vector-bearing IDs; acceptance checks executable v1 to v2
+planning, exact presence after reopen and force merge, and interrupted publication.
+Focused issue 26 tests additionally cover Int8 and BBQ rewrites. Vector v2 is a
+one-way persisted-format boundary: LeanCorpus 3.1.1 cannot read rewritten files.

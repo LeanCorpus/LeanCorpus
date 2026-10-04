@@ -17,6 +17,9 @@ internal interface IVectorSource
     /// <remarks>The span must not be retained after this source or its backing reader is disposed.</remarks>
     ReadOnlySpan<float> GetVector(int docId);
 
+    /// <summary>Returns whether a document explicitly supplied a vector.</summary>
+    bool HasVector(int docId) => (uint)docId < (uint)Count;
+
     /// <summary>Copies a vector into caller-owned scratch storage without requiring a new array.</summary>
     void CopyVectorTo(int docId, Span<float> destination)
     {

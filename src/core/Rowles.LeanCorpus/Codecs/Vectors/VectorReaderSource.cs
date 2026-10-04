@@ -17,6 +17,8 @@ internal sealed class VectorReaderSource : IVectorSource
 
     public int Dimension => _dimension;
 
+    public bool HasVector(int docId) => _reader.HasVector(docId);
+
     public int Count => _reader.VectorCount;
 
     public ReadOnlySpan<float> GetVector(int docId) => _reader.ReadVectorSpan(docId);

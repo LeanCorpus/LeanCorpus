@@ -44,6 +44,31 @@ Frame version describes this outer structure. Body-format version describes the 
 
 Normal opens validate framing and bounds but do not scan a large body checksum. `IndexValidator` deep validation performs that scan. Materialising reads are constrained separately from the maximum permitted file size.
 
+## Vector data body v2
+
+| Format ID | Extension | Readable bodies | Writable body | v1 migration |
+| --- | --- | --- | --- | --- |
+| `leancorpus.vectors.float32` | `.vec` | v1, v2 | v2 | Rewrite |
+| `leancorpus.vectors.quantised` | `.vq` | v1, v2 | v2 | Rewrite |
+| `leancorpus.vectors.hnsw` | `.hnsw` | v1 | v1 | Unchanged body |
+
+Both vector data bodies start with `docCount:int32`, `dimension:int32`, and a
+format/quantisation byte, followed by exactly `checked((docCount + 7) / 8)`
+presence bytes. Each document has one bit in increasing document-ID order,
+least-significant bit first. Unused high bits in the final byte must be zero.
+There is no independent bitmap-length field or presence sidecar.
+
+For `.vec`, the existing dense float32 payload follows the bitmap; historical
+Int8 data-format bodies retain their min/alpha parameters before dense bytes.
+For `.vq`, the bitmap precedes the existing Int8 min/alpha or BBQ centroid,
+per-document corrections and dense packed payload. Quantisation semantics and
+`docId * stride` addressing remain unchanged.
+
+A set bit means the document explicitly supplied a vector, including an all-zero
+vector. A clear bit means padding, which search, reranking and merge skip before
+accessing vector values. Merge remaps presence alongside live documents and index
+sort order, then builds HNSW only from present destination IDs.
+
 ## Supported historical framing
 
 Supported 2.x bodies may use:

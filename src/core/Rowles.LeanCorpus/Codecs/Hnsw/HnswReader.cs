@@ -81,8 +81,10 @@ internal static class HnswReader
             var config = new HnswBuildConfig { M = m, M0 = m0, EfConstruction = efConstruction };
             if (docIdRemap is null)
             {
-                var levels = CreateMappedLevels(body, filePath, nodeCount, levelCount, ref position);
+                var levels = CreateMappedLevels(body, filePath, nodeCount, levelCount, vectorSource, ref position);
                 EnsureFullyConsumed(body, filePath, position);
+                if (nodeCount > 0 && (levels.Count == 0 || !levels[0].ContainsNode(entryPoint)))
+                    throw new InvalidDataException("HNSW entry point is outside persisted membership.");
                 var graph = HnswGraph.FromMapped(
                     vectorSource, config, seed, levels, entryPoint, maxLevel, nodeCount, body);
                 body = null;
@@ -124,6 +126,7 @@ internal static class HnswReader
         string filePath,
         int nodeCount,
         int levelCount,
+        IVectorSource vectorSource,
         ref long position)
     {
         var levels = new List<HnswGraph.ReadOnlyLevel>(levelCount);
@@ -137,6 +140,8 @@ internal static class HnswReader
             for (int node = 0; node < nodes; node++)
             {
                 int docId = body.ReadInt32(ref position);
+                if ((uint)docId >= (uint)vectorSource.Count || !vectorSource.HasVector(docId))
+                    throw new InvalidDataException($"HNSW document ID {docId} is outside vector presence.");
                 int neighbourCount = body.ReadInt32(ref position);
                 ValidateNeighbourCount(filePath, nodeCount, level, docId, neighbourCount);
                 long neighbourOffset = position;
@@ -162,6 +167,8 @@ internal static class HnswReader
             levels[level] = new HnswGraph.MappedLevel(body, docIds, offsets, counts);
         }
 
+        if (levelCount > 0 && levels[0].Count != nodeCount)
+            throw new InvalidDataException("HNSW base membership does not match its node count.");
         return levels;
     }
 

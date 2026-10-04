@@ -19,6 +19,8 @@ internal sealed class QuantisedVectorSource : IBBQVectorSource, IInt8VectorSourc
     }
 
     public int Dimension => _dimension;
+    public bool HasVector(int docId) => _reader.HasVector(docId);
+
     public int Count => _reader.DocCount;
     public VectorQuantisation Quantisation => _quantisation;
 

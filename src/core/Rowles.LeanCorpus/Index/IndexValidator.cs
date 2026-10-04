@@ -430,7 +430,9 @@ public static class IndexValidator
     {
         foreach (var vectorField in info.VectorFields)
         {
-            var vectorPath = VectorFilePaths.VectorFile(basePath, vectorField.FieldName);
+            var vectorPath = vectorField.Quantisation == VectorQuantisation.None
+                ? VectorFilePaths.VectorFile(basePath, vectorField.FieldName)
+                : VectorFilePaths.QuantisedVectorFile(basePath, vectorField.FieldName);
             if (!FileOpenRetry.FileExists(vectorPath))
             {
                 result.AddIssue(
@@ -477,7 +479,8 @@ public static class IndexValidator
         try
         {
             using var input = new IndexInput(vectorPath);
-            using var frame = CodecFileReader.OpenSupported(input, VectorCodecFiles.Float32);
+            using var frame = CodecFileReader.OpenSupported(input, vectorField.Quantisation == VectorQuantisation.None
+                ? VectorCodecFiles.Float32 : VectorCodecFiles.Quantised);
             int vectorCount = input.ReadInt32();
             int dimension = input.ReadInt32();
             if (vectorCount != info.DocCount)
@@ -842,16 +845,17 @@ public static class IndexValidator
     {
         foreach (var vectorField in info.VectorFields)
         {
-            var vectorPath = VectorFilePaths.VectorFile(basePath, vectorField.FieldName);
+            var vectorPath = vectorField.Quantisation == VectorQuantisation.None
+                ? VectorFilePaths.VectorFile(basePath, vectorField.FieldName)
+                : VectorFilePaths.QuantisedVectorFile(basePath, vectorField.FieldName);
             string fileName = Path.GetFileName(vectorPath);
             try
             {
-                using var reader = VectorReader.Open(vectorPath);
-                if (reader.VectorCount > 0)
-                {
-                    reader.ReadVector(0);
-                    reader.ReadVector(reader.VectorCount - 1);
-                }
+                using var directory = new MMapDirectory(Path.GetDirectoryName(basePath)!);
+                using var reader = new SegmentReader(directory, info);
+                for (int docId = 0; docId < info.DocCount; docId++)
+                    if (reader.HasVector(vectorField.FieldName, docId))
+                        _ = reader.GetVector(vectorField.FieldName, docId);
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or EndOfStreamException)
             {
@@ -873,14 +877,14 @@ public static class IndexValidator
             if (!vectorField.HasHnsw)
                 continue;
 
-            var vectorPath = VectorFilePaths.VectorFile(basePath, vectorField.FieldName);
             var hnswPath = VectorFilePaths.HnswFile(basePath, vectorField.FieldName);
             string fileName = Path.GetFileName(hnswPath);
             try
             {
-                using var vectorReader = VectorReader.Open(vectorPath);
-                var source = new VectorReaderSource(vectorReader);
-                using var graph = HnswReader.Read(hnswPath, source, vectorField.Normalised);
+                using var directory = new MMapDirectory(Path.GetDirectoryName(basePath)!);
+                using var reader = new SegmentReader(directory, info);
+                if (reader.GetHnswGraph(vectorField.FieldName) is null)
+                    throw new InvalidDataException("Declared HNSW graph is missing.");
             }
             catch (Exception ex) when (ex is IOException or InvalidDataException or EndOfStreamException)
             {

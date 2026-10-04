@@ -20,6 +20,10 @@
 
 ### Changed
 
+- Map storage, codec-migration and sparse-vector ADR documentation to their Core affected-test areas.
+
+- Advance float and quantised vector bodies to v2 with per-document presence; migrate reconstructable v1 fields using persisted HNSW membership without changing vector payload bytes, and reject migration without authoritative presence. HNSW remains v1.
+
 - Mark `Uax29UrlEmailTokeniser` obsolete and keep it as a forwarding compatibility wrapper; remove the false UAX #29 conformance claim.
 - Replace path-owning `JapaneseTokeniser` construction with explicit `JapaneseDictionary` ownership; tokenisers borrow supplied dictionaries, and disposal waits for active tokenisation. This public API break advances Rowles.Text to 3.0.0 and Core to 4.0.0.
 - Replace repeated Thai and Chinese lexicon prefix hash probes with an allocation-free radix trie, reducing tokenisation time for long unknown runs.
@@ -71,6 +75,8 @@
 - Reduced repeated `OperationDrain` entry in postings decoding by grouping multi-read decoder work under `BeginReadSession()`, improving representative real-query throughput on Windows and Linux. (c837dbb94, #75)
 
 ### Fixed
+
+- Exclude missing vectors from flat, filtered and HNSW reranking paths, and preserve sparse vector presence through merge, deletion and index-sort remapping, including explicitly supplied zero vectors.
 
 - Let reader and searcher managers shut down without waiting for a queued background refresh, while still draining active refreshes before retiring readers.
 

@@ -230,9 +230,9 @@ public sealed class HnswPersistenceTests : IClassFixture<TestDirectoryFixture>
     private sealed class TrivialVectorSource : IVectorSource
     {
         public int Dimension { get; init; }
-        public int Count => 0;
+        public int Count => 10;
         public ReadOnlySpan<float> GetVector(int docId) => throw new NotSupportedException();
-        public bool HasVector(int docId) => false;
+        public bool HasVector(int docId) => (uint)docId < (uint)Count;
     }
 
     [Fact(DisplayName = "Malformed File: Negative nodeCount throws")]

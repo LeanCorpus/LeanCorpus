@@ -28,6 +28,10 @@ internal sealed class QuantisedVectorReader : IDisposable
     private readonly IDisposable _frame;
 
     private bool _disposed;
+    private byte[]? _presence;
+    internal bool HasPersistedPresence => _presence is not null;
+    internal bool HasVector(int docId)
+        => (uint)docId < (uint)_docCount && (_presence is null || (_presence[docId >> 3] & (1 << (docId & 7))) != 0);
 
     private QuantisedVectorReader(
         IndexInput input,
@@ -50,7 +54,7 @@ internal sealed class QuantisedVectorReader : IDisposable
         _min = min;
         _alpha = alpha;
         _centroid = centroid;
-        _bbqPackedBytes = (dimension + 7) / 8;
+        _bbqPackedBytes = checked((dimension + 7) / 8);
         _frame = frame;
     }
 
@@ -79,8 +83,22 @@ internal sealed class QuantisedVectorReader : IDisposable
 
             var quantisation = (VectorQuantisation)reader.ReadByte(ref offset);
 
+            byte[]? presence = frame.FormatVersion >= 2
+                ? VectorPresence.Read(input, docCount, ref offset, checked(frame.BodyStart + frame.BodyLength)) : null;
             float min = 0f, alpha = 0f;
             float[]? centroid = null;
+
+            long parametersLength = quantisation switch
+            {
+                VectorQuantisation.Int8 => 2 * sizeof(float),
+                VectorQuantisation.BBQ => checked((long)dimension * sizeof(float)),
+                _ => throw new InvalidDataException($"Unsupported quantisation type {quantisation} in .vq file.")
+            };
+            int correctionSize = quantisation == VectorQuantisation.Int8 ? 1 : 3;
+            int packedBytes = quantisation == VectorQuantisation.Int8 ? dimension : checked((dimension + 7) / 8);
+            long expectedEnd = checked(offset + parametersLength + (long)docCount * (correctionSize * sizeof(float) + (long)packedBytes));
+            if (expectedEnd != checked(frame.BodyStart + frame.BodyLength))
+                throw new InvalidDataException("Quantised vector body length does not match its metadata.");
 
             switch (quantisation)
             {
@@ -101,15 +119,13 @@ internal sealed class QuantisedVectorReader : IDisposable
             }
 
             long correctionStart = offset;
-            int correctionSize = quantisation == VectorQuantisation.Int8 ? 1 : 3;
             long packedStart = offset + (long)docCount * correctionSize * sizeof(float);
-            int packedBytes = quantisation == VectorQuantisation.Int8 ? dimension : (dimension + 7) / 8;
             long dataEnd = checked(packedStart + (long)docCount * packedBytes);
             if (dataEnd != checked(frame.BodyStart + frame.BodyLength))
                 throw new InvalidDataException("Quantised vector body length does not match its metadata.");
 
             return new QuantisedVectorReader(input, docCount, dimension,
-                quantisation, correctionStart, packedStart, min, alpha, centroid, frame);
+                quantisation, correctionStart, packedStart, min, alpha, centroid, frame) { _presence = presence };
         }
         catch
         {

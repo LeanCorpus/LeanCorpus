@@ -14,6 +14,7 @@ namespace Rowles.LeanCorpus.Codecs.Vectors;
 internal sealed class BBQMemoryVectorSource : IBBQVectorSource
 {
     private readonly byte[] _packed;
+    private readonly byte[] _presence;
     private readonly float[] _centroid;
     private readonly int _docCount;
     private readonly int _dimension;
@@ -37,11 +38,13 @@ internal sealed class BBQMemoryVectorSource : IBBQVectorSource
         if (centroid.Length != dimension)
             throw new ArgumentException($"Centroid dimension {centroid.Length} != {dimension}.", nameof(centroid));
 
-        _docCount = vectorsByDoc.Count;
+        _docCount = vectorsByDoc.Count == 0 ? 0 : checked(vectorsByDoc.Keys.Max() + 1);
+        VectorPresence.ValidateVectors(_docCount, dimension, vectorsByDoc);
+        _presence = VectorPresence.Create(_docCount, vectorsByDoc.Keys);
         _dimension = dimension;
         _centroid = centroid;
-        _packedBytes = (dimension + 7) / 8;
-        _packed = new byte[_docCount * _packedBytes];
+        _packedBytes = checked((dimension + 7) / 8);
+        _packed = new byte[checked(_docCount * _packedBytes)];
 
         Span<float> zero = dimension <= 256 ? stackalloc float[dimension] : new float[dimension];
         zero.Clear();
@@ -68,6 +71,8 @@ internal sealed class BBQMemoryVectorSource : IBBQVectorSource
 
     public int Dimension => _dimension;
     public int Count => _docCount;
+    public bool HasVector(int docId) => (uint)docId < (uint)_docCount
+        && (_presence[docId >> 3] & (1 << (docId & 7))) != 0;
     public ReadOnlySpan<float> Centroid => _centroid;
 
     /// <summary>Dequantises into a freshly allocated float array: centroid[j] ± 1.</summary>
