@@ -125,6 +125,9 @@ internal static class CommitManager
     {
         int gen = generationOverride ?? writer.CommitGeneration;
         var dirPath = writer.Directory.DirectoryPath;
+        bool observeSpike = Diagnostics.SpikeInstrumentation.IsObserving;
+        if (observeSpike)
+            Diagnostics.SpikeInstrumentation.Record(Diagnostics.SpikeInstrumentationPoint.CommitMetadataStarting);
         var commitFile = Path.Combine(dirPath, $"segments_{gen}");
         if (pending)
             commitFile += ".pending";
@@ -144,12 +147,16 @@ internal static class CommitManager
         var commitJson = JsonSerializer.Serialize(commitData, LeanCorpusJsonContext.Default.CommitData);
 
         var fileContent = CommitFileFormat.Wrap(commitJson);
+        if (observeSpike)
+            Diagnostics.SpikeInstrumentation.Record(Diagnostics.SpikeInstrumentationPoint.CommitMetadataPrepared);
 
         writer.Config.CommitBeforePublication?.Invoke(commitFile);
 
         if (writer.Config.DurableCommits)
         {
             SyncChangedFiles(writer);
+            Diagnostics.SpikeInstrumentation.Record(Diagnostics.SpikeInstrumentationPoint.ChangedFilesPersisted);
+            Diagnostics.SpikeInstrumentation.Checkpoint("after_changed_files_persisted");
             DirectoryFsync.Sync(dirPath, strict: true);
             IndexAtomicFileWriter.WriteText(commitFile, fileContent, durable: true);
             if (!pending)
@@ -181,7 +188,38 @@ internal static class CommitManager
             fileName => fileName.Equals(statsFileName, StringComparison.Ordinal) ||
                         BelongsToCommittedSegment(fileName, segmentIds));
 
-        foreach (var dirtyFile in dirtyFiles)
+        IEnumerable<DirtyFileTracker.DirtyFile> filesToSync = dirtyFiles;
+        if (Diagnostics.SpikeInstrumentation.IsObserving)
+        {
+            var candidates = new List<DirtyFileTracker.DirtyFile>(dirtyFiles.Count);
+            foreach (var dirtyFile in dirtyFiles)
+            {
+                var fileName = Path.GetFileName(dirtyFile.Path);
+                if (!SegmentFileSet.IsTemporaryFileName(fileName, writer.Config.CodecCatalog))
+                    candidates.Add(dirtyFile);
+            }
+
+            long candidateBytes = 0;
+            foreach (var candidate in candidates)
+            {
+                try
+                {
+                    candidateBytes += FileOpenRetry.GetFileLength(candidate.Path);
+                }
+                catch (IOException) when (!FileOpenRetry.FileExists(candidate.Path))
+                {
+                    // Keep the same missing-file handling as the persistence loop below.
+                }
+            }
+
+            Diagnostics.SpikeInstrumentation.Record(
+                Diagnostics.SpikeInstrumentationPoint.DurabilityCandidates,
+                value: candidates.Count,
+                amount: candidateBytes);
+            filesToSync = candidates;
+        }
+
+        foreach (var dirtyFile in filesToSync)
         {
             var fileName = Path.GetFileName(dirtyFile.Path);
             if (SegmentFileSet.IsTemporaryFileName(fileName, writer.Config.CodecCatalog))

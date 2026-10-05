@@ -9,6 +9,7 @@ using Rowles.LeanCorpus.Codecs.Vectors;
 using Rowles.LeanCorpus.Codecs.Bkd;
 using Rowles.LeanCorpus.Codecs.TermVectors;
 using Rowles.LeanCorpus.Codecs.TermDictionary;
+using Rowles.LeanCorpus.Diagnostics;
 using Rowles.LeanCorpus.Index.Segment;
 using Rowles.LeanCorpus.Index.Indexer.Postings;
 using Rowles.LeanCorpus.Search;
@@ -531,6 +532,7 @@ internal static class SegmentFlusher
 
     internal static void CompleteSegment(SegmentInfo segment, IndexWriterConfig config, string directoryPath)
     {
+        SpikeInstrumentation.Checkpoint("after_loose_segment_complete");
         if (config.UseCompoundFile && SegmentFileSet.Pack(directoryPath, segment.SegmentId, config.CodecCatalog))
             segment.IsCompoundFile = true;
         RefreshSegmentSize(segment, directoryPath, config.CodecCatalog);

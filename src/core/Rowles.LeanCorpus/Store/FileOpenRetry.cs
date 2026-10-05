@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
+using Rowles.LeanCorpus.Diagnostics;
 
 namespace Rowles.LeanCorpus.Store;
 
@@ -134,11 +135,19 @@ internal static class FileOpenRetry
     /// <summary>Flushes a facade-created file stream through to durable storage.</summary>
     internal static void FlushToDisk(Stream stream)
     {
+        var fileStream = (FileStream)stream;
+        SpikeInstrumentation.Record(SpikeInstrumentationPoint.FilePersistRequested, fileStream.Name);
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long fileStartedAt = Diagnostics.FileSystemDiagnostics.StartFileSync();
-        try { ((FileStream)stream).Flush(flushToDisk: true); }
+        bool succeeded = false;
+        try
+        {
+            fileStream.Flush(flushToDisk: true);
+            succeeded = true;
+        }
         finally
         {
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.FilePersistReturned, fileStream.Name, succeeded ? 1 : 0);
             Diagnostics.FileSystemDiagnostics.RecordFileSync(fileStartedAt);
             Diagnostics.FileSystemDiagnostics.RecordSync(startedAt);
         }
@@ -159,6 +168,7 @@ internal static class FileOpenRetry
             {
                 File.Delete(path);
                 DirtyFileTracker.Delete(path);
+                SpikeInstrumentation.Record(SpikeInstrumentationPoint.FileDeleted, path);
                 return;
             }
             catch (Exception ex) when (ShouldRetry(ex, ref retries)) { DelayBeforeRetry(); }
@@ -185,7 +195,9 @@ internal static class FileOpenRetry
             try
             {
                 File.Move(sourcePath, destPath, overwrite);
-                return DirtyFileTracker.Move(sourcePath, destPath);
+                var dirtyFile = DirtyFileTracker.Move(sourcePath, destPath);
+                SpikeInstrumentation.Record(SpikeInstrumentationPoint.FileRenamed, destPath);
+                return dirtyFile;
             }
             catch (Exception ex) when (ShouldRetry(ex, ref retries)) { DelayBeforeRetry(); }
             catch (Exception ex)

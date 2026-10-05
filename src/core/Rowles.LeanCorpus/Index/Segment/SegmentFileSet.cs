@@ -1,5 +1,6 @@
 using System.Globalization;
 using Rowles.LeanCorpus.Codecs.CodecKit;
+using Rowles.LeanCorpus.Diagnostics;
 using Rowles.LeanCorpus.Store;
 
 namespace Rowles.LeanCorpus.Index.Segment;
@@ -58,10 +59,15 @@ internal sealed class SegmentFileSet
 
     /// <summary>Packs the segment's immutable codec members using the Store container writer.</summary>
     internal static bool Pack(string directoryPath, string segmentId, CodecCatalog? catalog = null)
-        => CompoundFileWriter.Pack(
+    {
+        SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackStarted);
+        bool packed = CompoundFileWriter.Pack(
             directoryPath,
             segmentId,
             Enumerate(directoryPath, segmentId, catalog, includeTemporary: false).ImmutableCodecFileNames);
+        SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackCompleted, value: packed ? 1 : 0);
+        return packed;
+    }
 
     internal static SegmentFileSet Enumerate(
         string directoryPath,

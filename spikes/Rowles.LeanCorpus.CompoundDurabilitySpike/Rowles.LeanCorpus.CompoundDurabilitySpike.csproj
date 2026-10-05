@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Rowles.LeanCorpus.CompoundDurabilitySpike</AssemblyName>
+    <RootNamespace>Rowles.LeanCorpus.CompoundDurabilitySpike</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/core/Rowles.LeanCorpus/Rowles.LeanCorpus.csproj" />
+    <ProjectReference Include="../../src/devops/Rowles.DataForge/Rowles.DataForge.csproj" />
+    <ProjectReference Include="../../src/devops/Rowles.DataForge.Workloads/Rowles.DataForge.Workloads.csproj" />
+  </ItemGroup>
+</Project>

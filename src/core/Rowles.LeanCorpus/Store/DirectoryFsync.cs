@@ -1,3 +1,5 @@
+using Rowles.LeanCorpus.Diagnostics;
+
 namespace Rowles.LeanCorpus.Store;
 
 /// <summary>
@@ -22,6 +24,7 @@ internal static class DirectoryFsync
     public static void Sync(string directoryPath, bool strict = false)
     {
         if (string.IsNullOrEmpty(directoryPath)) return;
+        SpikeInstrumentation.Record(SpikeInstrumentationPoint.DirectoryPersistRequested, directoryPath);
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long directoryStartedAt = Diagnostics.FileSystemDiagnostics.StartDirectorySync();
         DirectorySyncResult result = DirectorySyncResult.Failed;
@@ -43,6 +46,10 @@ internal static class DirectoryFsync
         {
             Diagnostics.FileSystemDiagnostics.RecordDirectorySync(directoryStartedAt, result);
             Diagnostics.FileSystemDiagnostics.RecordSync(startedAt);
+            SpikeInstrumentation.Record(
+                SpikeInstrumentationPoint.DirectoryPersistReturned,
+                directoryPath,
+                detail: result.ToString());
         }
     }
 
@@ -54,18 +61,22 @@ internal static class DirectoryFsync
     public static void SyncFile(string filePath, bool strict = false)
     {
         if (string.IsNullOrEmpty(filePath)) return;
+        SpikeInstrumentation.Record(SpikeInstrumentationPoint.FilePersistRequested, filePath);
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long fileStartedAt = Diagnostics.FileSystemDiagnostics.StartFileSync();
+        bool succeeded = false;
         try
         {
             if (strict)
             {
                 SyncFileCore(filePath);
+                succeeded = true;
                 return;
             }
             try
             {
                 SyncFileCore(filePath);
+                succeeded = true;
             }
             catch (FileNotFoundException ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "fsync (non-strict)"); }
             catch (DirectoryNotFoundException ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "fsync (non-strict)"); }
@@ -74,6 +85,7 @@ internal static class DirectoryFsync
         }
         finally
         {
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.FilePersistReturned, filePath, succeeded ? 1 : 0);
             Diagnostics.FileSystemDiagnostics.RecordFileSync(fileStartedAt);
             Diagnostics.FileSystemDiagnostics.RecordSync(startedAt);
         }

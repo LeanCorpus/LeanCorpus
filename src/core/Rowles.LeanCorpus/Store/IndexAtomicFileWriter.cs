@@ -1,5 +1,7 @@
 ﻿using System.Text;
 
+using Rowles.LeanCorpus.Diagnostics;
+
 namespace Rowles.LeanCorpus.Store;
 
 /// <summary>
@@ -27,6 +29,7 @@ internal static class IndexAtomicFileWriter
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(write);
+        bool commitMarker = Path.GetFileName(path).StartsWith("segments_", StringComparison.Ordinal);
         if (durable)
             Diagnostics.FileSystemDiagnostics.RecordImmediateDurableAtomicWrite();
 
@@ -39,12 +42,38 @@ internal static class IndexAtomicFileWriter
             {
                 write(stream);
                 if (durable)
+                {
                     FileOpenRetry.FlushToDisk(stream);
+                    if (commitMarker)
+                    {
+                        SpikeInstrumentation.Record(SpikeInstrumentationPoint.CommitMarkerTempPersisted, tempPath);
+                        SpikeInstrumentation.Checkpoint("after_commit_marker_tmp_persisted");
+                    }
+                }
             }
             var publishedFile = FileOpenRetry.Move(tempPath, path, overwrite: true);
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.AtomicReplace, path);
+            if (commitMarker)
+            {
+                SpikeInstrumentation.Record(SpikeInstrumentationPoint.CommitMarkerRenamed, path);
+                SpikeInstrumentation.Checkpoint("after_commit_marker_renamed");
+            }
 
             if (durable && syncDirectory)
-                DirectoryFsync.Sync(Path.GetDirectoryName(path) ?? string.Empty, strict: true);
+            {
+                try
+                {
+                    DirectoryFsync.Sync(Path.GetDirectoryName(path) ?? string.Empty, strict: true);
+                }
+                finally
+                {
+                    if (commitMarker)
+                    {
+                        SpikeInstrumentation.Record(SpikeInstrumentationPoint.CommitDirectoryPersistReturned, path);
+                        SpikeInstrumentation.Checkpoint("after_directory_persist_attempt");
+                    }
+                }
+            }
 
             if (durable)
                 DirtyFileTracker.MarkSynced(publishedFile);

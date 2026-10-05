@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text;
+using Rowles.LeanCorpus.Diagnostics;
 
 namespace Rowles.LeanCorpus.Store;
 
@@ -25,10 +26,16 @@ internal static class CompoundFileWriter
         if (sourceFiles.Length > MaxEntries)
             throw new InvalidDataException($"Segment '{segmentId}' has too many files for a compound file.");
 
+        foreach (var sourceFile in sourceFiles)
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackMember, sourceFile);
+
         var cfsName = segmentId + ".cfs";
         var cfsPath = Path.Combine(directoryPath, cfsName);
         var temporaryPath = cfsPath + ".tmp";
         var entries = new Entry[sourceFiles.Length];
+        long packInputBytes = 0;
+        long sourceReadBytes = 0;
+        long temporaryLength = 0;
         // Keep Windows compound writes incremental rather than eagerly extending every output.
         // Retain reservation on POSIX, where it avoids fragmented merge output.
         long expectedLength = OperatingSystem.IsWindows()
@@ -65,7 +72,9 @@ internal static class CompoundFileWriter
                         {
                             output.WriteBytes(buffer.AsSpan(0, read));
                             copied += read;
+                            sourceReadBytes += read;
                         }
+                        packInputBytes += copied;
                         entries[i] = entries[i] with { Length = copied };
                     }
                 }
@@ -81,11 +90,25 @@ internal static class CompoundFileWriter
                     output.WriteInt64(entry.Offset);
                     output.WriteInt64(entry.Length);
                 }
+
             }
 
+            temporaryLength = FileOpenRetry.GetFileLength(temporaryPath);
+
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackInputBytesCopied, amount: packInputBytes);
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackSourceBytesRead, amount: sourceReadBytes);
+            SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackTempClosed, temporaryPath, temporaryLength);
+            SpikeInstrumentation.Checkpoint("after_compound_tmp_close_before_rename");
+
             FileOpenRetry.Move(temporaryPath, cfsPath, overwrite: true);
+            SpikeInstrumentation.Record(
+                SpikeInstrumentationPoint.PackPublished,
+                cfsPath,
+                FileOpenRetry.GetFileLength(cfsPath));
+            SpikeInstrumentation.Checkpoint("after_compound_rename");
             foreach (var name in sourceFiles)
                 FileOpenRetry.Delete(Path.Combine(directoryPath, name));
+            SpikeInstrumentation.Checkpoint("after_loose_members_deleted");
             return true;
         }
         catch
