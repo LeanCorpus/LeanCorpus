@@ -16,6 +16,7 @@ internal static class Program
             return mode switch
             {
                 "prepare" => await SpikeRunner.PrepareAsync(root, parsed),
+                "validate-priming-contract" => await SpikeRunner.ValidatePrimingContractAsync(root, parsed),
                 "baseline-worker" => await SpikeRunner.BuildBaselineAsync(root, parsed),
                 "verify-datasets" => await SpikeRunner.VerifyDatasetsAsync(root, parsed),
                 "production-launch" => await SpikeRunner.RunProductionLaunchAsync(root, parsed),

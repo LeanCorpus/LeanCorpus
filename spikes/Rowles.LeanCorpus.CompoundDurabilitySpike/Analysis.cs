@@ -36,15 +36,35 @@ internal static partial class SpikeRunner
         }
 
         int[] allLaunches = [1, 2, 3, 4, 5];
-        string coreClassification = Classify(platforms, allLaunches);
+        string coreClassification = ClassifyCore(platforms, allLaunches);
+        int[][] sensitivityLaunchSets = allLaunches
+            .Select(omittedLaunch => allLaunches.Where(launch => launch != omittedLaunch).ToArray())
+            .ToArray();
         var sensitivity = new SortedDictionary<int, string>();
-        foreach (int omittedLaunch in allLaunches)
-            sensitivity[omittedLaunch] = Classify(platforms, allLaunches.Where(launch => launch != omittedLaunch).ToArray());
-        bool sensitivityChanged = sensitivity.Values.Any(value => !string.Equals(value, coreClassification, StringComparison.Ordinal));
+        for (int index = 0; index < allLaunches.Length; index++)
+            sensitivity[allLaunches[index]] = ClassifyCore(platforms, sensitivityLaunchSets[index]);
+
+        int[][] stabilityLaunchSets = [allLaunches, .. sensitivityLaunchSets];
+        Dictionary<string, string> stableSupportingLifecycle = platforms.ToDictionary(
+            static platform => platform.PlatformId,
+            platform => FindStableSupportingLifecycle(platform, stabilityLaunchSets) ?? "none",
+            StringComparer.Ordinal);
+        bool classificationChanged = sensitivity.Values.Any(value => !string.Equals(value, coreClassification, StringComparison.Ordinal));
+        bool sameLifecycleUnstable = coreClassification == "premise_supported"
+            && stableSupportingLifecycle.Values.Any(static lifecycle => lifecycle == "none");
+        bool otherClassificationUnstable = coreClassification switch
+        {
+            "platform_specific" => !PlatformSpecificStableAcrossLaunchSets(platforms, allLaunches, stabilityLaunchSets),
+            "mechanism_present_but_packing_cancels" => !MechanismStableAcrossLaunchSets(platforms, stabilityLaunchSets),
+            _ => false
+        };
+        bool sensitivityChanged = classificationChanged || sameLifecycleUnstable || otherClassificationUnstable;
         string classification = sensitivityChanged ? "inconclusive" : coreClassification;
         string rationale = BuildRationale(classification, coreClassification, sensitivityChanged, platforms);
-        string summaryMarkdown = BuildSummaryMarkdown(aggregateRoot, platforms, classification, coreClassification, rationale, sensitivity);
-        object summaryJson = BuildSummaryJson(aggregateRoot, platforms, classification, coreClassification, rationale, sensitivity);
+        string summaryMarkdown = BuildSummaryMarkdown(aggregateRoot, platforms, classification, coreClassification, rationale,
+            sensitivity, stableSupportingLifecycle);
+        object summaryJson = BuildSummaryJson(aggregateRoot, platforms, classification, coreClassification, rationale,
+            sensitivity, stableSupportingLifecycle);
 
         File.WriteAllText(Path.Combine(aggregateRoot, "summary.md"), summaryMarkdown, new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(aggregateRoot, "summary.json"),
@@ -267,7 +287,7 @@ internal static partial class SpikeRunner
             metrics[name].Add(new MetricPoint(launch, finite));
     }
 
-    private static string Classify(IReadOnlyList<PlatformData> platforms, IReadOnlyList<int> launches)
+    private static string ClassifyCore(IReadOnlyList<PlatformData> platforms, IReadOnlyList<int> launches)
     {
         if (platforms.Count != 2 || platforms.Any(platform => !platform.DataReady(launches)))
             return "inconclusive";
@@ -305,23 +325,23 @@ internal static partial class SpikeRunner
             if (Summarise(metrics["durability_saving_ms"], launches, 1901).Median is not > 0
                 || Summarise(metrics["operation_saving_ms"], launches, 1902).Median is not > 0)
                 continue;
-            bool stable = true;
-            for (int omittedLaunch = 1; omittedLaunch <= 5; omittedLaunch++)
-            {
-                int[] remaining = launches.Where(launch => launch != omittedLaunch).ToArray();
-                if (remaining.Length == launches.Count)
-                    continue;
-                if (Summarise(metrics["durability_saving_ms"], remaining, 1903 + omittedLaunch).Median is not > 0
-                    || Summarise(metrics["operation_saving_ms"], remaining, 1910 + omittedLaunch).Median is not > 0)
-                {
-                    stable = false;
-                    break;
-                }
-            }
-            if (stable)
-                return true;
+            return true;
         }
         return false;
+    }
+
+    private static string? FindStableSupportingLifecycle(PlatformData platform, IReadOnlyList<int[]> launchSets)
+    {
+        foreach (string lifecycle in Lifecycles)
+        {
+            Dictionary<string, List<MetricPoint>> metrics = BuildLifecycleMetrics(platform, lifecycle);
+            if (launchSets.All(launches =>
+                    Summarise(metrics["durability_saving_ms"], launches, 1901).Median is > 0
+                    && Summarise(metrics["operation_saving_ms"], launches, 1902).Median is > 0))
+                return lifecycle;
+        }
+
+        return null;
     }
 
     private static bool HasStructuralReduction(PlatformData platform, IReadOnlyList<int> launches)
@@ -340,14 +360,8 @@ internal static partial class SpikeRunner
         foreach (string metric in new[] { "durability_saving_ms", "operation_saving_ms" })
         {
             List<MetricPoint> points = BuildLifecycleMetrics(platform, lifecycle)[metric];
-            int fullSign = Sign(Summarise(points, launches, 2201).Median);
-            for (int omitted = 1; omitted <= 5; omitted++)
-            {
-                int[] remaining = launches.Where(launch => launch != omitted).ToArray();
-                if (remaining.Length != launches.Count
-                    && Sign(Summarise(points, remaining, 2202 + omitted).Median) != fullSign)
-                    return false;
-            }
+            if (Summarise(points, launches, 2201).Median is null)
+                return false;
         }
         return true;
     }
@@ -363,18 +377,48 @@ internal static partial class SpikeRunner
                 || Summarise(metrics["operation_saving_ms"], launches, 2302).Median is > 0
                 || Summarise(metrics["compound_pack_ms"], launches, 2303).Median is not > 0)
                 return false;
-            for (int omitted = 1; omitted <= 5; omitted++)
+        }
+        return true;
+    }
+
+    private static bool PlatformSpecificStableAcrossLaunchSets(
+        IReadOnlyList<PlatformData> platforms,
+        IReadOnlyList<int> allLaunches,
+        IReadOnlyList<int[]> launchSets)
+    {
+        bool linuxSupported = PlatformSupports(platforms.Single(static platform => platform.PlatformId == "linux-ext4"), allLaunches);
+        PlatformData other = platforms.Single(platform =>
+            platform.PlatformId == (linuxSupported ? "windows-ntfs" : "linux-ext4"));
+        return StableNeutralOrContraryAcrossLaunchSets(other, launchSets);
+    }
+
+    private static bool StableNeutralOrContraryAcrossLaunchSets(
+        PlatformData platform,
+        IReadOnlyList<int[]> launchSets)
+    {
+        foreach (string lifecycle in Lifecycles)
+        foreach (string metric in new[] { "durability_saving_ms", "operation_saving_ms" })
+        {
+            List<MetricPoint> points = BuildLifecycleMetrics(platform, lifecycle)[metric];
+            int? fullSign = null;
+            foreach (int[] launches in launchSets)
             {
-                int[] remaining = launches.Where(launch => launch != omitted).ToArray();
-                if (remaining.Length == launches.Count)
-                    continue;
-                if (Summarise(metrics["durability_saving_ms"], remaining, 2310 + omitted).Median is not > 0
-                    || Summarise(metrics["operation_saving_ms"], remaining, 2320 + omitted).Median is > 0)
+                double? median = Summarise(points, launches, 2201).Median;
+                if (median is null)
                     return false;
+                int sign = Sign(median);
+                if (fullSign is int expectedSign && expectedSign != sign)
+                    return false;
+                fullSign = sign;
             }
         }
         return true;
     }
+
+    private static bool MechanismStableAcrossLaunchSets(
+        IReadOnlyList<PlatformData> platforms,
+        IReadOnlyList<int[]> launchSets)
+        => platforms.Any(platform => launchSets.All(launches => MechanismPresentButPackingCancels(platform, launches)));
 
     private static bool HasPositiveDurabilitySaving(PlatformData platform, IReadOnlyList<int> launches)
         => Lifecycles.Any(lifecycle =>
@@ -534,7 +578,7 @@ internal static partial class SpikeRunner
         IReadOnlyList<PlatformData> platforms)
     {
         if (sensitivityChanged)
-            return $"The all-five-launch classification was {baseClassification}, but at least one leave-one-launch-out classification differed; the sensitivity result is inconclusive.";
+            return $"The all-five-launch classification was {baseClassification}, but a predeclared leave-one-launch-out or same-lifecycle stability check failed; the result is inconclusive.";
         if (classification == "premise_supported")
             return "Both primary platforms have exact matched topology, lower compound persistence-object counts and requests, positive paired durability savings, and positive paired end-to-end savings in at least one lifecycle that remain positive under every launch omission.";
         if (classification == "platform_specific")
@@ -555,7 +599,8 @@ internal static partial class SpikeRunner
         string classification,
         string baseClassification,
         string rationale,
-        IReadOnlyDictionary<int, string> sensitivity)
+        IReadOnlyDictionary<int, string> sensitivity,
+        IReadOnlyDictionary<string, string> stableSupportingLifecycle)
     {
         var output = new StringBuilder();
         output.AppendLine("# Spike 1B: Compound packing and durability mechanism");
@@ -565,6 +610,8 @@ internal static partial class SpikeRunner
         output.AppendLine($"Classification: **{classification}**");
         output.AppendLine();
         output.AppendLine("Spike 1A remains separate exploratory evidence. Its findings and evidence pack were not rerun or changed by this confirmation run.");
+        output.AppendLine();
+        output.AppendLine("This replacement is the publication-preferred Spike 1B confirmation and supersedes `06083eecc7492d6c5671c47ba5704eb807c63fd2` for publication because the observer-induced candidate metadata pass and reopened-steady writer-open control were corrected. The earlier evidence remains preserved as historical evidence; it is not treated as invalid or fabricated.");
         output.AppendLine();
         output.AppendLine("## Provenance and dataset identity");
         output.AppendLine();
@@ -590,18 +637,20 @@ internal static partial class SpikeRunner
         AppendPersistenceSummary(output, platforms);
         AppendPairedSummary(output, platforms);
         AppendLaunchSensitivity(output, platforms, sensitivity);
+        AppendSameLifecycleStability(output, stableSupportingLifecycle);
         AppendCardinalitySummary(output, platforms);
         AppendCorrectnessSummary(output, platforms);
         output.AppendLine("## Classification");
         output.AppendLine();
         output.AppendLine($"All-five-launch classification before sensitivity: {baseClassification}.");
         output.AppendLine($"Final classification after applying the five leave-one-launch-out checks: {classification}.");
+        output.AppendLine($"Compared with the previous `premise_supported` result, the replacement classification {(classification == "premise_supported" ? "agrees" : "differs")}.");
         output.AppendLine();
         output.AppendLine(rationale);
         output.AppendLine();
         output.AppendLine("A positive median is the predeclared direction for savings; no additional effect-size threshold was introduced. Paired confidence intervals use a launch-cluster bootstrap with 10,000 resamples.");
         output.AppendLine();
-        output.AppendLine("The reopened-steady priming commit is durable and unmeasured. Its generation and inherited-file persistence requests are verified before the measured batch. The measured durability setting is applied after priming.");
+        output.AppendLine("The reopened-steady priming commit is durable and unmeasured. Its generation, durable writer-open setting, and inherited-file persistence request floor are verified before the measured batch. The measured durability setting is applied after priming.");
         output.AppendLine();
         output.AppendLine("The production compound temporary output remained non-durable. The real pack, close, dirty registration, rename, loose-member deletion, and later durable commit sequence was observed without an added .cfs.tmp persistence request.");
         output.AppendLine();
@@ -703,6 +752,21 @@ internal static partial class SpikeRunner
         output.AppendLine();
     }
 
+    private static void AppendSameLifecycleStability(
+        StringBuilder output,
+        IReadOnlyDictionary<string, string> stableSupportingLifecycle)
+    {
+        output.AppendLine("## Same-lifecycle support stability");
+        output.AppendLine();
+        output.AppendLine("A lifecycle is reported only when that same lifecycle has positive all-five-launch medians for durability and operation savings, and both medians remain positive in each of the five outer leave-one-launch-out launch sets.");
+        output.AppendLine();
+        output.AppendLine("| Platform | Stable supporting lifecycle | All-five and five outer leave-one-launch-out signs positive |");
+        output.AppendLine("|---|---|---|");
+        foreach ((string platform, string lifecycle) in stableSupportingLifecycle)
+            output.AppendLine($"| {platform} | {lifecycle} | {lifecycle != "none"} |");
+        output.AppendLine();
+    }
+
     private static void AppendCardinalitySummary(StringBuilder output, IReadOnlyList<PlatformData> platforms)
     {
         output.AppendLine("## Compact cardinality confirmation");
@@ -734,7 +798,8 @@ internal static partial class SpikeRunner
         string classification,
         string baseClassification,
         string rationale,
-        IReadOnlyDictionary<int, string> sensitivity)
+        IReadOnlyDictionary<int, string> sensitivity,
+        IReadOnlyDictionary<string, string> stableSupportingLifecycle)
         => new
         {
             experiment_sha = ExpectedExperiment(platforms),
@@ -743,6 +808,9 @@ internal static partial class SpikeRunner
             pre_sensitivity_classification = baseClassification,
             rationale,
             leave_one_launch_out_classification = sensitivity,
+            same_lifecycle_stable_supporting_lifecycle = stableSupportingLifecycle,
+            previous_classification = "premise_supported",
+            agrees_with_previous_classification = classification == "premise_supported",
             cross_platform_dataset_sha256_match = platforms.Select(static platform => platform.CorpusSha256)
                 .Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1,
             platforms = platforms.Select(platform => new
@@ -822,6 +890,14 @@ internal static partial class SpikeRunner
 
     private static bool HasCommitTiming(IReadOnlyDictionary<string, string> row)
         => ParseDouble(row["commit_call_ms"]) is not null;
+
+    private static bool IsSteadyPrimingObservationValid(IReadOnlyDictionary<string, string> row)
+        => ParseBoolean(row.GetValueOrDefault("priming_open_durable", string.Empty))
+            && ParseBoolean(row.GetValueOrDefault("priming_durable_baseline_pass", string.Empty))
+            && ParseLong(row.GetValueOrDefault("priming_expected_inherited_file_count", string.Empty)) > 0
+            && ParseLong(row.GetValueOrDefault("priming_file_persist_requests", string.Empty))
+                >= ParseLong(row.GetValueOrDefault("priming_expected_inherited_file_count", string.Empty))
+            && ParseLong(row.GetValueOrDefault("priming_directory_persist_requests", string.Empty)) > 0;
 
     private static int ParseInt(string value)
         => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed : 0;
@@ -931,6 +1007,10 @@ internal static partial class SpikeRunner
                     || row.GetValueOrDefault("index_integrity_pass") != "true"));
             if (CorrectnessFailure)
                 ValidationErrors.Add("At least one measured production observation failed reopen, ID lookup, or deep index integrity validation.");
+            int invalidSteadyPriming = Production.Count(row => row.GetValueOrDefault("lifecycle") == "reopened-steady"
+                && !IsSteadyPrimingObservationValid(row));
+            if (invalidSteadyPriming > 0)
+                ValidationErrors.Add($"{invalidSteadyPriming} reopened-steady production observations failed writer-open or inherited-file priming validation.");
             SourceSemanticsValid = Production.All(row => ParseInt(row.GetValueOrDefault("pack_temp_explicit_persist_requests", "0")) == 0);
             if (!SourceSemanticsValid)
                 ValidationErrors.Add("An explicit persistence request was observed for the compound temporary output.");

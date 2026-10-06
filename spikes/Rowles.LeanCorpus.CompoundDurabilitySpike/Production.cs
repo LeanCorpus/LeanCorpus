@@ -149,8 +149,16 @@ internal static partial class SpikeRunner
         {
             LeanDocument[] documents = ReadDocuments(paths, Dataset.BatchStart, Dataset.BatchCount).ToArray();
             using var directory = new MMapDirectory(trialPath);
-            IndexWriterConfig config = CreateConfig(representation, durable);
+            IndexWriterConfig config = CreateConfig(representation, durable, lifecycle);
             using var writer = new IndexWriter(directory, config);
+            if (lifecycle == "reopened-steady")
+            {
+                row.Set("priming_open_durable", config.DurableCommits);
+                row.Set("priming_expected_inherited_file_count", 0);
+                row.Set("priming_file_persist_requests", 0);
+                row.Set("priming_directory_persist_requests", 0);
+                row.Set("priming_durable_baseline_pass", false);
+            }
             using var detailedMeasurement = FileSystemDiagnostics.BeginDetailedMeasurement();
 
             long primingFileRequests = 0;
@@ -166,23 +174,28 @@ internal static partial class SpikeRunner
 
                 if (lifecycle == "reopened-steady")
                 {
-                    primingGenerationBefore = beforePriming.CommitGeneration;
-                    FileSystemDiagnosticsSnapshot primingBefore = FileSystemDiagnostics.GetSnapshot();
-                    config.DurableCommits = true;
-                    writer.Commit();
-                    FileSystemDiagnosticsSnapshot primingAfter = FileSystemDiagnostics.GetSnapshot();
-                    primingFileRequests = primingAfter.FileSyncCount - primingBefore.FileSyncCount;
-                    primingDirectoryRequests = primingAfter.DirectorySyncAttemptCount - primingBefore.DirectorySyncAttemptCount;
-                    IndexTopology afterPriming = Topology.Read(trialPath, representation, inspectEveryDocument: false);
-                    primingGenerationAfter = afterPriming.CommitGeneration;
-                    primingPassed = primingGenerationBefore is int generationBefore
-                        && primingGenerationAfter == generationBefore + 1
-                        && primingFileRequests > 0
-                        && Topology.HasExpectedBaseline(afterPriming)
-                        && SameLogicalTopology(beforePriming, afterPriming);
+                    int inheritedFileCount = beforePriming.Segments.Sum(static segment => segment.PhysicalFileCount);
+                    row.Set("priming_open_durable", config.DurableCommits);
+                    row.Set("priming_expected_inherited_file_count", inheritedFileCount);
+                    row.Set("priming_file_persist_requests", primingFileRequests);
+                    row.Set("priming_directory_persist_requests", primingDirectoryRequests);
+                    row.Set("priming_durable_baseline_pass", false);
+
+                    PrimingEvidence priming = EstablishPrimingBaseline(
+                        config,
+                        durable,
+                        beforePriming,
+                        FileSystemDiagnostics.GetSnapshot,
+                        writer.Commit,
+                        () => Topology.Read(trialPath, representation, inspectEveryDocument: false));
+                    primingGenerationBefore = priming.GenerationBefore;
+                    primingGenerationAfter = priming.GenerationAfter;
+                    primingFileRequests = priming.FilePersistRequests;
+                    primingDirectoryRequests = priming.DirectoryPersistRequests;
+                    primingPassed = priming.Passed;
+                    SetPrimingEvidence(row, priming);
                     if (primingPassed != true)
                         throw new InvalidDataException("The unmeasured durable priming commit did not establish the reopened durability baseline.");
-                    config.DurableCommits = durable;
                 }
             }
 
@@ -321,7 +334,7 @@ internal static partial class SpikeRunner
         }
     }
 
-    private static IndexWriterConfig CreateConfig(string representation, bool durable)
+    private static IndexWriterConfig CreateConfig(string representation, bool durable, string? lifecycle = null)
         => new()
         {
             IndexingConcurrency = 1,
@@ -330,7 +343,7 @@ internal static partial class SpikeRunner
             MaxBufferedDocs = 10_000,
             MergePolicy = NoMergePolicy.Instance,
             UseCompoundFile = representation == "compound",
-            DurableCommits = durable
+            DurableCommits = lifecycle == "reopened-steady" || durable
         };
 
     private static bool HasExpectedMeasuredTopology(IndexTopology topology, string lifecycle)
@@ -426,6 +439,13 @@ internal static partial class SpikeRunner
         row.Set("ram_buffer_mib", 32);
         row.Set("max_buffered_docs", 10_000);
         row.Set("merge_policy", "NoMergePolicy");
+        row.Set("priming_open_durable", "not_applicable");
+        row.Set("priming_expected_inherited_file_count", null);
+        row.Set("priming_commit_generation_before", null);
+        row.Set("priming_commit_generation_after", null);
+        row.Set("priming_file_persist_requests", 0);
+        row.Set("priming_directory_persist_requests", 0);
+        row.Set("priming_durable_baseline_pass", "not_applicable");
         row.Set("expected_doc_count", expectedDocs);
         row.Set("reopen_ok", false);
         row.Set("actual_doc_count", null);
