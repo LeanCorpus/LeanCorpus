@@ -17,8 +17,10 @@ internal static class Program
             {
                 "prepare" => await SpikeRunner.PrepareAsync(root, parsed),
                 "baseline-worker" => await SpikeRunner.BuildBaselineAsync(root, parsed),
+                "verify-datasets" => await SpikeRunner.VerifyDatasetsAsync(root, parsed),
                 "production-launch" => await SpikeRunner.RunProductionLaunchAsync(root, parsed),
                 "production-worker" => await SpikeRunner.RunProductionWorkerAsync(root, parsed),
+                "prepare-cardinality" => await SpikeRunner.PrepareCardinalityAsync(root, parsed),
                 "cardinality-launch" => await SpikeRunner.RunCardinalityLaunchAsync(root, parsed),
                 "cardinality-worker" => await SpikeRunner.RunCardinalityWorkerAsync(root, parsed),
                 "recovery-run" => await SpikeRunner.RunRecoveryAsync(root, parsed),

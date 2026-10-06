@@ -49,7 +49,10 @@ internal static class SpikeInfrastructure
         string? directory = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location);
         while (!string.IsNullOrWhiteSpace(directory))
         {
-            if (Directory.Exists(Path.Combine(directory, ".git")))
+            if (Directory.Exists(Path.Combine(directory, ".git"))
+                || File.Exists(Path.Combine(directory, ".git"))
+                || File.Exists(Path.Combine(directory, "devops.ps1"))
+                    && Directory.Exists(Path.Combine(directory, "spikes", "Rowles.LeanCorpus.CompoundDurabilitySpike")))
                 return directory;
             directory = Directory.GetParent(directory)?.FullName;
         }

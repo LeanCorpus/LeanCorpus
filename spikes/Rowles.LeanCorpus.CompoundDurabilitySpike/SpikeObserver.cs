@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using Rowles.LeanCorpus.Diagnostics;
 
 namespace Rowles.LeanCorpus.CompoundDurabilitySpike;
@@ -17,6 +18,7 @@ internal sealed class SpikeObserver(string? failpoint = null, string? controlLog
     private long _metadataCompletedAt;
     private long _durabilityStartedAt;
     private long _durabilityCompletedAt;
+    private readonly List<long> _packMemberSizes = [];
 
     public long PackMemberCount { get; private set; }
     public long PackInputBytes { get; private set; }
@@ -24,6 +26,7 @@ internal sealed class SpikeObserver(string? failpoint = null, string? controlLog
     public long PackSourceReadBytes { get; private set; }
     public long PackTempWrittenBytes { get; private set; }
     public long PackTempExplicitPersistRequests { get; private set; }
+    public string PackMemberSizeVectorBytes => JsonSerializer.Serialize(_packMemberSizes);
     public bool PackEmbeddedInCommit => _packObserved && _packEmbeddedInCommit;
     public long DurabilityCandidateFiles { get; private set; }
     public long DurabilityCandidateBytes { get; private set; }
@@ -70,6 +73,7 @@ internal sealed class SpikeObserver(string? failpoint = null, string? controlLog
                 break;
             case SpikeInstrumentationPoint.PackMember:
                 PackMemberCount++;
+                _packMemberSizes.Add(item.Amount);
                 break;
             case SpikeInstrumentationPoint.PackInputBytesCopied:
                 PackInputBytes += item.Amount;

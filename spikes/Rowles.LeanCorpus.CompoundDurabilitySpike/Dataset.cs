@@ -15,7 +15,7 @@ internal static class Dataset
     internal const int BaselineCount = 90_000;
     internal const int BatchStart = 90_000;
     internal const int BatchCount = 10_000;
-    internal const int PayloadBytes = 67_108_864;
+    internal static readonly int[] CardinalityPayloadSizes = [8 * 1024 * 1024, 82 * 1024 * 1024];
 
     private static readonly JsonSerializerOptions RecordJsonOptions = new()
     {
@@ -96,7 +96,8 @@ internal static class Dataset
                 item.GetProperty("name").GetString()!,
                 item.GetProperty("version").GetString()!))
             .ToArray();
-        var parameters = root.GetProperty("parameters").EnumerateObject()
+        JsonElement generationParameters = root.GetProperty("generation_parameters");
+        var parameters = generationParameters.GetProperty("profile_parameters").EnumerateObject()
             .ToDictionary(static item => item.Name, static item => item.Value.GetString()!, StringComparer.Ordinal);
         return new DataForgeDatasetIdentity(
             DataForgeSourceKind.Generated,
@@ -105,11 +106,11 @@ internal static class Dataset
             root.GetProperty("profileVersion").GetInt32(),
             null,
             null,
-            root.GetProperty("seed").GetUInt64(),
-            root.GetProperty("recordCount").GetInt32(),
+            generationParameters.GetProperty("seed").GetUInt64(),
+            generationParameters.GetProperty("record_count").GetInt32(),
             parameters,
             dependencies,
-            root.GetProperty("contentSha256").GetString()!);
+            root.GetProperty("canonical_content_sha256").GetString()!);
     }
 
     public static string DatasetId(SpikePaths paths) => ReadIdentity(paths).GetShortKey();
@@ -149,24 +150,36 @@ internal static class Dataset
     public static SearchRecord ReadRecord(SpikePaths paths, int ordinal)
         => ReadRange(paths, ordinal, 1).Single();
 
-    public static void CreateCardinalityPayload(SpikePaths paths)
+    public static void CreateCardinalityPayloads(SpikePaths paths)
     {
-        if (File.Exists(paths.PayloadPath))
-            throw new IOException("The cardinality payload already exists. Refusing to replace it.");
-
-        byte[] payload = GC.AllocateUninitializedArray<byte>(PayloadBytes);
-        for (int index = 0; index < payload.Length; index++)
-            payload[index] = (byte)((index * 31 + 17) & 0xff);
-
-        using (var stream = new FileStream(paths.PayloadPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                   1024 * 1024, FileOptions.SequentialScan))
+        foreach (int payloadBytes in CardinalityPayloadSizes)
         {
-            stream.Write(payload);
-            stream.Flush(flushToDisk: true);
-        }
+            string payloadPath = paths.CardinalityPayloadPath(payloadBytes);
+            string shaPath = paths.CardinalityPayloadShaPath(payloadBytes);
+            if (File.Exists(payloadPath) || File.Exists(shaPath))
+                throw new IOException($"The {payloadBytes}-byte cardinality payload already exists. Refusing to replace it.");
 
-        string hash = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant();
-        File.WriteAllText(paths.PayloadShaPath, hash + "\n", new UTF8Encoding(false));
+            byte[] buffer = GC.AllocateUninitializedArray<byte>(1024 * 1024);
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            using (var stream = new FileStream(payloadPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                       buffer.Length, FileOptions.SequentialScan))
+            {
+                long offset = 0;
+                while (offset < payloadBytes)
+                {
+                    int count = (int)Math.Min(buffer.Length, payloadBytes - offset);
+                    for (int index = 0; index < count; index++)
+                        buffer[index] = (byte)(((offset + index) * 31 + 17) & 0xff);
+                    stream.Write(buffer, 0, count);
+                    hash.AppendData(buffer.AsSpan(0, count));
+                    offset += count;
+                }
+                stream.Flush(flushToDisk: true);
+            }
+
+            string sha = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+            File.WriteAllText(shaPath, sha + "\n", new UTF8Encoding(false));
+        }
     }
 
     public static string HashFile(string path)
@@ -197,12 +210,14 @@ internal static class Dataset
             dataForgeVersion = identity.DataForgeVersion,
             profileId = identity.ProfileId,
             profileVersion = identity.ProfileVersion,
-            seed = identity.Seed,
-            recordCount = identity.RecordCount,
-            generationOptions = "new DataForgeGenerationOptions(42, 100000)",
-            parameters = identity.Parameters,
+            generation_parameters = new
+            {
+                seed = generation.Seed,
+                record_count = generation.RecordCount,
+                profile_parameters = identity.Parameters
+            },
             dependencies = identity.Dependencies,
-            contentSha256 = identity.ContentSha256,
+            canonical_content_sha256 = identity.ContentSha256,
             datasetId = identity.GetShortKey()
         };
         var options = new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };

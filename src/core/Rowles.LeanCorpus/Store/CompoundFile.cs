@@ -26,9 +26,6 @@ internal static class CompoundFileWriter
         if (sourceFiles.Length > MaxEntries)
             throw new InvalidDataException($"Segment '{segmentId}' has too many files for a compound file.");
 
-        foreach (var sourceFile in sourceFiles)
-            SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackMember, sourceFile);
-
         var cfsName = segmentId + ".cfs";
         var cfsPath = Path.Combine(directoryPath, cfsName);
         var temporaryPath = cfsPath + ".tmp";
@@ -76,6 +73,7 @@ internal static class CompoundFileWriter
                         }
                         packInputBytes += copied;
                         entries[i] = entries[i] with { Length = copied };
+                        SpikeInstrumentation.Record(SpikeInstrumentationPoint.PackMember, sourceFiles[i], amount: copied);
                     }
                 }
                 finally

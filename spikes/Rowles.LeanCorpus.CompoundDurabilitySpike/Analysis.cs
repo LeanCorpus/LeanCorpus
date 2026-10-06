@@ -9,825 +9,780 @@ internal static partial class SpikeRunner
 {
     private static readonly string[] PrimaryPlatforms = ["linux-ext4", "windows-ntfs"];
     private static readonly string[] Representations = ["loose", "compound"];
-    private static readonly string[] Lifecycles = ["fresh", "reopened"];
+    private static readonly string[] Lifecycles = ["fresh", "reopened-first", "reopened-steady"];
     private static readonly bool[] DurabilityLevels = [false, true];
+    private static readonly string[] PairedMetricNames =
+    [
+        "durability_saving_ms",
+        "operation_saving_ms",
+        "loose_durability_penalty_ms",
+        "compound_durability_penalty_ms",
+        "durability_penalty_difference_in_differences_ms",
+        "durability_candidate_file_saving",
+        "durability_candidate_byte_saving",
+        "file_persist_request_saving",
+        "compound_pack_ms"
+    ];
 
     public static Task<int> AnalyseAsync(string root, Arguments arguments)
     {
         string aggregateRoot = Path.GetFullPath(root);
-        Directory.CreateDirectory(aggregateRoot);
-        var platformData = PrimaryPlatforms.Select(platform => LoadPlatform(aggregateRoot, platform)).ToArray();
-        string baseSha = ReadFirst(platformData, "base-sha.txt");
-        string spikeSha = ReadFirst(platformData, "spike-sha.txt");
-        string startedUtc = ReadFirst(platformData, "started-utc.txt");
-        string corpusSha = ReadCorpusHash(platformData);
-        var bootstrap = new Random(20261004);
-        var summaries = new StringBuilder();
-
-        AppendFullProductionStatistics(summaries, platformData, bootstrap);
-        AppendCardinalityStatistics(summaries, platformData, bootstrap);
-        var comparison = BuildMatchedComparisons(platformData, bootstrap);
-        AppendComparisonStatistics(summaries, comparison, bootstrap);
-
-        bool hasMissingPlatform = platformData.Any(static platform => !platform.HasEnvironment);
-        bool anyInvalidPartial = platformData.SelectMany(static platform => platform.Recovery)
-            .Any(static row => row["recovered_generation_class"] == "invalid_partial");
-        bool anyUnopenable = platformData.SelectMany(static platform => platform.Recovery)
-            .Any(static row => row["recovered_generation_class"] == "unopenable");
-        bool anyPostReturnViolation = platformData.SelectMany(static platform => platform.Recovery)
-            .Any(static row => row["checkpoint"] == "after_commit_return"
-                && row["termination_kind"] != "not_applicable"
-                && (row["recovered_generation_class"] != "new_complete" || ParseLong(row["tmp_file_count"]) != 0));
-        bool anyMissingOrTruncated = platformData.SelectMany(static platform => platform.Recovery)
-            .Any(static row => ParseLong(row["missing_file_count"]) > 0 || ParseLong(row["truncated_file_count"]) > 0);
-        bool correctnessFailure = anyInvalidPartial || anyUnopenable || anyPostReturnViolation || anyMissingOrTruncated;
-        var qualification = platformData.ToDictionary(
-            static platform => platform.PlatformId,
-            platform => Qualify(platform, [1, 2, 3]),
-            StringComparer.Ordinal);
-        string classification = Classify(platformData, qualification, hasMissingPlatform, correctnessFailure);
-        var launchSensitivity = new SortedDictionary<int, string>();
-        if (!correctnessFailure)
+        PlatformData[] platforms = PrimaryPlatforms.Select(platform => LoadPlatform(aggregateRoot, platform)).ToArray();
+        ValidateCrossPlatformIdentity(platforms, aggregateRoot);
+        foreach (PlatformData platform in platforms)
         {
-            foreach (int omittedLaunch in new[] { 1, 2, 3 })
-            {
-                int[] remainingLaunches = new[] { 1, 2, 3 }.Where(launch => launch != omittedLaunch).ToArray();
-                PlatformData[] reducedPlatforms = platformData.Select(platform => platform with
-                {
-                    Production = platform.Production.Where(row => ParseInt(row["launch"]) != omittedLaunch).ToList(),
-                    Cardinality = platform.Cardinality.Where(row => ParseInt(row["launch"]) != omittedLaunch).ToList()
-                }).ToArray();
-                var reducedQualification = reducedPlatforms.ToDictionary(
-                    static platform => platform.PlatformId,
-                    platform => Qualify(platform, remainingLaunches),
-                    StringComparer.Ordinal);
-                launchSensitivity[omittedLaunch] = Classify(
-                    reducedPlatforms,
-                    reducedQualification,
-                    hasMissingPlatform,
-                    correctnessFailure: false);
-            }
+            WritePairedAnalysis(platform);
+            WriteCardinalitySummary(platform);
         }
-        bool sensitivityChanged = !correctnessFailure
-            && launchSensitivity.Values.Any(result => !string.Equals(result, classification, StringComparison.Ordinal));
-        if (sensitivityChanged)
-            classification = "inconclusive";
-        bool proceed = classification is "premise_supported" or "platform_specific" or "mechanism_present_but_packing_cancels";
-        int correctnessFailures = CountCorrectnessFailures(platformData);
 
-        AppendMandatoryTables(summaries, platformData, comparison, bootstrap);
-        AppendClassification(summaries, classification, proceed, qualification, platformData, launchSensitivity, sensitivityChanged);
-        WriteDoseResponseSvg(aggregateRoot, platformData, bootstrap);
-        string completedUtc = SpikeInfrastructure.CurrentUtc();
+        int[] allLaunches = [1, 2, 3, 4, 5];
+        string coreClassification = Classify(platforms, allLaunches);
+        var sensitivity = new SortedDictionary<int, string>();
+        foreach (int omittedLaunch in allLaunches)
+            sensitivity[omittedLaunch] = Classify(platforms, allLaunches.Where(launch => launch != omittedLaunch).ToArray());
+        bool sensitivityChanged = sensitivity.Values.Any(value => !string.Equals(value, coreClassification, StringComparison.Ordinal));
+        string classification = sensitivityChanged ? "inconclusive" : coreClassification;
+        string rationale = BuildRationale(classification, coreClassification, sensitivityChanged, platforms);
+        string summaryMarkdown = BuildSummaryMarkdown(aggregateRoot, platforms, classification, coreClassification, rationale, sensitivity);
+        object summaryJson = BuildSummaryJson(aggregateRoot, platforms, classification, coreClassification, rationale, sensitivity);
 
-        var platformSummary = platformData.Select(platform => new
-        {
-            platform_id = platform.PlatformId,
-            environment_id = platform.EnvironmentId,
-            status = !platform.HasEnvironment ? "missing" : qualification[platform.PlatformId].Valid ? "complete" : "incomplete",
-            production_cells_completed = CountCompletedProductionCells(platform),
-            cardinality_cells_completed = CountCompletedCardinalityCells(platform),
-            recovery_trials_completed = platform.Recovery.Count(static row => row["termination_kind"] != "not_applicable"),
-            premise_criteria_pass = qualification[platform.PlatformId].PremiseCriteriaPass,
-            premise_supported = qualification[platform.PlatformId].PremiseSupported,
-            durable_cardinality_spearman = qualification[platform.PlatformId].Spearman
-        }).ToArray();
-
-        int productionCellsCompleted = platformData.Sum(CountCompletedProductionCells);
-        int cardinalityCellsCompleted = platformData.Sum(CountCompletedCardinalityCells);
-        int recoveryTrialsCompleted = platformData.Sum(platform =>
-            platform.Recovery.Count(static row => row["termination_kind"] != "not_applicable"));
-        var summaryJson = new
-        {
-            base_sha = baseSha,
-            spike_sha = spikeSha,
-            started_utc = startedUtc,
-            completed_utc = completedUtc,
-            platforms = platformSummary,
-            corpus_sha256 = corpusSha,
-            production_cells_expected = 16,
-            production_cells_completed = productionCellsCompleted,
-            cardinality_cells_expected = 28,
-            cardinality_cells_completed = cardinalityCellsCompleted,
-            recovery_trials_expected = 90,
-            recovery_trials_completed = recoveryTrialsCompleted,
-            correctness_failures = correctnessFailures,
-            classification,
-            proceed_to_main_study = proceed,
-            rationale = BuildRationale(classification, qualification, hasMissingPlatform, correctnessFailures, sensitivityChanged),
-            artefact_sha256_file = "sha256sums.txt"
-        };
-        File.WriteAllText(Path.Combine(aggregateRoot, "summary.md"), summaries.ToString(), new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(aggregateRoot, "summary.md"), summaryMarkdown, new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(aggregateRoot, "summary.json"),
             JsonSerializer.Serialize(summaryJson, new JsonSerializerOptions { WriteIndented = true }) + "\n",
             new UTF8Encoding(false));
-        WriteSha256Manifest(aggregateRoot, platformData);
-        Console.WriteLine($"classification={classification} proceed_to_main_study={proceed}");
-        return Task.FromResult(0);
+        foreach (PlatformData platform in platforms)
+        {
+            File.WriteAllText(Path.Combine(platform.Root, "summary.md"), summaryMarkdown, new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(platform.Root, "summary.json"),
+                JsonSerializer.Serialize(summaryJson, new JsonSerializerOptions { WriteIndented = true }) + "\n",
+                new UTF8Encoding(false));
+            WriteSha256Manifest(platform.Root);
+        }
+        WriteSha256Manifest(aggregateRoot);
+        Console.WriteLine($"classification={classification} pre_sensitivity_classification={coreClassification} sensitivity_changed={sensitivityChanged.ToString().ToLowerInvariant()}");
+        return Task.FromResult(classification == "inconclusive" ? 2 : 0);
     }
 
     private static PlatformData LoadPlatform(string aggregateRoot, string platformId)
     {
-        string root = Path.Combine(aggregateRoot, platformId);
-        bool hasEnvironment = File.Exists(Path.Combine(root, "environment.json"));
-        string environmentId = string.Empty;
-        string missingReason = string.Empty;
-        if (hasEnvironment)
+        string platformRoot = Path.Combine(aggregateRoot, platformId);
+        return new PlatformData(
+            platformId,
+            platformRoot,
+            ReadJsonIfExists(Path.Combine(platformRoot, "environment.json")),
+            ReadJsonIfExists(Path.Combine(platformRoot, "source-and-assembly-hashes.json")),
+            ReadJsonIfExists(Path.Combine(platformRoot, "dataset-identity.json")),
+            CsvIfExists(Path.Combine(platformRoot, "production-trials.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "production-pairs.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "cardinality-trials.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "baseline-topology-loose.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "baseline-topology-compound.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "execution-order.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "cardinality-order.csv")),
+            CsvIfExists(Path.Combine(platformRoot, "cardinality-partitions.csv")));
+    }
+
+    private static Dictionary<string, string>? ReadJsonIfExists(string path)
+    {
+        if (!File.Exists(path))
+            return null;
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+        return document.RootElement.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => property.Value.ValueKind == JsonValueKind.String
+                ? property.Value.GetString() ?? string.Empty
+                : property.Value.GetRawText(),
+            StringComparer.Ordinal);
+    }
+
+    private static List<Dictionary<string, string>> CsvIfExists(string path)
+        => File.Exists(path) ? Csv.Read(path) : [];
+
+    private static void ValidateCrossPlatformIdentity(IReadOnlyList<PlatformData> platforms, string aggregateRoot)
+    {
+        string expectedExperiment = Path.GetFileName(Path.TrimEndingDirectorySeparator(aggregateRoot));
+        foreach (PlatformData platform in platforms)
+            platform.Validate(expectedExperiment);
+        string[] hashes = platforms.Select(static platform => platform.CorpusSha256)
+            .Where(static hash => hash.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (hashes.Length == 1)
         {
-            using var environment = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(root, "environment.json")));
-            environmentId = environment.RootElement.TryGetProperty("environmentId", out var id)
-                ? id.GetString() ?? string.Empty
-                : string.Empty;
-            if (environment.RootElement.TryGetProperty("status", out var status)
-                && string.Equals(status.GetString(), "missing", StringComparison.OrdinalIgnoreCase))
-                hasEnvironment = false;
+            var identity = new
+            {
+                experiment_sha = expectedExperiment,
+                canonical_content_sha256 = hashes[0],
+                platforms = platforms.Select(platform => new
+                {
+                    platform_id = platform.PlatformId,
+                    canonical_content_sha256 = platform.CorpusSha256,
+                    data_forge_version = platform.DatasetValue("dataForgeVersion"),
+                    profile_id = platform.DatasetValue("profileId"),
+                    profile_version = platform.DatasetValue("profileVersion"),
+                    seed = platform.GenerationValue("seed"),
+                    record_count = platform.GenerationValue("record_count")
+                })
+            };
+            File.WriteAllText(Path.Combine(aggregateRoot, "dataset-identity-cross-platform.json"),
+                JsonSerializer.Serialize(identity, new JsonSerializerOptions { WriteIndented = true }) + "\n",
+                new UTF8Encoding(false));
         }
         else
         {
-            missingReason = $"No {platformId} environment.json was produced.";
+            foreach (PlatformData platform in platforms)
+                platform.ValidationErrors.Add("The primary platforms do not have the same canonical DataForge content SHA-256.");
         }
-
-        string missingPath = Path.Combine(root, "missing-platform.md");
-        if (File.Exists(missingPath))
-            missingReason = File.ReadAllText(missingPath).Trim();
-
-        return new PlatformData(
-            platformId,
-            root,
-            hasEnvironment,
-            environmentId,
-            missingReason,
-            ReadIfExists(Path.Combine(root, "production-trials.csv")),
-            ReadIfExists(Path.Combine(root, "cardinality-trials.csv")),
-            ReadIfExists(Path.Combine(root, "recovery-trials.csv")));
     }
 
-    private static List<Dictionary<string, string>> ReadIfExists(string path)
-        => File.Exists(path) ? Csv.Read(path) : [];
-
-    private static void AppendFullProductionStatistics(
-        StringBuilder output,
-        IReadOnlyList<PlatformData> platforms,
-        Random bootstrap)
+    private static void WritePairedAnalysis(PlatformData platform)
     {
-        output.AppendLine("# Spike 1: Compound Packing and Causal Mechanism");
+        string path = Path.Combine(platform.Root, "paired-analysis.csv");
+        Csv.Create(path, CsvSchemas.PairedAnalysis);
+        foreach (string lifecycle in Lifecycles)
+        foreach (string metric in PairedMetricNames)
+        {
+            MetricPoint[] points = BuildLifecycleMetrics(platform, lifecycle)[metric].ToArray();
+            AppendAnalysisStats(path, platform.PlatformId, lifecycle, metric, points, "all", [1, 2, 3, 4, 5]);
+            foreach (int omitted in new[] { 1, 2, 3, 4, 5 })
+                AppendAnalysisStats(path, platform.PlatformId, lifecycle, metric, points, $"omit-{omitted}",
+                    new[] { 1, 2, 3, 4, 5 }.Where(launch => launch != omitted).ToArray());
+        }
+    }
+
+    private static void AppendAnalysisStats(
+        string path,
+        string platform,
+        string lifecycle,
+        string metric,
+        IReadOnlyList<MetricPoint> points,
+        string launchSet,
+        IReadOnlyList<int> launches)
+    {
+        MetricSummary summary = Summarise(points, launches, BootstrapSeed(platform, lifecycle, metric, launchSet));
+        Csv.Append(path, CsvSchemas.PairedAnalysis,
+        [
+            platform, lifecycle, launchSet, metric, summary.N, summary.Median, summary.Q1, summary.Q3, summary.Iqr,
+            summary.CiLow, summary.CiHigh, summary.Minimum, summary.Maximum,
+            JsonSerializer.Serialize(summary.LaunchMedians)
+        ]);
+    }
+
+    private static void WriteCardinalitySummary(PlatformData platform)
+    {
+        string path = Path.Combine(platform.Root, "cardinality-summary.csv");
+        string[] columns =
+        [
+            "payload_bytes", "partition_mode", "object_count", "valid_n", "median_durability_sync_ms", "q1_ms", "q3_ms",
+            "bootstrap_95ci_low_ms", "bootstrap_95ci_high_ms", "median_file_persist_requests", "median_file_persist_elapsed_ms",
+            "spearman_rho", "median_non_decreasing"
+        ];
+        Csv.Create(path, columns);
+        foreach (int payloadBytes in Dataset.CardinalityPayloadSizes)
+        foreach (string mode in CardinalityModes)
+        {
+            var groups = new List<(int Count, Dictionary<string, string>[] Rows, MetricSummary Time, MetricSummary Requests, MetricSummary FileTime)>();
+            foreach (int count in CardinalityCounts)
+            {
+                Dictionary<string, string>[] rows = ValidCardinalityRows(platform, [1, 2, 3])
+                    .Where(row => ParseInt(row["payload_bytes"]) == payloadBytes
+                        && row["partition_mode"] == mode
+                        && ParseInt(row["object_count"]) == count).ToArray();
+                MetricSummary time = Summarise(rows.Select(row => new MetricPoint(ParseInt(row["launch"]),
+                    ParseDouble(row["durability_sync_ms"]) ?? double.NaN)), [1, 2, 3],
+                    BootstrapSeed(platform.PlatformId, payloadBytes.ToString(CultureInfo.InvariantCulture), mode, count.ToString(CultureInfo.InvariantCulture)));
+                MetricSummary requests = Summarise(rows.Select(row => new MetricPoint(ParseInt(row["launch"]),
+                    ParseDouble(row["file_persist_requests"]) ?? double.NaN)), [1, 2, 3], 401 + count);
+                MetricSummary fileTime = Summarise(rows.Select(row => new MetricPoint(ParseInt(row["launch"]),
+                    ParseDouble(row["file_persist_elapsed_ms"]) ?? double.NaN)), [1, 2, 3], 801 + count);
+                groups.Add((count, rows, time, requests, fileTime));
+            }
+            double[] medians = groups.Where(static group => group.Time.Median.HasValue)
+                .Select(static group => group.Time.Median!.Value).ToArray();
+            double rho = Spearman(CardinalityCounts.Select(static count => (double)count).ToArray(), medians);
+            bool nonDecreasing = medians.Length == CardinalityCounts.Length
+                && medians.Zip(medians.Skip(1)).All(static pair => pair.Second >= pair.First);
+            foreach (var group in groups)
+                Csv.Append(path, columns,
+                [
+                    payloadBytes, mode, group.Count, group.Time.N, group.Time.Median, group.Time.Q1, group.Time.Q3,
+                    group.Time.CiLow, group.Time.CiHigh, group.Requests.Median, group.FileTime.Median, rho, nonDecreasing
+                ]);
+        }
+        platform.CardinalitySummaryRows = Csv.Read(path);
+    }
+
+    private static Dictionary<string, List<MetricPoint>> BuildLifecycleMetrics(PlatformData platform, string lifecycle)
+    {
+        var result = PairedMetricNames.ToDictionary(static name => name, static _ => new List<MetricPoint>(), StringComparer.Ordinal);
+        var production = platform.Production.Where(row => !ParseBoolean(row["warmup"]))
+            .ToDictionary(row => (
+                Launch: ParseInt(row["launch"]),
+                Observation: ParseInt(row["observation"]),
+                Lifecycle: row["lifecycle"],
+                Representation: row["representation"],
+                Durable: ParseBoolean(row["durable"])));
+        var validPairKeys = platform.ProductionPairs.Where(static row => row["pair_status"] == "valid")
+            .Select(row => (Launch: ParseInt(row["launch"]), Observation: ParseInt(row["observation"]),
+                Lifecycle: row["lifecycle"], Durable: ParseBoolean(row["durable"])))
+            .ToHashSet();
+
+        foreach (int launch in new[] { 1, 2, 3, 4, 5 })
+        for (int observation = 1; observation <= 5; observation++)
+        {
+            bool TryPair(bool durable, out Dictionary<string, string> loose, out Dictionary<string, string> compound)
+            {
+                bool hasLoose = production.TryGetValue((launch, observation, lifecycle, "loose", durable), out loose!);
+                bool hasCompound = production.TryGetValue((launch, observation, lifecycle, "compound", durable), out compound!);
+                return hasLoose && hasCompound && validPairKeys.Contains((launch, observation, lifecycle, durable));
+            }
+
+            if (!TryPair(true, out Dictionary<string, string> looseDurable, out Dictionary<string, string> compoundDurable))
+                continue;
+            Add(result, "durability_saving_ms", launch, ParseDoubleDifference(
+                ParseDouble(looseDurable["durability_sync_ms"]), ParseDouble(compoundDurable["durability_sync_ms"])));
+            Add(result, "operation_saving_ms", launch, ParseDoubleDifference(
+                ParseDouble(looseDurable["operation_ms"]), ParseDouble(compoundDurable["operation_ms"])));
+            Add(result, "durability_candidate_file_saving", launch, ParseDoubleDifference(
+                ParseDouble(looseDurable["durability_candidate_files"]), ParseDouble(compoundDurable["durability_candidate_files"])));
+            Add(result, "durability_candidate_byte_saving", launch, ParseDoubleDifference(
+                ParseDouble(looseDurable["durability_candidate_bytes"]), ParseDouble(compoundDurable["durability_candidate_bytes"])));
+            Add(result, "file_persist_request_saving", launch, ParseDoubleDifference(
+                ParseDouble(looseDurable["file_persist_requests"]), ParseDouble(compoundDurable["file_persist_requests"])));
+            Add(result, "compound_pack_ms", launch, ParseDouble(compoundDurable["compound_pack_ms"]));
+            if (!TryPair(false, out Dictionary<string, string> looseNonDurable, out Dictionary<string, string> compoundNonDurable))
+                continue;
+
+            double? loosePenalty = ParseDoubleDifference(ParseDouble(looseDurable["commit_call_ms"]), ParseDouble(looseNonDurable["commit_call_ms"]));
+            double? compoundPenalty = ParseDoubleDifference(ParseDouble(compoundDurable["commit_call_ms"]), ParseDouble(compoundNonDurable["commit_call_ms"]));
+            Add(result, "loose_durability_penalty_ms", launch, loosePenalty);
+            Add(result, "compound_durability_penalty_ms", launch, compoundPenalty);
+            Add(result, "durability_penalty_difference_in_differences_ms", launch,
+                ParseDoubleDifference(loosePenalty, compoundPenalty));
+        }
+        return result;
+    }
+
+    private static void Add(Dictionary<string, List<MetricPoint>> metrics, string name, int launch, double? value)
+    {
+        if (value is double finite && double.IsFinite(finite))
+            metrics[name].Add(new MetricPoint(launch, finite));
+    }
+
+    private static string Classify(IReadOnlyList<PlatformData> platforms, IReadOnlyList<int> launches)
+    {
+        if (platforms.Count != 2 || platforms.Any(platform => !platform.DataReady(launches)))
+            return "inconclusive";
+        if (platforms.Any(static platform => platform.CorrectnessFailure || !platform.SourceSemanticsValid))
+            return "inconclusive";
+        if (platforms.Select(static platform => platform.CorpusSha256)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() != 1)
+            return "inconclusive";
+
+        bool linuxSupported = PlatformSupports(platforms.Single(static platform => platform.PlatformId == "linux-ext4"), launches);
+        bool windowsSupported = PlatformSupports(platforms.Single(static platform => platform.PlatformId == "windows-ntfs"), launches);
+        if (linuxSupported && windowsSupported)
+            return "premise_supported";
+        if (linuxSupported != windowsSupported)
+        {
+            PlatformData other = platforms.Single(platform =>
+                platform.PlatformId == (linuxSupported ? "windows-ntfs" : "linux-ext4"));
+            return StableNeutralOrContrary(other, launches) ? "platform_specific" : "inconclusive";
+        }
+        if (platforms.Any(platform => MechanismPresentButPackingCancels(platform, launches)))
+            return "mechanism_present_but_packing_cancels";
+        bool anyDirectSaving = platforms.Any(platform => HasPositiveDurabilitySaving(platform, launches));
+        if (!anyDirectSaving && !CardinalitySupportsMechanism(platforms, [1, 2, 3], requireMonotonic: true))
+            return "premise_rejected";
+        return "inconclusive";
+    }
+
+    private static bool PlatformSupports(PlatformData platform, IReadOnlyList<int> launches)
+    {
+        if (!HasStructuralReduction(platform, launches))
+            return false;
+        foreach (string lifecycle in Lifecycles)
+        {
+            Dictionary<string, List<MetricPoint>> metrics = BuildLifecycleMetrics(platform, lifecycle);
+            if (Summarise(metrics["durability_saving_ms"], launches, 1901).Median is not > 0
+                || Summarise(metrics["operation_saving_ms"], launches, 1902).Median is not > 0)
+                continue;
+            bool stable = true;
+            for (int omittedLaunch = 1; omittedLaunch <= 5; omittedLaunch++)
+            {
+                int[] remaining = launches.Where(launch => launch != omittedLaunch).ToArray();
+                if (remaining.Length == launches.Count)
+                    continue;
+                if (Summarise(metrics["durability_saving_ms"], remaining, 1903 + omittedLaunch).Median is not > 0
+                    || Summarise(metrics["operation_saving_ms"], remaining, 1910 + omittedLaunch).Median is not > 0)
+                {
+                    stable = false;
+                    break;
+                }
+            }
+            if (stable)
+                return true;
+        }
+        return false;
+    }
+
+    private static bool HasStructuralReduction(PlatformData platform, IReadOnlyList<int> launches)
+    {
+        MetricPoint[] fileSaving = Lifecycles.SelectMany(lifecycle => BuildLifecycleMetrics(platform, lifecycle)["durability_candidate_file_saving"])
+            .Where(point => launches.Contains(point.Launch)).ToArray();
+        MetricPoint[] requestSaving = Lifecycles.SelectMany(lifecycle => BuildLifecycleMetrics(platform, lifecycle)["file_persist_request_saving"])
+            .Where(point => launches.Contains(point.Launch)).ToArray();
+        return Summarise(fileSaving, launches, 2101).Median is > 0
+            && Summarise(requestSaving, launches, 2102).Median is > 0;
+    }
+
+    private static bool StableNeutralOrContrary(PlatformData platform, IReadOnlyList<int> launches)
+    {
+        foreach (string lifecycle in Lifecycles)
+        foreach (string metric in new[] { "durability_saving_ms", "operation_saving_ms" })
+        {
+            List<MetricPoint> points = BuildLifecycleMetrics(platform, lifecycle)[metric];
+            int fullSign = Sign(Summarise(points, launches, 2201).Median);
+            for (int omitted = 1; omitted <= 5; omitted++)
+            {
+                int[] remaining = launches.Where(launch => launch != omitted).ToArray();
+                if (remaining.Length != launches.Count
+                    && Sign(Summarise(points, remaining, 2202 + omitted).Median) != fullSign)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool MechanismPresentButPackingCancels(PlatformData platform, IReadOnlyList<int> launches)
+    {
+        if (!HasStructuralReduction(platform, launches))
+            return false;
+        foreach (string lifecycle in Lifecycles)
+        {
+            Dictionary<string, List<MetricPoint>> metrics = BuildLifecycleMetrics(platform, lifecycle);
+            if (Summarise(metrics["durability_saving_ms"], launches, 2301).Median is not > 0
+                || Summarise(metrics["operation_saving_ms"], launches, 2302).Median is > 0
+                || Summarise(metrics["compound_pack_ms"], launches, 2303).Median is not > 0)
+                return false;
+            for (int omitted = 1; omitted <= 5; omitted++)
+            {
+                int[] remaining = launches.Where(launch => launch != omitted).ToArray();
+                if (remaining.Length == launches.Count)
+                    continue;
+                if (Summarise(metrics["durability_saving_ms"], remaining, 2310 + omitted).Median is not > 0
+                    || Summarise(metrics["operation_saving_ms"], remaining, 2320 + omitted).Median is > 0)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool HasPositiveDurabilitySaving(PlatformData platform, IReadOnlyList<int> launches)
+        => Lifecycles.Any(lifecycle =>
+            Summarise(BuildLifecycleMetrics(platform, lifecycle)["durability_saving_ms"], launches, 2401).Median is > 0);
+
+    private static bool CardinalitySupportsMechanism(
+        IReadOnlyList<PlatformData> platforms,
+        IReadOnlyList<int> launches,
+        bool requireMonotonic)
+    {
+        foreach (PlatformData platform in platforms)
+        foreach (int payloadBytes in Dataset.CardinalityPayloadSizes)
+        foreach (string mode in CardinalityModes)
+        {
+            double? previous = null;
+            var medians = new List<double>();
+            foreach (int count in CardinalityCounts)
+            {
+                Dictionary<string, string>[] rows = ValidCardinalityRows(platform, launches)
+                    .Where(row => ParseInt(row["payload_bytes"]) == payloadBytes && row["partition_mode"] == mode
+                        && ParseInt(row["object_count"]) == count).ToArray();
+                double? median = Summarise(rows.Select(row => new MetricPoint(ParseInt(row["launch"]),
+                    ParseDouble(row["durability_sync_ms"]) ?? double.NaN)), launches, 2500 + count).Median;
+                if (median is null)
+                    return false;
+                if (requireMonotonic && previous is not null && median < previous)
+                    return false;
+                previous = median;
+                medians.Add(median.Value);
+            }
+            if (Spearman(CardinalityCounts.Select(static count => (double)count).ToArray(), medians) <= 0)
+                return false;
+        }
+        return true;
+    }
+
+    private static Dictionary<string, string>[] ValidCardinalityRows(PlatformData platform, IReadOnlyList<int> launches)
+        => platform.Cardinality.Where(row => launches.Contains(ParseInt(row["launch"]))
+            && row["payload_reconstruction_pass"] == "true" && string.IsNullOrEmpty(row["error"])
+            && ParseDouble(row["durability_sync_ms"]) is not null).ToArray();
+
+    private static MetricSummary Summarise(IEnumerable<MetricPoint> source, IReadOnlyList<int> launches, int seed)
+    {
+        MetricPoint[] points = source.Where(point => launches.Contains(point.Launch) && double.IsFinite(point.Value)).ToArray();
+        double[] sorted = points.Select(static point => point.Value).Order().ToArray();
+        if (sorted.Length == 0)
+            return MetricSummary.Empty;
+        double median = Quantile(sorted, 0.5);
+        var launchMedians = points.GroupBy(static point => point.Launch).OrderBy(static group => group.Key)
+            .ToDictionary(static group => group.Key.ToString(CultureInfo.InvariantCulture),
+                static group => (double?)Quantile(group.Select(static point => point.Value).Order().ToArray(), 0.5));
+        double ciLow = median;
+        double ciHigh = median;
+        if (sorted.Length > 1 && launches.Count > 1)
+        {
+            var byLaunch = points.GroupBy(static point => point.Launch)
+                .ToDictionary(static group => group.Key, static group => group.Select(static point => point.Value).ToArray());
+            int[] available = launches.Where(byLaunch.ContainsKey).ToArray();
+            if (available.Length > 1)
+            {
+                double[] bootstrap = new double[10_000];
+                var random = new Random(seed);
+                for (int iteration = 0; iteration < bootstrap.Length; iteration++)
+                {
+                    var sample = new List<double>(points.Length);
+                    for (int cluster = 0; cluster < available.Length; cluster++)
+                        sample.AddRange(byLaunch[available[random.Next(available.Length)]]);
+                    sample.Sort();
+                    bootstrap[iteration] = Quantile(sample, 0.5);
+                }
+                Array.Sort(bootstrap);
+                ciLow = Quantile(bootstrap, 0.025);
+                ciHigh = Quantile(bootstrap, 0.975);
+            }
+        }
+        double q1 = Quantile(sorted, 0.25);
+        double q3 = Quantile(sorted, 0.75);
+        return new MetricSummary(sorted.Length, median, q1, q3, q3 - q1, ciLow, ciHigh,
+            sorted[0], sorted[^1], launchMedians);
+    }
+
+    private static int BootstrapSeed(params string[] inputs)
+    {
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (byte value in Encoding.UTF8.GetBytes(string.Join("|", inputs)))
+            {
+                hash ^= value;
+                hash *= 16777619;
+            }
+            return (int)(hash & 0x7fffffff);
+        }
+    }
+
+    private static int Sign(double? value) => value is > 0 ? 1 : value is < 0 ? -1 : 0;
+
+    private static double Spearman(IReadOnlyList<double> x, IReadOnlyList<double> y)
+    {
+        if (x.Count != y.Count || x.Count < 2)
+            return double.NaN;
+        return Pearson(Rank(x), Rank(y));
+    }
+
+    private static double[] Rank(IReadOnlyList<double> values)
+    {
+        int[] order = Enumerable.Range(0, values.Count).OrderBy(index => values[index]).ToArray();
+        double[] ranks = new double[values.Count];
+        int cursor = 0;
+        while (cursor < order.Length)
+        {
+            int end = cursor + 1;
+            while (end < order.Length && values[order[end]].Equals(values[order[cursor]]))
+                end++;
+            double averageRank = (cursor + 1 + end) / 2d;
+            for (int index = cursor; index < end; index++)
+                ranks[order[index]] = averageRank;
+            cursor = end;
+        }
+        return ranks;
+    }
+
+    private static double Pearson(IReadOnlyList<double> x, IReadOnlyList<double> y)
+    {
+        double meanX = x.Average();
+        double meanY = y.Average();
+        double numerator = 0;
+        double varianceX = 0;
+        double varianceY = 0;
+        for (int index = 0; index < x.Count; index++)
+        {
+            double dx = x[index] - meanX;
+            double dy = y[index] - meanY;
+            numerator += dx * dy;
+            varianceX += dx * dx;
+            varianceY += dy * dy;
+        }
+        return varianceX == 0 || varianceY == 0 ? 0 : numerator / Math.Sqrt(varianceX * varianceY);
+    }
+
+    private static double Quantile(IReadOnlyList<double> sorted, double probability)
+    {
+        if (sorted.Count == 1)
+            return sorted[0];
+        double position = (sorted.Count - 1) * probability;
+        int lower = (int)Math.Floor(position);
+        int upper = (int)Math.Ceiling(position);
+        return lower == upper ? sorted[lower]
+            : sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+    }
+
+    private static string BuildRationale(
+        string classification,
+        string baseClassification,
+        bool sensitivityChanged,
+        IReadOnlyList<PlatformData> platforms)
+    {
+        if (sensitivityChanged)
+            return $"The all-five-launch classification was {baseClassification}, but at least one leave-one-launch-out classification differed; the sensitivity result is inconclusive.";
+        if (classification == "premise_supported")
+            return "Both primary platforms have exact matched topology, lower compound persistence-object counts and requests, positive paired durability savings, and positive paired end-to-end savings in at least one lifecycle that remain positive under every launch omission.";
+        if (classification == "platform_specific")
+            return "Exactly one primary platform meets the supported criteria, while the other has complete and leave-one-launch-stable neutral or contrary evidence.";
+        if (classification == "mechanism_present_but_packing_cancels")
+            return "Compound consistently reduces directly measured durability-protocol cost, while measured operation time does not improve and compound construction work is present.";
+        if (classification == "premise_rejected")
+            return "Neither platform has a positive median paired durability saving in any declared lifecycle, and the compact cardinality confirmation does not support a positive monotonic relationship across both payload sizes and partition shapes.";
+        string[] reasons = platforms.SelectMany(static platform => platform.ValidationErrors).Distinct(StringComparer.Ordinal).ToArray();
+        return reasons.Length == 0
+            ? "The evidence does not meet another predeclared disposition or is unstable under leave-one-launch-out analysis."
+            : "Required provenance, topology, completeness, or correctness checks failed: " + string.Join("; ", reasons);
+    }
+
+    private static string BuildSummaryMarkdown(
+        string aggregateRoot,
+        IReadOnlyList<PlatformData> platforms,
+        string classification,
+        string baseClassification,
+        string rationale,
+        IReadOnlyDictionary<int, string> sensitivity)
+    {
+        var output = new StringBuilder();
+        output.AppendLine("# Spike 1B: Compound packing and durability mechanism");
         output.AppendLine();
-        output.AppendLine("## Full production-cell timing distributions");
+        output.AppendLine($"Experiment commit: {ExpectedExperiment(platforms)}");
+        output.AppendLine($"Evidence root: {Path.GetFullPath(aggregateRoot)}");
+        output.AppendLine($"Classification: **{classification}**");
         output.AppendLine();
-        output.AppendLine("Warm-up rows are excluded. Every measured row with a numeric value is retained, including flagged observations; no outliers are removed.");
+        output.AppendLine("Spike 1A remains separate exploratory evidence. Its findings and evidence pack were not rerun or changed by this confirmation run.");
         output.AppendLine();
-        output.AppendLine("| Platform | Lifecycle | Representation | Durable | Metric | n | Median ms | Q1 ms | Q3 ms | IQR ms | 95% bootstrap CI ms | Min ms | Max ms |");
-        output.AppendLine("|---|---|---|---:|---|---:|---:|---:|---:|---:|---|---:|---:|");
+        output.AppendLine("## Provenance and dataset identity");
+        output.AppendLine();
+        output.AppendLine("| Platform | Clean commit | Spike assembly SHA-256 | Core assembly SHA-256 | OS / runtime / SDK | Filesystem | Canonical dataset SHA-256 | Status |");
+        output.AppendLine("|---|---|---|---|---|---|---|---|");
+        foreach (PlatformData platform in platforms)
+            output.AppendLine($"| {platform.PlatformId} | {platform.ExperimentSha} | {platform.SpikeAssemblySha} | {platform.CoreAssemblySha} | {platform.EnvironmentValue("operatingSystem")} / {platform.EnvironmentValue("runtime")} / {platform.EnvironmentValue("sdk")} | {platform.EnvironmentValue("fileSystem")} | {platform.CorpusSha256} | {(platform.DataReady([1, 2, 3, 4, 5]) ? "complete" : "incomplete")} |");
+        output.AppendLine();
+        PlatformData? first = platforms.FirstOrDefault();
+        output.AppendLine($"Dataset profile: {first?.DatasetValue("profileId") ?? "missing"} v{first?.DatasetValue("profileVersion") ?? "missing"}; seed {first?.GenerationValue("seed") ?? "missing"}; records {first?.GenerationValue("record_count") ?? "missing"}.");
+        output.AppendLine("Records were generated independently on each platform by the checked-out DataForge materialiser. The canonical-record SHA-256 was compared before measurements.");
+        output.AppendLine();
+        output.AppendLine("## Baseline topology comparison");
+        output.AppendLine();
+        output.AppendLine("| Platform | Loose baseline vector | Compound baseline vector | Exact topology match |");
+        output.AppendLine("|---|---|---|---|");
+        foreach (PlatformData platform in platforms)
+            output.AppendLine($"| {platform.PlatformId} | {platform.TopologyVector("loose")} | {platform.TopologyVector("compound")} | {platform.BaselineTopologyPass} |");
+        output.AppendLine();
+        output.AppendLine("Each manifest was extracted from committed segment metadata and stored document IDs, with one row per segment and physical file counts and bytes.");
+        output.AppendLine();
+        AppendProductionTiming(output, platforms);
+        AppendPersistenceSummary(output, platforms);
+        AppendPairedSummary(output, platforms);
+        AppendLaunchSensitivity(output, platforms, sensitivity);
+        AppendCardinalitySummary(output, platforms);
+        AppendCorrectnessSummary(output, platforms);
+        output.AppendLine("## Classification");
+        output.AppendLine();
+        output.AppendLine($"All-five-launch classification before sensitivity: {baseClassification}.");
+        output.AppendLine($"Final classification after applying the five leave-one-launch-out checks: {classification}.");
+        output.AppendLine();
+        output.AppendLine(rationale);
+        output.AppendLine();
+        output.AppendLine("A positive median is the predeclared direction for savings; no additional effect-size threshold was introduced. Paired confidence intervals use a launch-cluster bootstrap with 10,000 resamples.");
+        output.AppendLine();
+        output.AppendLine("The reopened-steady priming commit is durable and unmeasured. Its generation and inherited-file persistence requests are verified before the measured batch. The measured durability setting is applied after priming.");
+        output.AppendLine();
+        output.AppendLine("The production compound temporary output remained non-durable. The real pack, close, dirty registration, rename, loose-member deletion, and later durable commit sequence was observed without an added .cfs.tmp persistence request.");
+        output.AppendLine();
+        output.AppendLine("Spike 2 was not started.");
+        return output.ToString();
+    }
+
+    private static void AppendProductionTiming(StringBuilder output, IReadOnlyList<PlatformData> platforms)
+    {
         string[] metrics =
         [
-            "index_ms", "forced_flush_ms", "compound_pack_ms", "metadata_prepare_ms",
-            "durability_sync_ms", "post_commit_ms", "commit_call_ms", "operation_ms"
+            "index_ms", "forced_flush_ms", "compound_pack_ms", "metadata_prepare_ms", "durability_sync_ms",
+            "post_commit_ms", "commit_call_ms", "operation_ms"
         ];
+        output.AppendLine("## Production timing by lifecycle, representation, and durability");
+        output.AppendLine();
+        output.AppendLine("Warm-ups are retained in raw data but excluded from summaries. Failed observations remain in the raw CSV; only valid observations enter paired analysis.");
+        output.AppendLine();
+        output.AppendLine("| Platform | Lifecycle | Representation | Durable | n | Metric | Median ms | Q1 ms | Q3 ms | IQR ms | 95% bootstrap CI |");
+        output.AppendLine("|---|---|---|---:|---:|---|---:|---:|---:|---:|---|");
         foreach (PlatformData platform in platforms)
         foreach (string lifecycle in Lifecycles)
         foreach (string representation in Representations)
         foreach (bool durable in DurabilityLevels)
         foreach (string metric in metrics)
         {
-            Dictionary<string, string>[] rows = platform.Production
-                .Where(row => IsMeasured(row)
-                    && row["lifecycle"] == lifecycle
-                    && row["representation"] == representation
-                    && ParseBoolean(row["durable"]) == durable)
-                .ToArray();
-            StatSummary stats = Statistics.Summarise(rows.Select(row => ParseDouble(row[metric])).Where(static value => value.HasValue)
-                .Select(static value => value!.Value), bootstrap);
-            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {representation} | {durable} | {metric} | {stats.N} | {F(stats.Median)} | {F(stats.Q1)} | {F(stats.Q3)} | {F(stats.Iqr)} | {stats.CiText} | {F(stats.Minimum)} | {F(stats.Maximum)} |");
+            Dictionary<string, string>[] rows = ValidProductionRows(platform)
+                .Where(row => row["lifecycle"] == lifecycle && row["representation"] == representation
+                    && ParseBoolean(row["durable"]) == durable).ToArray();
+            MetricSummary stats = Summarise(rows.Select(row => new MetricPoint(ParseInt(row["launch"]),
+                ParseDouble(row[metric]) ?? double.NaN)), [1, 2, 3, 4, 5],
+                BootstrapSeed(platform.PlatformId, lifecycle, representation, durable.ToString(), metric));
+            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {representation} | {durable} | {stats.N} | {metric} | {F(stats.Median)} | {F(stats.Q1)} | {F(stats.Q3)} | {F(stats.Iqr)} | {stats.CiText} |");
         }
         output.AppendLine();
     }
 
-    private static void AppendCardinalityStatistics(
-        StringBuilder output,
-        IReadOnlyList<PlatformData> platforms,
-        Random bootstrap)
+    private static void AppendPersistenceSummary(StringBuilder output, IReadOnlyList<PlatformData> platforms)
     {
-        output.AppendLine("## Full cardinality-cell timing distributions");
+        output.AppendLine("## Persistence candidates, bytes, and requests");
         output.AppendLine();
-        output.AppendLine("| Platform | Durable | Object count | Metric | n | Median ms | Q1 ms | Q3 ms | IQR ms | 95% bootstrap CI ms | Min ms | Max ms |");
-        output.AppendLine("|---|---:|---:|---|---:|---:|---:|---:|---:|---|---:|---:|");
-        foreach (PlatformData platform in platforms)
-        foreach (bool durable in DurabilityLevels)
-        foreach (int count in CardinalityCounts)
-        {
-            Dictionary<string, string>[] rows = platform.Cardinality
-                .Where(row => IsMeasured(row) && ParseBoolean(row["durable"]) == durable && ParseInt(row["object_count"]) == count)
-                .ToArray();
-            foreach (string metric in new[] { "durability_sync_ms", "file_persist_elapsed_ms", "directory_persist_elapsed_ms" })
-            {
-                StatSummary stats = Statistics.Summarise(rows.Select(row => ParseDouble(row[metric]))
-                    .Where(static value => value.HasValue).Select(static value => value!.Value), bootstrap);
-                output.AppendLine($"| {platform.PlatformId} | {durable} | {count} | {metric} | {stats.N} | {F(stats.Median)} | {F(stats.Q1)} | {F(stats.Q3)} | {F(stats.Iqr)} | {stats.CiText} | {F(stats.Minimum)} | {F(stats.Maximum)} |");
-            }
-        }
-        output.AppendLine();
-    }
-
-    private static Dictionary<(string Platform, string Lifecycle), MatchedComparison> BuildMatchedComparisons(
-        IReadOnlyList<PlatformData> platforms,
-        Random bootstrap)
-    {
-        var result = new Dictionary<(string Platform, string Lifecycle), MatchedComparison>();
-        foreach (PlatformData platform in platforms)
-        foreach (string lifecycle in Lifecycles)
-        {
-            var production = platform.Production.Where(row => IsMeasured(row) && row["lifecycle"] == lifecycle).ToDictionary(
-                row => (ParseInt(row["launch"]), ParseInt(row["observation"]), row["representation"], ParseBoolean(row["durable"])),
-                row => row);
-            var loosePenalty = new List<double>();
-            var compoundPenalty = new List<double>();
-            var did = new List<double>();
-            var syncSaving = new List<double>();
-            var syncSavingPercent = new List<double>();
-            var operationSaving = new List<double>();
-            foreach (int launch in new[] { 1, 2, 3 })
-            for (int observation = 1; observation <= 5; observation++)
-            {
-                bool TryGet(string representation, bool durable, out Dictionary<string, string> row)
-                    => production.TryGetValue((launch, observation, representation, durable), out row!);
-                if (TryGet("loose", true, out var looseDurable) && TryGet("loose", false, out var looseNonDurable)
-                    && TryGet("compound", true, out var compoundDurable) && TryGet("compound", false, out var compoundNonDurable)
-                    && looseDurable["lifecycle"] == lifecycle && looseNonDurable["lifecycle"] == lifecycle
-                    && compoundDurable["lifecycle"] == lifecycle && compoundNonDurable["lifecycle"] == lifecycle)
-                {
-                    double? looseDurableCommit = ParseDouble(looseDurable["commit_call_ms"]);
-                    double? looseNonDurableCommit = ParseDouble(looseNonDurable["commit_call_ms"]);
-                    double? compoundDurableCommit = ParseDouble(compoundDurable["commit_call_ms"]);
-                    double? compoundNonDurableCommit = ParseDouble(compoundNonDurable["commit_call_ms"]);
-                    double? looseDurability = ParseDouble(looseDurable["durability_sync_ms"]);
-                    double? compoundDurability = ParseDouble(compoundDurable["durability_sync_ms"]);
-                    double? looseOperation = ParseDouble(looseDurable["operation_ms"]);
-                    double? compoundOperation = ParseDouble(compoundDurable["operation_ms"]);
-                    if (looseDurableCommit is null || looseNonDurableCommit is null
-                        || compoundDurableCommit is null || compoundNonDurableCommit is null
-                        || looseDurability is null || compoundDurability is null
-                        || looseOperation is null || compoundOperation is null)
-                        continue;
-
-                    double looseDelta = looseDurableCommit.Value - looseNonDurableCommit.Value;
-                    double compoundDelta = compoundDurableCommit.Value - compoundNonDurableCommit.Value;
-                    loosePenalty.Add(looseDelta);
-                    compoundPenalty.Add(compoundDelta);
-                    did.Add(looseDelta - compoundDelta);
-                    double saving = looseDurability.Value - compoundDurability.Value;
-                    syncSaving.Add(saving);
-                    double looseSync = looseDurability.Value;
-                    syncSavingPercent.Add(looseSync == 0 ? 0 : saving / looseSync * 100d);
-                    operationSaving.Add(looseOperation.Value - compoundOperation.Value);
-                }
-            }
-            result[(platform.PlatformId, lifecycle)] = new MatchedComparison(
-                Statistics.Summarise(loosePenalty, bootstrap),
-                Statistics.Summarise(compoundPenalty, bootstrap),
-                Statistics.Summarise(did, bootstrap),
-                Statistics.Summarise(syncSaving, bootstrap),
-                Statistics.Summarise(syncSavingPercent, bootstrap),
-                Statistics.Summarise(operationSaving, bootstrap));
-        }
-        return result;
-    }
-
-    private static void AppendComparisonStatistics(
-        StringBuilder output,
-        IReadOnlyDictionary<(string Platform, string Lifecycle), MatchedComparison> comparisons,
-        Random bootstrap)
-    {
-        _ = bootstrap;
-        output.AppendLine("## Matched mechanism distributions");
-        output.AppendLine();
-        output.AppendLine("| Platform | Lifecycle | Metric | n | Median | Q1 | Q3 | IQR | 95% bootstrap CI | Min | Max |");
-        output.AppendLine("|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|");
-        foreach (var ((platform, lifecycle), comparison) in comparisons.OrderBy(static pair => pair.Key.Platform, StringComparer.Ordinal)
-                     .ThenBy(static pair => pair.Key.Lifecycle, StringComparer.Ordinal))
-        {
-            AppendDistribution(output, platform, lifecycle, "added_durability_penalty_ms_loose", comparison.LoosePenalty);
-            AppendDistribution(output, platform, lifecycle, "added_durability_penalty_ms_compound", comparison.CompoundPenalty);
-            AppendDistribution(output, platform, lifecycle, "DiD_ms", comparison.DifferenceInDifferences);
-            AppendDistribution(output, platform, lifecycle, "durability_saving_ms", comparison.DurabilitySaving);
-            AppendDistribution(output, platform, lifecycle, "durability_saving_percent", comparison.DurabilitySavingPercent);
-            AppendDistribution(output, platform, lifecycle, "net_operation_saving_ms", comparison.OperationSaving);
-        }
-        output.AppendLine();
-    }
-
-    private static void AppendDistribution(StringBuilder output, string platform, string lifecycle, string metric, StatSummary stats)
-        => output.AppendLine($"| {platform} | {lifecycle} | {metric} | {stats.N} | {F(stats.Median)} | {F(stats.Q1)} | {F(stats.Q3)} | {F(stats.Iqr)} | {stats.CiText} | {F(stats.Minimum)} | {F(stats.Maximum)} |");
-
-    private static void AppendMandatoryTables(
-        StringBuilder output,
-        IReadOnlyList<PlatformData> platforms,
-        IReadOnlyDictionary<(string Platform, string Lifecycle), MatchedComparison> comparisons,
-        Random bootstrap)
-    {
-        output.AppendLine("## Table A: production matrix");
-        output.AppendLine();
-        output.AppendLine("| Platform | Lifecycle | Representation | Durable | n | Median operation ms | IQR | Median commit ms | Median durability ms | Median persistence files | Median persistence requests | Median pack ms |");
-        output.AppendLine("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        output.AppendLine("| Platform | Lifecycle | Representation | n | Median candidate files | Median candidate bytes | Median file requests | Median file-sync ms | Median directory requests | Median directory-sync ms | Compound-temp persist requests |");
+        output.AppendLine("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
         foreach (PlatformData platform in platforms)
         foreach (string lifecycle in Lifecycles)
         foreach (string representation in Representations)
-        foreach (bool durable in DurabilityLevels)
         {
-            var rows = platform.Production.Where(row => IsMeasured(row)
-                && row["lifecycle"] == lifecycle && row["representation"] == representation
-                && ParseBoolean(row["durable"]) == durable).ToArray();
-            StatSummary operation = Statistics.Summarise(rows.Select(row => ParseDouble(row["operation_ms"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            StatSummary commit = Statistics.Summarise(rows.Select(row => ParseDouble(row["commit_call_ms"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            StatSummary durability = Statistics.Summarise(rows.Select(row => ParseDouble(row["durability_sync_ms"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            StatSummary requests = Statistics.Summarise(rows.Select(row => ParseDouble(row["file_persist_requests"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            StatSummary files = Statistics.Summarise(rows.Select(row => ParseDouble(row["durability_candidate_files"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            StatSummary pack = Statistics.Summarise(rows.Select(row => ParseDouble(row["compound_pack_ms"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {representation} | {durable} | {operation.N} | {F(operation.Median)} | {F(operation.Iqr)} | {F(commit.Median)} | {F(durability.Median)} | {F(files.Median)} | {F(requests.Median)} | {F(pack.Median)} |");
+            Dictionary<string, string>[] rows = ValidProductionRows(platform)
+                .Where(row => row["lifecycle"] == lifecycle && row["representation"] == representation
+                    && row["durable"] == "true").ToArray();
+            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {representation} | {rows.Length} | {Median(rows, "durability_candidate_files")} | {Median(rows, "durability_candidate_bytes")} | {Median(rows, "file_persist_requests")} | {Median(rows, "file_persist_elapsed_ms")} | {Median(rows, "directory_persist_requests")} | {Median(rows, "directory_persist_elapsed_ms")} | {Median(rows, "pack_temp_explicit_persist_requests")} |");
         }
+        output.AppendLine();
+    }
 
+    private static void AppendPairedSummary(StringBuilder output, IReadOnlyList<PlatformData> platforms)
+    {
+        output.AppendLine("## Paired durability savings, end-to-end savings, and difference-in-differences");
         output.AppendLine();
-        output.AppendLine("## Table B: mechanism comparison");
+        output.AppendLine("Positive savings mean loose took longer than compound. Durability penalty is durable commit-call time minus non-durable commit-call time, paired by launch, lifecycle, and observation number.");
         output.AppendLine();
-        output.AppendLine("| Platform | Lifecycle | Loose durability median ms | Compound durability median ms | Saving ms | Saving % | Loose request median | Compound request median | DiD median ms | Net operation saving median ms |");
-        output.AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+        output.AppendLine("| Platform | Lifecycle | Metric | n | Median | Q1 | Q3 | IQR | Launch-cluster bootstrap 95% CI | Launch medians |");
+        output.AppendLine("|---|---|---|---:|---:|---:|---:|---:|---|---|");
         foreach (PlatformData platform in platforms)
         foreach (string lifecycle in Lifecycles)
+        foreach (string metric in PairedMetricNames.Where(static metric => metric != "compound_pack_ms"))
         {
-            StatSummary loose = ProductionMetric(platform, lifecycle, "loose", true, "durability_sync_ms");
-            StatSummary compound = ProductionMetric(platform, lifecycle, "compound", true, "durability_sync_ms");
-            StatSummary looseRequests = ProductionMetric(platform, lifecycle, "loose", true, "file_persist_requests");
-            StatSummary compoundRequests = ProductionMetric(platform, lifecycle, "compound", true, "file_persist_requests");
-            MatchedComparison match = comparisons[(platform.PlatformId, lifecycle)];
-            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {F(loose.Median)} | {F(compound.Median)} | {F(match.DurabilitySaving.Median)} | {F(match.DurabilitySavingPercent.Median)} | {F(looseRequests.Median)} | {F(compoundRequests.Median)} | {F(match.DifferenceInDifferences.Median)} | {F(match.OperationSaving.Median)} |");
-        }
-
-        output.AppendLine();
-        output.AppendLine("## Table C: cardinality sweep");
-        output.AppendLine();
-        output.AppendLine("| Platform | Durable | Object count | n | Median durability ms | IQR | 95% CI | Median file requests | Median file request time ms |");
-        output.AppendLine("|---|---:|---:|---:|---:|---:|---|---:|---:|");
-        foreach (PlatformData platform in platforms)
-        foreach (bool durable in DurabilityLevels)
-        foreach (int count in CardinalityCounts)
-        {
-            var rows = platform.Cardinality.Where(row => IsMeasured(row)
-                && ParseBoolean(row["durable"]) == durable && ParseInt(row["object_count"]) == count).ToArray();
-            StatSummary time = Statistics.Summarise(rows.Select(row => ParseDouble(row["durability_sync_ms"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value), bootstrap);
-            StatSummary requests = Statistics.Summarise(rows.Select(row => ParseDouble(row["file_persist_requests"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            StatSummary requestTime = Statistics.Summarise(rows.Select(row => ParseDouble(row["file_persist_elapsed_ms"]))
-                .Where(static value => value.HasValue).Select(static value => value!.Value));
-            output.AppendLine($"| {platform.PlatformId} | {durable} | {count} | {time.N} | {F(time.Median)} | {F(time.Iqr)} | {time.CiText} | {F(requests.Median)} | {F(requestTime.Median)} |");
-        }
-
-        output.AppendLine();
-        output.AppendLine("## Table D: recovery");
-        output.AppendLine();
-        output.AppendLine("| Platform | Representation | Checkpoint | Trials | Previous complete | New complete | Invalid partial | Unopenable | Pass |");
-        output.AppendLine("|---|---|---|---:|---:|---:|---:|---:|---|");
-        foreach (PlatformData platform in platforms)
-        foreach (string representation in Representations)
-        foreach (string checkpoint in RecoveryCheckpoints)
-        {
-            var rows = platform.Recovery.Where(row => row["representation"] == representation && row["checkpoint"] == checkpoint).ToArray();
-            int trials = rows.Count(static row => row["termination_kind"] != "not_applicable");
-            int previous = rows.Count(static row => row["recovered_generation_class"] == "previous_complete");
-            int newer = rows.Count(static row => row["recovered_generation_class"] == "new_complete");
-            int partial = rows.Count(static row => row["recovered_generation_class"] == "invalid_partial");
-            int unopenable = rows.Count(static row => row["recovered_generation_class"] == "unopenable");
-            bool na = rows.Any(static row => row["termination_kind"] == "not_applicable");
-            bool pass = rows.Length > 0 && rows.All(static row => string.IsNullOrEmpty(row["error"]))
-                && partial == 0 && unopenable == 0
-                && (!rows.Any(static row => row["checkpoint"] == "after_commit_return") || newer == trials);
-            string passText = na && trials == 0 ? "not_applicable" : rows.Length == 0 ? "missing" : pass ? "yes" : "no";
-            output.AppendLine($"| {platform.PlatformId} | {representation} | {checkpoint} | {trials} | {previous} | {newer} | {partial} | {unopenable} | {passText} |");
-        }
-        output.AppendLine();
-        output.AppendLine("## Cardinality dose-response statistics");
-        output.AppendLine();
-        output.AppendLine("| Platform | Durable | Spearman rho | OLS slope ms/object | File requests non-decreasing with object count |");
-        output.AppendLine("|---|---:|---:|---:|---|");
-        foreach (PlatformData platform in platforms)
-        foreach (bool durable in DurabilityLevels)
-        {
-            var rows = platform.Cardinality.Where(row => IsMeasured(row) && ParseBoolean(row["durable"]) == durable).ToArray();
-            double[] x = rows.Select(row => (double)ParseInt(row["object_count"])).ToArray();
-            double[] y = rows.Select(row => ParseDouble(row["durability_sync_ms"]) ?? 0).ToArray();
-            double[] requests = rows.Select(row => ParseDouble(row["file_persist_requests"]) ?? 0).ToArray();
-            double rho = Statistics.Spearman(x, y);
-            double slope = Statistics.Slope(x, y);
-            bool monotonic = RequestsNonDecreasing(platform, durable);
-            output.AppendLine($"| {platform.PlatformId} | {durable} | {F(rho)} | {F(slope)} | {monotonic.ToString().ToLowerInvariant()} |");
+            MetricSummary stats = Summarise(BuildLifecycleMetrics(platform, lifecycle)[metric], [1, 2, 3, 4, 5],
+                BootstrapSeed(platform.PlatformId, lifecycle, metric));
+            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {metric} | {stats.N} | {F(stats.Median)} | {F(stats.Q1)} | {F(stats.Q3)} | {F(stats.Iqr)} | {stats.CiText} | {JsonSerializer.Serialize(stats.LaunchMedians)} |");
         }
         output.AppendLine();
     }
 
-    private static PlatformQualification Qualify(
-        PlatformData platform,
-        IReadOnlyList<int> requiredLaunches)
-    {
-        bool productionComplete = AllProductionCellsComplete(platform, requiredLaunches);
-        bool cardinalityComplete = AllCardinalityCellsComplete(platform, requiredLaunches);
-        bool recoveryPass = RecoveryPass(platform);
-        bool valid = platform.HasEnvironment && productionComplete && cardinalityComplete && recoveryPass;
-        double spearman = Statistics.Spearman(
-            platform.Cardinality.Where(row => IsMeasured(row) && ParseBoolean(row["durable"]))
-                .Select(row => (double)ParseInt(row["object_count"]))
-                .ToArray(),
-            platform.Cardinality.Where(row => IsMeasured(row) && ParseBoolean(row["durable"]))
-                .Select(row => ParseDouble(row["durability_sync_ms"]) ?? 0)
-                .ToArray());
-        bool requestDoseResponse = RequestsNonDecreasing(platform, durable: true);
-        bool durabilityAndRequestsPass = true;
-        bool operationPass = true;
-        foreach (string lifecycle in Lifecycles)
-        {
-            StatSummary loose = ProductionMetric(platform, lifecycle, "loose", true, "durability_sync_ms");
-            StatSummary compound = ProductionMetric(platform, lifecycle, "compound", true, "durability_sync_ms");
-            StatSummary looseRequests = ProductionMetric(platform, lifecycle, "loose", true, "file_persist_requests");
-            StatSummary compoundRequests = ProductionMetric(platform, lifecycle, "compound", true, "file_persist_requests");
-            bool saving = loose.N > 0 && compound.N > 0
-                && loose.Median - compound.Median >= 1.0
-                && loose.Median - compound.Median >= loose.Median * 0.10;
-            bool fewerRequests = looseRequests.N > 0 && compoundRequests.N > 0 && compoundRequests.Median < looseRequests.Median;
-            durabilityAndRequestsPass &= saving && fewerRequests;
-
-            StatSummary looseOperation = ProductionMetric(platform, lifecycle, "loose", true, "operation_ms");
-            StatSummary compoundOperation = ProductionMetric(platform, lifecycle, "compound", true, "operation_ms");
-            operationPass &= looseOperation.N > 0 && compoundOperation.N > 0
-                && compoundOperation.Median <= looseOperation.Median * 1.05;
-        }
-        bool criteriaPass = valid && durabilityAndRequestsPass && spearman >= 0.60 && requestDoseResponse;
-        return new PlatformQualification(valid, recoveryPass, spearman, criteriaPass, operationPass, criteriaPass && operationPass,
-            durabilityAndRequestsPass, requestDoseResponse);
-    }
-
-    private static string Classify(
-        IReadOnlyList<PlatformData> platforms,
-        IReadOnlyDictionary<string, PlatformQualification> qualification,
-        bool hasMissingPlatform,
-        bool correctnessFailure)
-    {
-        if (correctnessFailure)
-            return "correctness_failure";
-        if (hasMissingPlatform)
-            return "inconclusive";
-        if (platforms.Any(platform => !qualification[platform.PlatformId].Valid))
-            return "inconclusive";
-        bool[] supported = PrimaryPlatforms.Select(platform => qualification[platform].PremiseSupported).ToArray();
-        if (supported.All(static value => value))
-            return "premise_supported";
-
-        foreach (PlatformData platform in platforms)
-        {
-            PlatformQualification q = qualification[platform.PlatformId];
-            if (q.PremiseCriteriaPass && !q.OperationCriterionPass)
-                return "mechanism_present_but_packing_cancels";
-        }
-
-        foreach (PlatformData platform in platforms)
-        {
-            PlatformQualification q = qualification[platform.PlatformId];
-            bool materialSaving = Lifecycles.Any(lifecycle =>
-            {
-                StatSummary loose = ProductionMetric(platform, lifecycle, "loose", true, "durability_sync_ms");
-                StatSummary compound = ProductionMetric(platform, lifecycle, "compound", true, "durability_sync_ms");
-                return loose.N > 0 && compound.N > 0
-                    && loose.Median - compound.Median >= 1.0
-                    && loose.Median - compound.Median >= loose.Median * 0.10;
-            });
-            if (materialSaving && (q.Spearman < 0.60 || !q.RequestDoseResponsePass))
-                return "cardinality_not_explanatory";
-        }
-
-        if (supported.Count(static value => value) == 1)
-            return "platform_specific";
-
-        bool anyMaterialSavingAndRequestReduction = platforms.Any(platform => Lifecycles.Any(lifecycle =>
-            ProductionMetric(platform, lifecycle, "loose", true, "durability_sync_ms") is { N: > 0 } loose
-            && ProductionMetric(platform, lifecycle, "compound", true, "durability_sync_ms") is { N: > 0 } compound
-            && ProductionMetric(platform, lifecycle, "loose", true, "file_persist_requests") is { N: > 0 } looseRequests
-            && ProductionMetric(platform, lifecycle, "compound", true, "file_persist_requests") is { N: > 0 } compoundRequests
-            && loose.Median - compound.Median >= 1.0
-            && loose.Median - compound.Median >= loose.Median * 0.10
-            && compoundRequests.Median < looseRequests.Median));
-        return anyMaterialSavingAndRequestReduction ? "inconclusive" : "does_not_reproduce";
-    }
-
-    private static bool AllProductionCellsComplete(PlatformData platform, IReadOnlyList<int>? requiredLaunches = null)
-    {
-        requiredLaunches ??= [1, 2, 3];
-        foreach (string representation in Representations)
-        foreach (bool durable in DurabilityLevels)
-        foreach (string lifecycle in Lifecycles)
-        {
-            var rows = platform.Production.Where(row => IsMeasured(row)
-                && row["representation"] == representation && ParseBoolean(row["durable"]) == durable
-                && row["lifecycle"] == lifecycle).ToArray();
-            if (rows.Length != requiredLaunches.Count * 5 || rows.Any(static row => !ProductionCorrect(row)))
-                return false;
-            foreach (int launch in requiredLaunches)
-                if (rows.Count(row => ParseInt(row["launch"]) == launch) != 5)
-                    return false;
-        }
-        return true;
-    }
-
-    private static bool AllCardinalityCellsComplete(PlatformData platform, IReadOnlyList<int>? requiredLaunches = null)
-    {
-        requiredLaunches ??= [1, 2, 3];
-        foreach (int count in CardinalityCounts)
-        foreach (bool durable in DurabilityLevels)
-        {
-            var rows = platform.Cardinality.Where(row => IsMeasured(row)
-                && ParseInt(row["object_count"]) == count && ParseBoolean(row["durable"]) == durable).ToArray();
-            if (rows.Length != requiredLaunches.Count * 5 || rows.Any(static row => !string.IsNullOrEmpty(row["error"]) || row["payload_reconstruction_pass"] != "true"))
-                return false;
-            foreach (int launch in requiredLaunches)
-                if (rows.Count(row => ParseInt(row["launch"]) == launch) != 5)
-                    return false;
-        }
-        return true;
-    }
-
-    private static bool RecoveryPass(PlatformData platform)
-    {
-        foreach (string representation in Representations)
-        foreach (string checkpoint in RecoveryCheckpoints)
-        {
-            var rows = platform.Recovery.Where(row => row["representation"] == representation && row["checkpoint"] == checkpoint).ToArray();
-            if (IsCheckpointNotApplicable(representation, checkpoint))
-            {
-                if (rows.Length != 1 || rows[0]["termination_kind"] != "not_applicable")
-                    return false;
-                continue;
-            }
-            if (rows.Length != 3 || rows.Any(static row => !string.IsNullOrEmpty(row["error"])))
-                return false;
-            foreach (var row in rows)
-            {
-                string outcome = row["recovered_generation_class"];
-                if (outcome is not ("previous_complete" or "new_complete"))
-                    return false;
-                if (checkpoint == "after_commit_return" && outcome != "new_complete")
-                    return false;
-                if (checkpoint == "after_commit_return" && ParseLong(row["tmp_file_count"]) != 0)
-                    return false;
-                if (ParseLong(row["missing_file_count"]) != 0 || ParseLong(row["truncated_file_count"]) != 0)
-                    return false;
-            }
-        }
-        return true;
-    }
-
-    private static bool IsCheckpointNotApplicable(string representation, string checkpoint)
-        => checkpoint == "after_commit_marker_final_persisted"
-           || representation == "loose" && checkpoint is "after_compound_tmp_close_before_rename" or "after_compound_rename" or "after_loose_members_deleted";
-
-    private static bool RequestsNonDecreasing(PlatformData platform, bool durable)
-    {
-        double? previous = null;
-        foreach (int count in CardinalityCounts)
-        {
-            var rows = platform.Cardinality.Where(row => IsMeasured(row)
-                && ParseBoolean(row["durable"]) == durable && ParseInt(row["object_count"]) == count).ToArray();
-            if (rows.Length == 0)
-                return false;
-            double median = Statistics.Summarise(rows.Select(row => ParseDouble(row["file_persist_requests"]) ?? 0)).Median ?? 0;
-            if (previous is not null && median < previous.Value)
-                return false;
-            previous = median;
-        }
-        return true;
-    }
-
-    private static int CountCompletedProductionCells(PlatformData platform)
-        => (from representation in Representations
-            from durable in DurabilityLevels
-            from lifecycle in Lifecycles
-            let rows = platform.Production.Where(row => IsMeasured(row) && row["representation"] == representation
-                && row["lifecycle"] == lifecycle && ParseBoolean(row["durable"]) == durable)
-            where rows.Count() == 15
-            select 1).Count();
-
-    private static int CountCompletedCardinalityCells(PlatformData platform)
-        => (from count in CardinalityCounts
-            from durable in DurabilityLevels
-            let rows = platform.Cardinality.Where(row => IsMeasured(row)
-                && ParseInt(row["object_count"]) == count && ParseBoolean(row["durable"]) == durable)
-            where rows.Count() == 15
-            select 1).Count();
-
-    private static int CountCorrectnessFailures(IEnumerable<PlatformData> platforms)
-        => platforms.Sum(platform => platform.Production.Count(static row => !string.IsNullOrEmpty(row["error"]))
-            + platform.Cardinality.Count(static row => !string.IsNullOrEmpty(row["error"]))
-            + platform.Recovery.Count(static row => row["termination_kind"] != "not_applicable" && !string.IsNullOrEmpty(row["error"])));
-
-    private static int CountRecoveryViolations(IEnumerable<PlatformData> platforms)
-        => platforms.Sum(platform => platform.Recovery.Count(row => row["termination_kind"] != "not_applicable"
-            && (row["recovered_generation_class"] is "invalid_partial" or "unopenable"
-                || ParseLong(row["missing_file_count"]) > 0
-                || ParseLong(row["truncated_file_count"]) > 0
-                || row["checkpoint"] == "after_commit_return"
-                    && (row["recovered_generation_class"] != "new_complete" || ParseLong(row["tmp_file_count"]) != 0))));
-
-    private static void AppendClassification(
+    private static void AppendLaunchSensitivity(
         StringBuilder output,
-        string classification,
-        bool proceed,
-        IReadOnlyDictionary<string, PlatformQualification> qualifications,
         IReadOnlyList<PlatformData> platforms,
-        IReadOnlyDictionary<int, string> launchSensitivity,
-        bool sensitivityChanged)
+        IReadOnlyDictionary<int, string> sensitivity)
     {
-        output.AppendLine("## Classification");
+        output.AppendLine("## Launch-level and leave-one-launch-out sensitivity");
         output.AppendLine();
-        output.AppendLine($"Classification: `{classification}`");
-        output.AppendLine($"Proceed to main study: `{(proceed ? "yes" : "no")}`");
-        output.AppendLine();
-        output.AppendLine("| Platform | Evidence status | Recovery pass | Durable cardinality Spearman | Criteria 1-4 | End-to-end operation criterion | Qualifies |");
-        output.AppendLine("|---|---|---|---:|---|---|---|");
+        output.AppendLine("| Platform | Lifecycle | Metric | All launches | Omit 1 | Omit 2 | Omit 3 | Omit 4 | Omit 5 |");
+        output.AppendLine("|---|---|---|---:|---:|---:|---:|---:|---:|");
         foreach (PlatformData platform in platforms)
+        foreach (string lifecycle in Lifecycles)
+        foreach (string metric in new[] { "durability_saving_ms", "operation_saving_ms", "durability_penalty_difference_in_differences_ms" })
         {
-            PlatformQualification q = qualifications[platform.PlatformId];
-            output.AppendLine($"| {platform.PlatformId} | {(platform.HasEnvironment ? (q.Valid ? "complete" : "incomplete") : "missing")} | {q.RecoveryPass} | {F(q.Spearman)} | {q.PremiseCriteriaPass} | {q.OperationCriterionPass} | {q.PremiseSupported} |");
+            List<MetricPoint> points = BuildLifecycleMetrics(platform, lifecycle)[metric];
+            string all = F(Summarise(points, [1, 2, 3, 4, 5], 3001).Median);
+            string[] omitted = Enumerable.Range(1, 5).Select(launch =>
+                F(Summarise(points, Enumerable.Range(1, 5).Where(value => value != launch).ToArray(), 3001 + launch).Median)).ToArray();
+            output.AppendLine($"| {platform.PlatformId} | {lifecycle} | {metric} | {all} | {string.Join(" | ", omitted)} |");
         }
         output.AppendLine();
-        output.AppendLine("## Leave-one-launch sensitivity");
-        output.AppendLine();
-        output.AppendLine("| Omitted launch | Recomputed classification |");
+        output.AppendLine("| Omitted production launch | Recomputed overall classification |");
         output.AppendLine("|---:|---|");
-        foreach (var (launch, result) in launchSensitivity)
+        foreach ((int launch, string result) in sensitivity)
             output.AppendLine($"| {launch} | {result} |");
-        if (launchSensitivity.Count == 0)
-            output.AppendLine("| n/a | Not evaluated because recovery correctness already failed. |");
-        output.AppendLine($"Classification changed after removing one launch: {sensitivityChanged.ToString().ToLowerInvariant()}");
         output.AppendLine();
-        output.AppendLine("## Final result record");
-        output.AppendLine();
-        output.AppendLine("```text");
-        output.AppendLine($"Selected vnext base SHA: {ReadFirst(platforms, "base-sha.txt")}");
-        output.AppendLine($"Spike branch SHA: {ReadFirst(platforms, "spike-sha.txt")}");
-        PlatformData windows = platforms.Single(static platform => platform.PlatformId == "windows-ntfs");
-        PlatformData linux = platforms.Single(static platform => platform.PlatformId == "linux-ext4");
-        output.AppendLine($"Windows environment ID: {(windows.EnvironmentId.Length > 0 ? windows.EnvironmentId : "missing")}");
-        output.AppendLine($"Linux environment ID: {(linux.EnvironmentId.Length > 0 ? linux.EnvironmentId : "missing")}");
-        output.AppendLine($"Corpus SHA-256: {ReadCorpusHash(platforms)}");
-        output.AppendLine($"Production cells completed / expected: {platforms.Sum(CountCompletedProductionCells)} / 16");
-        output.AppendLine($"Cardinality cells completed / expected: {platforms.Sum(CountCompletedCardinalityCells)} / 28");
-        output.AppendLine($"Recovery trials completed / expected: {platforms.Sum(static platform => platform.Recovery.Count(static row => row["termination_kind"] != "not_applicable"))} / 90");
-        output.AppendLine("Loose -> compound persistence-request change: see Table B");
-        output.AppendLine("Loose -> compound durability-time change: see Table B");
-        output.AppendLine("Median DiD by platform/lifecycle: see Table B");
-        output.AppendLine("Median net operation saving by platform/lifecycle: see Table B");
-        output.AppendLine("Cardinality Spearman correlation by platform: see Table D and dose-response statistics");
-        output.AppendLine($"Recovery violations: {CountRecoveryViolations(platforms)}");
-        output.AppendLine($"Classification: {classification}");
-        output.AppendLine($"Proceed to main study: {(proceed ? "yes" : "no")}");
-        output.AppendLine($"Reason: {BuildRationale(classification, qualifications, platforms.Any(static platform => !platform.HasEnvironment), CountCorrectnessFailures(platforms), sensitivityChanged)}");
-        output.AppendLine($"Evidence root: {Path.GetFullPath(Path.Combine(platforms[0].Root, ".."))}");
-        output.AppendLine("Evidence SHA-256 manifest: sha256sums.txt");
-        output.AppendLine("```");
-        output.AppendLine();
-        foreach (PlatformData platform in platforms.Where(static platform => !platform.HasEnvironment))
-        {
-            output.AppendLine($"Missing platform: `{platform.PlatformId}`. {platform.MissingReason}");
-            output.AppendLine();
-        }
     }
 
-    private static string BuildRationale(
+    private static void AppendCardinalitySummary(StringBuilder output, IReadOnlyList<PlatformData> platforms)
+    {
+        output.AppendLine("## Compact cardinality confirmation");
+        output.AppendLine();
+        output.AppendLine("The 8 MiB and 82 MiB fixed payloads used 1, 4, 16, 64, and 128 objects with equal-size and production-shaped partitions. Production-shaped vectors scale observed loose-member proportions from the measured compound-durable-fresh batch. Exact vectors were saved before execution.");
+        output.AppendLine();
+        output.AppendLine("| Platform | Payload MiB | Partition mode | Objects | Valid n | Median durability ms | IQR ms | 95% bootstrap CI | Median file requests | Median file-sync ms | Spearman rho | Median monotonic |");
+        output.AppendLine("|---|---:|---|---:|---:|---:|---:|---|---:|---:|---:|---|");
+        foreach (PlatformData platform in platforms)
+        foreach (Dictionary<string, string> row in platform.CardinalitySummaryRows)
+            output.AppendLine($"| {platform.PlatformId} | {ParseInt(row["payload_bytes"]) / 1024 / 1024} | {row["partition_mode"]} | {row["object_count"]} | {row["valid_n"]} | {row["median_durability_sync_ms"]} | {Difference(row["q3_ms"], row["q1_ms"])} | [{row["bootstrap_95ci_low_ms"]}, {row["bootstrap_95ci_high_ms"]}] | {row["median_file_persist_requests"]} | {row["median_file_persist_elapsed_ms"]} | {row["spearman_rho"]} | {row["median_non_decreasing"]} |");
+        output.AppendLine();
+    }
+
+    private static void AppendCorrectnessSummary(StringBuilder output, IReadOnlyList<PlatformData> platforms)
+    {
+        output.AppendLine("## Correctness and integrity counts");
+        output.AppendLine();
+        output.AppendLine("| Platform | Production measured | Warm-ups | Valid topology pairs | Topology mismatches | Failed pairs | Reopen failures | ID lookup failures | Integrity failures | Cardinality measured | Payload verification failures |");
+        output.AppendLine("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+        foreach (PlatformData platform in platforms)
+            output.AppendLine($"| {platform.PlatformId} | {platform.Production.Count(row => row["warmup"] == "false")} | {platform.Production.Count(row => row["warmup"] == "true")} | {platform.ProductionPairs.Count(row => row["observation"] != "0" && row["pair_status"] == "valid")} | {platform.ProductionPairs.Count(row => row["observation"] != "0" && row["pair_status"] == "topology_mismatch")} | {platform.ProductionPairs.Count(row => row["observation"] != "0" && row["pair_status"] is "observation_failure" or "missing_observation")} | {platform.Production.Count(row => HasCommitTiming(row) && row["reopen_ok"] != "true")} | {platform.Production.Count(row => HasCommitTiming(row) && row["id_lookup_pass"] != "true")} | {platform.Production.Count(row => HasCommitTiming(row) && row["index_integrity_pass"] != "true")} | {platform.Cardinality.Count(row => row["warmup"] == "false")} | {platform.Cardinality.Count(row => row["payload_reconstruction_pass"] != "true" && row["warmup"] == "false")} |");
+        output.AppendLine();
+    }
+
+    private static object BuildSummaryJson(
+        string aggregateRoot,
+        IReadOnlyList<PlatformData> platforms,
         string classification,
-        IReadOnlyDictionary<string, PlatformQualification> qualification,
-        bool missingPlatform,
-        int correctnessFailures,
-        bool sensitivityChanged)
-    {
-        if (classification == "correctness_failure")
-            return "At least one recovery trial exposed an invalid partial generation, a missing or truncated referenced file, or failed the post-return publication contract.";
-        if (missingPlatform)
-            return "At least one required primary platform is missing, so the cross-platform classification is inconclusive.";
-        if (sensitivityChanged)
-            return "The performance classification changed when one harness launch was omitted, so the result is inconclusive.";
-        if (classification == "premise_supported")
-            return "Both primary platforms passed recovery, durability-time, persistence-request, cardinality, and end-to-end operation criteria in fresh and reopened lifecycles.";
-        if (classification == "platform_specific")
-            return "Exactly one complete primary platform passed all premise criteria.";
-        if (classification == "mechanism_present_but_packing_cancels")
-            return "At least one platform passed recovery, direct durability, persistence-request, and cardinality criteria, but compound operation time exceeded loose mode by more than five percent.";
-        if (classification == "cardinality_not_explanatory")
-            return "Compound mode reduced durability time materially, but the durable synthetic cardinality sweep did not support the predeclared dose-response threshold.";
-        if (classification == "does_not_reproduce")
-            return "Neither platform showed both the required compound durability-time reduction and a lower persistence-request count.";
-        return $"The predeclared experiment is incomplete or has {correctnessFailures} recorded correctness or harness failures.";
-    }
-
-    private static bool ProductionCorrect(IReadOnlyDictionary<string, string> row)
-        => string.IsNullOrEmpty(row["error"]) && row["reopen_ok"] == "true"
-            && row["id_lookup_pass"] == "true" && row["index_integrity_pass"] == "true";
-
-    private static bool IsMeasured(IReadOnlyDictionary<string, string> row)
-        => row.TryGetValue("warmup", out string? value) && value == "false";
-
-    private static bool ParseBoolean(string value) => string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
-
-    private static int ParseInt(string value)
-        => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed : 0;
-
-    private static long ParseLong(string value)
-        => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed) ? parsed : 0;
-
-    private static double? ParseDouble(string value)
-        => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed : null;
-
-    private static string F(double? value)
-        => value is null || !double.IsFinite(value.Value) ? "n/a" : value.Value.ToString("0.###", CultureInfo.InvariantCulture);
-
-    private static StatSummary ProductionMetric(
-        PlatformData platform,
-        string lifecycle,
-        string representation,
-        bool durable,
-        string metric,
-        Random? bootstrap = null)
-        => Statistics.Summarise(platform.Production.Where(row => IsMeasured(row)
-                && row["lifecycle"] == lifecycle && row["representation"] == representation
-                && ParseBoolean(row["durable"]) == durable)
-            .Select(row => ParseDouble(row[metric]))
-            .Where(static value => value.HasValue)
-            .Select(static value => value!.Value), bootstrap);
-
-    private static string ReadFirst(IReadOnlyList<PlatformData> platforms, string fileName)
-        => platforms.Select(platform => Path.Combine(platform.Root, fileName))
-            .Where(File.Exists)
-            .Select(static path => File.ReadAllText(path).Trim())
-            .FirstOrDefault(static value => value.Length > 0) ?? string.Empty;
-
-    private static string ReadCorpusHash(IReadOnlyList<PlatformData> platforms)
-    {
-        foreach (PlatformData platform in platforms)
+        string baseClassification,
+        string rationale,
+        IReadOnlyDictionary<int, string> sensitivity)
+        => new
         {
-            string path = Path.Combine(platform.Root, "dataset-identity.json");
-            if (File.Exists(path))
+            experiment_sha = ExpectedExperiment(platforms),
+            evidence_root = Path.GetFullPath(aggregateRoot),
+            classification,
+            pre_sensitivity_classification = baseClassification,
+            rationale,
+            leave_one_launch_out_classification = sensitivity,
+            cross_platform_dataset_sha256_match = platforms.Select(static platform => platform.CorpusSha256)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1,
+            platforms = platforms.Select(platform => new
             {
-                using var document = JsonDocument.Parse(File.ReadAllBytes(path));
-                return document.RootElement.GetProperty("contentSha256").GetString() ?? string.Empty;
-            }
-        }
-        return string.Empty;
-    }
+                platform_id = platform.PlatformId,
+                environment = platform.Environment,
+                source_and_assembly_hashes = platform.AssemblyHashes,
+                dataset_identity = platform.DatasetIdentity,
+                canonical_content_sha256 = platform.CorpusSha256,
+                baseline_topology_pass = platform.BaselineTopologyPass,
+                evidence_ready = platform.DataReady([1, 2, 3, 4, 5]),
+                validation_errors = platform.ValidationErrors,
+                production_expected_measured = 300,
+                production_observed_measured = platform.Production.Count(row => row["warmup"] == "false"),
+                production_expected_warmups = 60,
+                production_observed_warmups = platform.Production.Count(row => row["warmup"] == "true"),
+                cardinality_expected_measured = 300,
+                cardinality_observed_measured = platform.Cardinality.Count(row => row["warmup"] == "false"),
+                cardinality_expected_warmups = 60,
+                cardinality_observed_warmups = platform.Cardinality.Count(row => row["warmup"] == "true"),
+                correctness_failure = platform.CorrectnessFailure,
+                source_semantics_valid = platform.SourceSemanticsValid,
+                cardinality_supports_mechanism = CardinalitySupportsMechanism([platform], [1, 2, 3], requireMonotonic: true),
+                lifecycle_metrics = Lifecycles.ToDictionary(lifecycle => lifecycle,
+                    lifecycle => BuildLifecycleMetrics(platform, lifecycle).ToDictionary(
+                        static pair => pair.Key,
+                        pair => Summarise(pair.Value, [1, 2, 3, 4, 5], BootstrapSeed(platform.PlatformId, lifecycle, pair.Key))))
+            }).ToArray()
+        };
 
-    private static void WriteSha256Manifest(string aggregateRoot, IReadOnlyList<PlatformData> platforms)
+    private static void WriteSha256Manifest(string root)
     {
-        string outputPath = Path.Combine(aggregateRoot, "sha256sums.txt");
-        var candidates = new HashSet<string>(StringComparer.Ordinal);
-        foreach (string file in Directory.EnumerateFiles(aggregateRoot, "*", SearchOption.TopDirectoryOnly))
-            if (IsManifestFile(file))
-                candidates.Add(file);
-        foreach (PlatformData platform in platforms)
-        {
-            if (Directory.Exists(platform.Root))
-            {
-                foreach (string file in Directory.EnumerateFiles(platform.Root, "*", SearchOption.AllDirectories))
-                    if (IsManifestFile(file))
-                        candidates.Add(file);
-                string datasetDirectory = Path.Combine(platform.Root, "dataset");
-                foreach (string name in new[]
-                         {
-                             "records.ndjson",
-                             "record-offsets.bin",
-                             "../cardinality-payload.bin",
-                             "../cardinality-payload.sha256"
-                         })
-                {
-                    string file = Path.GetFullPath(Path.Combine(datasetDirectory, name));
-                    if (File.Exists(file))
-                        candidates.Add(file);
-                }
-                foreach (string file in Directory.Exists(Path.Combine(platform.Root, "logs"))
-                             ? Directory.EnumerateFiles(Path.Combine(platform.Root, "logs"), "*", SearchOption.AllDirectories)
-                             : [])
-                    candidates.Add(file);
-            }
-        }
-
-        using var writer = new StreamWriter(outputPath, append: false, new UTF8Encoding(false));
-        foreach (string file in candidates.Where(file => !Path.GetFullPath(file).Equals(outputPath, StringComparison.Ordinal))
-                     .OrderBy(static file => file, StringComparer.Ordinal))
-            writer.WriteLine($"{HashFile(file)}  {Path.GetRelativePath(aggregateRoot, file).Replace('\\', '/')}");
-    }
-
-    private static bool IsManifestFile(string path)
-    {
-        string extension = Path.GetExtension(path);
-        return extension is ".csv" or ".json" or ".md" or ".txt" or ".svg" or ".log";
+        string path = Path.Combine(root, "sha256sums.txt");
+        string fullManifest = Path.GetFullPath(path);
+        var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+            .Where(file => !Path.GetFullPath(file).Equals(fullManifest, StringComparison.Ordinal))
+            .OrderBy(static file => file, StringComparer.Ordinal)
+            .ToArray();
+        using var writer = new StreamWriter(path, append: false, new UTF8Encoding(false));
+        foreach (string file in files)
+            writer.WriteLine($"{HashFile(file)}  {Path.GetRelativePath(root, file).Replace('\\', '/')}");
     }
 
     private static string HashFile(string path)
@@ -837,231 +792,309 @@ internal static partial class SpikeRunner
         return Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
     }
 
-    private static void WriteDoseResponseSvg(string aggregateRoot, IReadOnlyList<PlatformData> platforms, Random bootstrap)
+    private static Dictionary<string, string>[] ValidProductionRows(PlatformData platform)
     {
-        int panelHeight = 300;
-        const int width = 780;
-        int height = 80 + platforms.Count * panelHeight;
-        var svg = new StringBuilder();
-        svg.AppendLine($"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\">");
-        svg.AppendLine("<style>text{font:13px sans-serif;fill:#222}.axis{stroke:#333;stroke-width:1}.grid{stroke:#ddd;stroke-width:1}.loose{stroke:#1769aa;fill:#1769aa}.compound{stroke:#bd3b27;fill:#bd3b27}.line{fill:none;stroke-width:2}</style>");
-        svg.AppendLine("<text x=\"24\" y=\"28\" font-size=\"18\" font-weight=\"bold\">Synthetic persistence cardinality dose response</text>");
-        for (int panel = 0; panel < platforms.Count; panel++)
-        {
-            PlatformData platform = platforms[panel];
-            int top = 52 + panel * panelHeight;
-            const int left = 88;
-            const int right = 728;
-            int bottom = top + 218;
-            double maximum = CardinalityCounts.SelectMany(count => DurabilityLevels.Select(durable =>
-                Statistics.Summarise(platform.Cardinality.Where(row => IsMeasured(row)
-                    && ParseInt(row["object_count"]) == count && ParseBoolean(row["durable"]) == durable)
-                    .Select(row => ParseDouble(row["durability_sync_ms"]) ?? 0), bootstrap).CiHigh ?? 0))
-                .DefaultIfEmpty(1).Max();
-            maximum = Math.Max(maximum, 1) * 1.1;
-            svg.AppendLine($"<text x=\"{left}\" y=\"{top - 8}\" font-weight=\"bold\">{Escape(platform.PlatformId)}</text>");
-            for (int tick = 0; tick <= 4; tick++)
-            {
-                double y = bottom - (bottom - top) * tick / 4d;
-                double value = maximum * tick / 4d;
-                svg.AppendLine($"<line class=\"grid\" x1=\"{left}\" y1=\"{y:F1}\" x2=\"{right}\" y2=\"{y:F1}\"/>");
-                svg.AppendLine($"<text x=\"{left - 12}\" y=\"{y + 4:F1}\" text-anchor=\"end\">{value:F1}</text>");
-            }
-            svg.AppendLine($"<line class=\"axis\" x1=\"{left}\" y1=\"{top}\" x2=\"{left}\" y2=\"{bottom}\"/>");
-            svg.AppendLine($"<line class=\"axis\" x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\"/>");
-            svg.AppendLine($"<text transform=\"translate(20 {top + 120}) rotate(-90)\" text-anchor=\"middle\">durability_sync_ms</text>");
-            for (int index = 0; index < CardinalityCounts.Length; index++)
-            {
-                double x = left + (right - left) * index / (CardinalityCounts.Length - 1d);
-                svg.AppendLine($"<text x=\"{x:F1}\" y=\"{bottom + 21}\" text-anchor=\"middle\">{CardinalityCounts[index]}</text>");
-            }
-            svg.AppendLine($"<text x=\"{(left + right) / 2}\" y=\"{bottom + 43}\" text-anchor=\"middle\">payload object count (log2 scale)</text>");
-
-            foreach (bool durable in DurabilityLevels)
-            {
-                string css = durable ? "compound" : "loose";
-                var points = new List<(double X, double Y, double Low, double High)>();
-                for (int index = 0; index < CardinalityCounts.Length; index++)
-                {
-                    int count = CardinalityCounts[index];
-                    var rows = platform.Cardinality.Where(row => IsMeasured(row)
-                        && ParseInt(row["object_count"]) == count && ParseBoolean(row["durable"]) == durable);
-                    StatSummary stats = Statistics.Summarise(rows.Select(row => ParseDouble(row["durability_sync_ms"]) ?? 0), bootstrap);
-                    if (stats.N == 0)
-                        continue;
-                    double x = left + (right - left) * index / (CardinalityCounts.Length - 1d);
-                    double median = stats.Median ?? 0;
-                    double y = bottom - (bottom - top) * median / maximum;
-                    double low = bottom - (bottom - top) * (stats.CiLow ?? median) / maximum;
-                    double high = bottom - (bottom - top) * (stats.CiHigh ?? median) / maximum;
-                    points.Add((x, y, low, high));
-                }
-                if (points.Count == 0)
-                    continue;
-                string polyline = string.Join(' ', points.Select(static point => $"{point.X:F1},{point.Y:F1}"));
-                svg.AppendLine($"<polyline class=\"line {css}\" points=\"{polyline}\"/>");
-                foreach (var point in points)
-                {
-                    svg.AppendLine($"<line class=\"{css}\" x1=\"{point.X:F1}\" y1=\"{point.Low:F1}\" x2=\"{point.X:F1}\" y2=\"{point.High:F1}\"/>");
-                    svg.AppendLine($"<circle class=\"{css}\" cx=\"{point.X:F1}\" cy=\"{point.Y:F1}\" r=\"4\"/>");
-                }
-                int legendY = top + 16 + (durable ? 18 : 0);
-                svg.AppendLine($"<line class=\"{css}\" x1=\"{right - 105}\" y1=\"{legendY - 4}\" x2=\"{right - 80}\" y2=\"{legendY - 4}\"/>");
-                svg.AppendLine($"<text x=\"{right - 74}\" y=\"{legendY}\">durable={durable}</text>");
-            }
-        }
-        svg.AppendLine("</svg>");
-        File.WriteAllText(Path.Combine(aggregateRoot, "cardinality-dose-response.svg"), svg.ToString(), new UTF8Encoding(false));
+        var validPairKeys = platform.ProductionPairs.Where(static row => row["pair_status"] == "valid")
+            .Select(row => (Launch: ParseInt(row["launch"]), Observation: ParseInt(row["observation"]),
+                Lifecycle: row["lifecycle"], Durable: ParseBoolean(row["durable"])))
+            .ToHashSet();
+        return platform.Production.Where(row => row["warmup"] == "false" && string.IsNullOrEmpty(row["error"])
+            && row["reopen_ok"] == "true" && row["id_lookup_pass"] == "true"
+            && row["index_integrity_pass"] == "true"
+            && validPairKeys.Contains((ParseInt(row["launch"]), ParseInt(row["observation"]),
+                row["lifecycle"], ParseBoolean(row["durable"]))))
+            .ToArray();
     }
 
-    private static string Escape(string value)
-        => value.Replace("&", "&amp;", StringComparison.Ordinal)
-            .Replace("<", "&lt;", StringComparison.Ordinal)
-            .Replace(">", "&gt;", StringComparison.Ordinal)
-            .Replace("\"", "&quot;", StringComparison.Ordinal);
+    private static string Median(IEnumerable<Dictionary<string, string>> rows, string column)
+    {
+        double[] values = rows.Select(row => ParseDouble(row[column])).Where(static value => value is not null)
+            .Select(static value => value!.Value).Order().ToArray();
+        return values.Length == 0 ? "n/a" : F(Quantile(values, 0.5));
+    }
 
+    private static string Difference(string right, string left)
+        => ParseDouble(right) is double q3 && ParseDouble(left) is double q1 ? F(q3 - q1) : "n/a";
+
+    private static string ExpectedExperiment(IReadOnlyList<PlatformData> platforms)
+        => platforms.Select(static platform => platform.ExperimentSha).FirstOrDefault(static sha => sha.Length > 0) ?? string.Empty;
+
+    private static bool HasCommitTiming(IReadOnlyDictionary<string, string> row)
+        => ParseDouble(row["commit_call_ms"]) is not null;
+
+    private static int ParseInt(string value)
+        => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed : 0;
+
+    private static long ParseLong(string value)
+        => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed) ? parsed : 0L;
+
+    private static double? ParseDouble(string value)
+        => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) && double.IsFinite(parsed)
+            ? parsed : null;
+
+    private static double? ParseDoubleDifference(double? left, double? right)
+        => left is double leftValue && right is double rightValue ? leftValue - rightValue : null;
+
+    private static bool ParseBoolean(string value) => string.Equals(value, "true", StringComparison.OrdinalIgnoreCase);
+
+    private static string F(double? value)
+        => value is null ? "n/a" : value.Value.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string ExpectedExperiment(PlatformData platform) => platform.ExperimentSha;
     private sealed record PlatformData(
         string PlatformId,
         string Root,
-        bool HasEnvironment,
-        string EnvironmentId,
-        string MissingReason,
+        Dictionary<string, string>? Environment,
+        Dictionary<string, string>? AssemblyHashes,
+        Dictionary<string, string>? DatasetIdentity,
         List<Dictionary<string, string>> Production,
+        List<Dictionary<string, string>> ProductionPairs,
         List<Dictionary<string, string>> Cardinality,
-        List<Dictionary<string, string>> Recovery);
+        List<Dictionary<string, string>> LooseTopology,
+        List<Dictionary<string, string>> CompoundTopology,
+        List<Dictionary<string, string>> ExecutionOrder,
+        List<Dictionary<string, string>> CardinalityOrder,
+        List<Dictionary<string, string>> CardinalityPartitions)
+    {
+        public List<Dictionary<string, string>> CardinalitySummaryRows { get; set; } = [];
+        public List<string> ValidationErrors { get; } = [];
+        public bool CorrectnessFailure { get; private set; }
+        public bool SourceSemanticsValid { get; private set; }
+        public bool BaselineTopologyPass { get; private set; }
+        public string CorpusSha256 => DatasetIdentity?.GetValueOrDefault("canonical_content_sha256", string.Empty) ?? string.Empty;
+        public string ExperimentSha => AssemblyHashes?.GetValueOrDefault("experiment_sha", string.Empty) ?? string.Empty;
+        public string SpikeAssemblySha => NestedHash("spike_assembly");
+        public string CoreAssemblySha => NestedHash("leancorpus_core_assembly");
 
-    private sealed record PlatformQualification(
-        bool Valid,
-        bool RecoveryPass,
-        double Spearman,
-        bool PremiseCriteriaPass,
-        bool OperationCriterionPass,
-        bool PremiseSupported,
-        bool DurabilityAndRequestsPass,
-        bool RequestDoseResponsePass);
+        public string EnvironmentValue(string name) => Environment?.GetValueOrDefault(name, string.Empty) ?? string.Empty;
+        public string DatasetValue(string name) => DatasetIdentity?.GetValueOrDefault(name, string.Empty) ?? string.Empty;
+        public string GenerationValue(string name)
+        {
+            if (DatasetIdentity is null || !DatasetIdentity.TryGetValue("generation_parameters", out string? raw))
+                return string.Empty;
+            using JsonDocument document = JsonDocument.Parse(raw);
+            return document.RootElement.TryGetProperty(name, out JsonElement value) ? value.ToString() : string.Empty;
+        }
 
-    private sealed record MatchedComparison(
-        StatSummary LoosePenalty,
-        StatSummary CompoundPenalty,
-        StatSummary DifferenceInDifferences,
-        StatSummary DurabilitySaving,
-        StatSummary DurabilitySavingPercent,
-        StatSummary OperationSaving);
+        public string TopologyVector(string representation)
+        {
+            Dictionary<string, string>[] rows = (representation == "loose" ? LooseTopology : CompoundTopology)
+                .OrderBy(row => ParseInt(row["segment_ordinal"])).ToArray();
+            return JsonSerializer.Serialize(rows.Select(row => new
+            {
+                min = ParseInt(row["min_document_ordinal"]),
+                max = ParseInt(row["max_document_ordinal"]),
+                count = ParseInt(row["document_count"])
+            }));
+        }
 
-    private readonly record struct StatSummary(
+        public void Validate(string expectedExperiment)
+        {
+            if (Environment is null)
+                ValidationErrors.Add("environment.json is missing.");
+            if (AssemblyHashes is null)
+                ValidationErrors.Add("source-and-assembly-hashes.json is missing.");
+            if (DatasetIdentity is null)
+                ValidationErrors.Add("dataset-identity.json is missing.");
+            if (ExperimentSha != expectedExperiment)
+                ValidationErrors.Add("Recorded experiment commit does not match the evidence-root name.");
+            if (AssemblyHashes?.GetValueOrDefault("working_tree_clean") != "true"
+                || Environment?.GetValueOrDefault("workingTreeClean") != "true")
+                ValidationErrors.Add("The measured source tree was not recorded clean.");
+            string sourceProvenance = AssemblyHashes?.GetValueOrDefault("source_provenance_kind", string.Empty) ?? string.Empty;
+            if (sourceProvenance is not ("git-working-tree" or "verified-git-archive"))
+                ValidationErrors.Add("Source provenance is missing or unsupported.");
+            if (sourceProvenance == "verified-git-archive"
+                && (AssemblyHashes?.GetValueOrDefault("source_manifest_sha256", string.Empty)?.Length != 64
+                    || AssemblyHashes.GetValueOrDefault("source_archive_sha256", string.Empty).Length != 64))
+                ValidationErrors.Add("The verified Windows source archive or manifest SHA-256 is missing.");
+            if (DatasetIdentity is not null
+                && (DatasetValue("dataForgeVersion").Length == 0 || DatasetValue("profileId") != "leancorpus-search"
+                    || DatasetValue("profileVersion") != "1" || GenerationValue("seed") != "42"
+                    || GenerationValue("record_count") != "100000" || DatasetValue("dependencies").Length == 0))
+                ValidationErrors.Add("DataForge identity does not match the locked profile, seed, count, or dependency requirements.");
+            if (CorpusSha256.Length != 64)
+                ValidationErrors.Add("Canonical DataForge content SHA-256 is missing or malformed.");
+            string expectedFileSystem = PlatformId == "windows-ntfs" ? "NTFS" : "ext4";
+            if (!string.Equals(EnvironmentValue("fileSystem"), expectedFileSystem, StringComparison.OrdinalIgnoreCase))
+                ValidationErrors.Add($"Recorded filesystem does not match {expectedFileSystem}.");
+
+            ValidateBaselineManifests();
+            ValidateProductionOrder();
+            ValidateCardinalityPlan();
+            ValidateTrialCounts();
+            ValidateStopRule();
+            CorrectnessFailure = Production.Any(row => HasCommitTiming(row)
+                && (row.GetValueOrDefault("reopen_ok") != "true"
+                    || row.GetValueOrDefault("id_lookup_pass") != "true"
+                    || row.GetValueOrDefault("index_integrity_pass") != "true"));
+            if (CorrectnessFailure)
+                ValidationErrors.Add("At least one measured production observation failed reopen, ID lookup, or deep index integrity validation.");
+            SourceSemanticsValid = Production.All(row => ParseInt(row.GetValueOrDefault("pack_temp_explicit_persist_requests", "0")) == 0);
+            if (!SourceSemanticsValid)
+                ValidationErrors.Add("An explicit persistence request was observed for the compound temporary output.");
+            string summaryPath = Path.Combine(Root, "cardinality-summary.csv");
+            CardinalitySummaryRows = File.Exists(summaryPath) ? Csv.Read(summaryPath) : [];
+        }
+
+        public bool DataReady(IReadOnlyList<int> launches)
+            => ValidationErrors.Count == 0 && !CorrectnessFailure && SourceSemanticsValid
+                && ProductionCellCoverage(launches) && CardinalityCellCoverage([1, 2, 3])
+                && BaselineTopologyPass;
+
+        private string NestedHash(string name)
+        {
+            if (AssemblyHashes is null || !AssemblyHashes.TryGetValue(name, out string? raw))
+                return string.Empty;
+            using JsonDocument document = JsonDocument.Parse(raw);
+            return document.RootElement.TryGetProperty("sha256", out JsonElement hash) ? hash.GetString() ?? string.Empty : string.Empty;
+        }
+
+        private void ValidateBaselineManifests()
+        {
+            BaselineTopologyPass = BaselinePass(LooseTopology, "loose") && BaselinePass(CompoundTopology, "compound")
+                && LooseTopology.Count == CompoundTopology.Count
+                && LooseTopology.OrderBy(row => ParseInt(row["segment_ordinal"]))
+                    .Zip(CompoundTopology.OrderBy(row => ParseInt(row["segment_ordinal"])))
+                    .All(static pair => pair.First["min_document_ordinal"] == pair.Second["min_document_ordinal"]
+                        && pair.First["max_document_ordinal"] == pair.Second["max_document_ordinal"]
+                        && pair.First["document_count"] == pair.Second["document_count"]);
+            if (!BaselineTopologyPass)
+                ValidationErrors.Add("Loose and compound baseline topology manifests do not encode the same nine exact logical segments.");
+        }
+
+        private static bool BaselinePass(IReadOnlyList<Dictionary<string, string>> rows, string representation)
+        {
+            if (rows.Count != 9)
+                return false;
+            for (int index = 0; index < 9; index++)
+            {
+                Dictionary<string, string>? row = rows.SingleOrDefault(row => ParseInt(row["segment_ordinal"]) == index);
+                if (row is null || row["representation"] != representation
+                    || ParseInt(row["min_document_ordinal"]) != index * 10_000
+                    || ParseInt(row["max_document_ordinal"]) != index * 10_000 + 9_999
+                    || ParseInt(row["document_count"]) != 10_000
+                    || string.IsNullOrWhiteSpace(row["segment_id"])
+                    || ParseInt(row["physical_file_count"]) <= 0
+                    || ParseLong(row["physical_bytes"]) <= 0)
+                    return false;
+            }
+            return true;
+        }
+
+        private void ValidateProductionOrder()
+        {
+            int[] seeds = [20261201, 20261202, 20261203, 20261204, 20261205];
+            string[] expected = (from representation in Representations
+                                 from durability in new[] { "disabled", "enabled" }
+                                 from lifecycle in Lifecycles
+                                 select $"{representation}-{durability}-{lifecycle}")
+                .OrderBy(static cell => cell, StringComparer.Ordinal).ToArray();
+            for (int launch = 1; launch <= 5; launch++)
+            {
+                Dictionary<string, string>[] rows = ExecutionOrder.Where(row => ParseInt(row["launch"]) == launch).ToArray();
+                if (rows.Length != 12 || rows.Select(static row => row["cell_id"]).Distinct(StringComparer.Ordinal).Count() != 12
+                    || rows.Any(row => ParseInt(row["shuffle_seed"]) != seeds[launch - 1])
+                    || !rows.Select(static row => row["cell_id"]).Order(StringComparer.Ordinal).SequenceEqual(expected, StringComparer.Ordinal))
+                    ValidationErrors.Add($"Production order for launch {launch} is incomplete or uses a different cell list/seed.");
+            }
+        }
+
+        private void ValidateCardinalityPlan()
+        {
+            if (CardinalityOrder.Count != 60 || CardinalityPartitions.Count != 20)
+            {
+                ValidationErrors.Add("Cardinality execution order or partition plan has the wrong cell count.");
+                return;
+            }
+            for (int launch = 1; launch <= 3; launch++)
+            {
+                Dictionary<string, string>[] rows = CardinalityOrder.Where(row => ParseInt(row["launch"]) == launch).ToArray();
+                if (rows.Length != 20 || rows.Select(row => (row["payload_bytes"], row["object_count"], row["partition_mode"]))
+                        .Distinct().Count() != 20)
+                    ValidationErrors.Add($"Cardinality order for launch {launch} is incomplete or duplicated.");
+            }
+            foreach (Dictionary<string, string> row in CardinalityPartitions)
+            {
+                long[] vector = JsonSerializer.Deserialize<long[]>(row["partition_vector_bytes"]) ?? [];
+                if (vector.Length != ParseInt(row["object_count"]) || vector.Sum() != ParseLong(row["payload_bytes"])
+                    || HashUtf8(JsonSerializer.Serialize(vector)) != row["partition_vector_sha256"])
+                    ValidationErrors.Add("A saved cardinality partition vector failed count, total, or hash validation.");
+            }
+        }
+
+        private void ValidateTrialCounts()
+        {
+            if (Production.Count != 360 || Cardinality.Count != 360)
+                ValidationErrors.Add($"Raw trial counts are production={Production.Count}/360 and cardinality={Cardinality.Count}/360.");
+            if (Production.Select(row => (row["launch"], row["cell_order"], row["observation"])).Distinct().Count() != Production.Count)
+                ValidationErrors.Add("Production raw data contain duplicate launch/cell/observation keys.");
+            if (Cardinality.Select(row => (row["launch"], row["cell_order"], row["observation"])).Distinct().Count() != Cardinality.Count)
+                ValidationErrors.Add("Cardinality raw data contain duplicate launch/cell/observation keys.");
+            if (ProductionPairs.Count != 180)
+                ValidationErrors.Add($"Production pairs contain {ProductionPairs.Count} rows; expected 180 including warm-ups.");
+        }
+
+        private void ValidateStopRule()
+        {
+            foreach (var group in ProductionPairs.Where(row => row["observation"] != "0" && row["pair_status"] != "valid")
+                         .GroupBy(row => (Launch: row["launch"], Lifecycle: row["lifecycle"], Durable: row["durable"])))
+                if (group.Count() > 1)
+                    ValidationErrors.Add($"More than one invalid pair in launch={group.Key.Launch}, lifecycle={group.Key.Lifecycle}, durable={group.Key.Durable}.");
+            foreach (var group in Cardinality.Where(row => row["warmup"] == "false" && !string.IsNullOrEmpty(row["error"]))
+                         .GroupBy(row => (Launch: row["launch"], Cell: row["cell_order"])))
+                if (group.Count() > 1)
+                    ValidationErrors.Add($"More than one failed cardinality observation in launch={group.Key.Launch}, cell={group.Key.Cell}.");
+        }
+
+        private bool ProductionCellCoverage(IReadOnlyList<int> launches)
+        {
+            foreach (int launch in launches)
+            foreach (string lifecycle in Lifecycles)
+            foreach (bool durable in DurabilityLevels)
+            {
+                Dictionary<string, string>[] rows = ProductionPairs.Where(row => ParseInt(row["launch"]) == launch
+                    && row["lifecycle"] == lifecycle && ParseBoolean(row["durable"]) == durable
+                    && row["observation"] != "0").ToArray();
+                if (rows.Length != 5 || rows.Count(static row => row["pair_status"] == "valid") < 4)
+                    return false;
+            }
+            return true;
+        }
+
+        private bool CardinalityCellCoverage(IReadOnlyList<int> launches)
+        {
+            foreach (int launch in launches)
+            foreach (int payloadBytes in Dataset.CardinalityPayloadSizes)
+            foreach (int objectCount in CardinalityCounts)
+            foreach (string mode in CardinalityModes)
+            {
+                Dictionary<string, string>[] rows = Cardinality.Where(row => ParseInt(row["launch"]) == launch
+                    && ParseInt(row["payload_bytes"]) == payloadBytes && ParseInt(row["object_count"]) == objectCount
+                    && row["partition_mode"] == mode && row["warmup"] == "false").ToArray();
+                if (rows.Length != 5 || rows.Count(static row => row["payload_reconstruction_pass"] == "true" && string.IsNullOrEmpty(row["error"])) < 4)
+                    return false;
+            }
+            return true;
+        }
+    }
+
+    private sealed record MetricPoint(int Launch, double Value);
+
+    private sealed record MetricSummary(
         int N,
         double? Median,
         double? Q1,
         double? Q3,
+        double? Iqr,
+        double? CiLow,
+        double? CiHigh,
         double? Minimum,
         double? Maximum,
-        double? CiLow,
-        double? CiHigh)
+        IReadOnlyDictionary<string, double?> LaunchMedians)
     {
-        public double? Iqr => Q1 is null || Q3 is null ? null : Q3 - Q1;
         public string CiText => CiLow is null || CiHigh is null ? "n/a" : $"[{F(CiLow)}, {F(CiHigh)}]";
-    }
-
-    private static class Statistics
-    {
-        public static StatSummary Summarise(IEnumerable<double> values, Random? bootstrap = null)
-        {
-            double[] sorted = values.Where(double.IsFinite).Order().ToArray();
-            if (sorted.Length == 0)
-                return new StatSummary(0, null, null, null, null, null, null, null);
-            double median = Quantile(sorted, 0.5);
-            double ciLow = median;
-            double ciHigh = median;
-            if (sorted.Length > 1 && bootstrap is not null)
-            {
-                double[] medians = new double[10_000];
-                var sample = new double[sorted.Length];
-                for (int iteration = 0; iteration < medians.Length; iteration++)
-                {
-                    for (int index = 0; index < sample.Length; index++)
-                        sample[index] = sorted[bootstrap.Next(sorted.Length)];
-                    Array.Sort(sample);
-                    medians[iteration] = Quantile(sample, 0.5);
-                }
-                Array.Sort(medians);
-                ciLow = Quantile(medians, 0.025);
-                ciHigh = Quantile(medians, 0.975);
-            }
-            return new StatSummary(sorted.Length, median, Quantile(sorted, 0.25), Quantile(sorted, 0.75),
-                sorted[0], sorted[^1], ciLow, ciHigh);
-        }
-
-        public static double Spearman(IReadOnlyList<double> x, IReadOnlyList<double> y)
-        {
-            if (x.Count != y.Count || x.Count < 2)
-                return double.NaN;
-            return Pearson(Rank(x), Rank(y));
-        }
-
-        public static double Slope(IReadOnlyList<double> x, IReadOnlyList<double> y)
-        {
-            if (x.Count != y.Count || x.Count < 2)
-                return double.NaN;
-            double meanX = x.Average();
-            double meanY = y.Average();
-            double covariance = 0;
-            double variance = 0;
-            for (int index = 0; index < x.Count; index++)
-            {
-                double deltaX = x[index] - meanX;
-                covariance += deltaX * (y[index] - meanY);
-                variance += deltaX * deltaX;
-            }
-            return variance == 0 ? double.NaN : covariance / variance;
-        }
-
-        private static double[] Rank(IReadOnlyList<double> values)
-        {
-            int[] order = Enumerable.Range(0, values.Count).OrderBy(index => values[index]).ToArray();
-            double[] ranks = new double[values.Count];
-            int cursor = 0;
-            while (cursor < order.Length)
-            {
-                int end = cursor + 1;
-                while (end < order.Length && values[order[end]].Equals(values[order[cursor]]))
-                    end++;
-                double averageRank = (cursor + 1 + end) / 2d;
-                for (int index = cursor; index < end; index++)
-                    ranks[order[index]] = averageRank;
-                cursor = end;
-            }
-            return ranks;
-        }
-
-        private static double Pearson(IReadOnlyList<double> x, IReadOnlyList<double> y)
-        {
-            double meanX = x.Average();
-            double meanY = y.Average();
-            double numerator = 0;
-            double varianceX = 0;
-            double varianceY = 0;
-            for (int index = 0; index < x.Count; index++)
-            {
-                double dx = x[index] - meanX;
-                double dy = y[index] - meanY;
-                numerator += dx * dy;
-                varianceX += dx * dx;
-                varianceY += dy * dy;
-            }
-            return varianceX == 0 || varianceY == 0 ? double.NaN : numerator / Math.Sqrt(varianceX * varianceY);
-        }
-
-        private static double Quantile(IReadOnlyList<double> sorted, double probability)
-        {
-            if (sorted.Count == 1)
-                return sorted[0];
-            double position = (sorted.Count - 1) * probability;
-            int lower = (int)Math.Floor(position);
-            int upper = (int)Math.Ceiling(position);
-            if (lower == upper)
-                return sorted[lower];
-            double fraction = position - lower;
-            return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction;
-        }
+        public static MetricSummary Empty { get; } = new(0, null, null, null, null, null, null, null, null,
+            new Dictionary<string, double?>());
     }
 }

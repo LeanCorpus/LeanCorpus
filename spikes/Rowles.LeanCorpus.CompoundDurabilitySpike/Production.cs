@@ -1,10 +1,13 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
+using Rowles.DataForge;
 using Rowles.DataForge.Workloads;
 using Rowles.LeanCorpus.Diagnostics;
 using Rowles.LeanCorpus.Document;
 using Rowles.LeanCorpus.Document.Fields;
 using Rowles.LeanCorpus.Index;
+using Rowles.LeanCorpus.Index.Format;
 using Rowles.LeanCorpus.Index.Indexer;
 using Rowles.LeanCorpus.Search.Queries;
 using Rowles.LeanCorpus.Search.Searcher;
@@ -27,16 +30,23 @@ internal static partial class SpikeRunner
         using (var directory = new MMapDirectory(path))
         using (var writer = new IndexWriter(directory, CreateConfig(representation, durable: true)))
         {
-            foreach (LeanDocument document in ReadDocuments(paths, 0, Dataset.BaselineCount))
-                writer.AddDocument(document);
-            writer.Commit();
+            for (int segment = 0; segment < 9; segment++)
+            {
+                int start = segment * 10_000;
+                foreach (LeanDocument document in ReadDocuments(paths, start, 10_000))
+                    writer.AddDocument(document);
+                writer.Commit();
+            }
         }
 
+        IndexTopology topology = Topology.Read(path, representation, inspectEveryDocument: true);
+        if (!Topology.HasExpectedBaseline(topology))
+            throw new InvalidDataException($"Baseline '{representation}' did not produce exactly nine logical 10,000-document segments.");
         ValidationResult validation = ValidateIndex(path, Dataset.BaselineCount, representation, []);
         if (!validation.Pass)
             throw new InvalidDataException($"Baseline '{representation}' failed validation: {validation.Error}");
 
-        Console.WriteLine($"baseline={representation} documents={Dataset.BaselineCount} path={path}");
+        Console.WriteLine($"baseline={representation} documents={Dataset.BaselineCount} segments={topology.SegmentCount} path={path}");
         return Task.FromResult(0);
     }
 
@@ -45,10 +55,14 @@ internal static partial class SpikeRunner
         var paths = new SpikePaths(root);
         string platform = arguments.Required("platform");
         int launch = arguments.Int32("launch");
+        if (launch is < 1 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(arguments), "Spike 1B production launches are 1 through 5.");
         string runId = File.ReadAllText(Path.Combine(root, "run-id.txt")).Trim();
+        string experimentSha = File.ReadAllText(Path.Combine(root, "experiment-sha.txt")).Trim();
         string baseSha = File.ReadAllText(Path.Combine(root, "base-sha.txt")).Trim();
-        string spikeSha = File.ReadAllText(Path.Combine(root, "spike-sha.txt")).Trim();
         List<(int CellOrder, string CellId)> cells = ReadExecutionOrder(root, launch);
+        if (cells.Count != 12)
+            throw new InvalidDataException($"Launch {launch} has {cells.Count} resolved production cells; expected 12.");
 
         foreach (var (cellOrder, cellId) in cells)
         {
@@ -57,10 +71,16 @@ internal static partial class SpikeRunner
             {
                 bool warmup = observation == 0;
                 string trialId = $"prod-l{launch}-c{cellOrder}-o{observation}-{cellId}";
+                if (Csv.Read(paths.ProductionTrialsPath).Any(row =>
+                    row["launch"] == launch.ToString(CultureInfo.InvariantCulture)
+                    && row["cell_order"] == cellOrder.ToString(CultureInfo.InvariantCulture)
+                    && row["observation"] == observation.ToString(CultureInfo.InvariantCulture)))
+                    throw new IOException($"Observation already exists for launch {launch}, cell {cellId}, observation {observation}; failed observations are never replaced.");
+
                 string trialPath = paths.TrialPath(trialId);
                 if (Directory.Exists(trialPath))
                     throw new IOException($"Trial path already exists: {trialId}");
-                if (cell.Lifecycle == "reopened")
+                if (cell.Lifecycle != "fresh")
                     SpikeInfrastructure.CopyDirectory(paths.BaselinePath(cell.Representation), trialPath);
                 else
                     Directory.CreateDirectory(trialPath);
@@ -80,37 +100,25 @@ internal static partial class SpikeRunner
                     ["durable"] = cell.Durable.ToString().ToLowerInvariant(),
                     ["lifecycle"] = cell.Lifecycle,
                     ["run-id"] = runId,
-                    ["base-sha"] = baseSha,
-                    ["spike-sha"] = spikeSha
+                    ["experiment-sha"] = experimentSha,
+                    ["base-sha"] = baseSha
                 };
                 ProcessResult result = await SpikeInfrastructure.RunWorkerAsync(root, logPath, workerArguments);
+                EnsureProductionFailureRecorded(paths, workerArguments, result, logPath);
                 if (result.ExitCode != 0)
-                {
                     Console.Error.WriteLine($"trial {trialId} exited {result.ExitCode}: {result.StandardError.Trim()}");
-                    var recorded = Csv.Read(paths.ProductionTrialsPath).LastOrDefault(row =>
-                        row["launch"] == launch.ToString(CultureInfo.InvariantCulture)
-                        && row["cell_order"] == cellOrder.ToString(CultureInfo.InvariantCulture)
-                        && row["observation"] == observation.ToString(CultureInfo.InvariantCulture));
-                    if (recorded is not null && double.TryParse(recorded["commit_call_ms"], NumberStyles.Float,
-                            CultureInfo.InvariantCulture, out _)
-                        && (recorded["reopen_ok"] != "true" || recorded["actual_doc_count"] != recorded["expected_doc_count"]
-                            || recorded["id_lookup_pass"] != "true" || recorded["index_integrity_pass"] != "true"
-                            || recorded["error"].Contains("Published files do not match", StringComparison.Ordinal)
-                            || recorded["error"].Contains("temporary publication file remained", StringComparison.Ordinal)
-                            || recorded["error"].Contains("FileSystemDiagnostics FileSyncCount", StringComparison.Ordinal)
-                            || recorded["error"].Contains("Pack input bytes", StringComparison.Ordinal)
-                            || recorded["error"].Contains("compound temporary lengths", StringComparison.Ordinal)))
-                        throw new InvalidDataException($"Measured commit {trialId} failed its post-commit correctness checks; the platform run stopped.");
-                }
             }
+        }
 
-            int invalidMeasured = Csv.Read(paths.ProductionTrialsPath)
-                .Count(row => row["launch"] == launch.ToString(CultureInfo.InvariantCulture)
-                    && row["cell_order"] == cellOrder.ToString(CultureInfo.InvariantCulture)
-                    && row["warmup"] == "false"
-                    && !string.IsNullOrEmpty(row["error"]));
-            if (invalidMeasured > 1)
-                throw new InvalidDataException($"Launch {launch} cell {cellId} has {invalidMeasured} invalid measured observations; platform run stopped.");
+        WriteProductionPairsForLaunch(paths, launch);
+        foreach (var group in Csv.Read(paths.ProductionPairsPath)
+                     .Where(row => row["launch"] == launch.ToString(CultureInfo.InvariantCulture)
+                         && row["observation"] != "0" && row["pair_status"] != "valid")
+                     .GroupBy(row => (Lifecycle: row["lifecycle"], Durable: row["durable"])))
+        {
+            int invalidPairs = group.Count();
+            if (invalidPairs > 1)
+                throw new InvalidDataException($"Launch {launch} comparison cell lifecycle={group.Key.Lifecycle}, durable={group.Key.Durable} has {invalidPairs} failed or topology-mismatched pairs; stop this platform for review.");
         }
 
         return 0;
@@ -131,20 +139,90 @@ internal static partial class SpikeRunner
         int launch = arguments.Int32("launch");
         int cellOrder = arguments.Int32("cell-order");
         int observation = arguments.Int32("observation");
-        int baselineDocs = lifecycle == "reopened" ? Dataset.BaselineCount : 0;
+        int baselineDocs = lifecycle == "fresh" ? 0 : Dataset.BaselineCount;
         int expectedDocs = baselineDocs + Dataset.BatchCount;
         var row = CreateProductionRow(paths, arguments, expectedDocs, baselineDocs);
         string? error = null;
+        SpikeObserver? observer = null;
 
         try
         {
             LeanDocument[] documents = ReadDocuments(paths, Dataset.BatchStart, Dataset.BatchCount).ToArray();
-            ProductionMeasurements measurement = MeasureProductionCommit(trialPath, documents, representation, durable);
-            SpikeObserver observer = measurement.Observer;
-            FileSystemDiagnosticsSnapshot before = measurement.Before;
-            FileSystemDiagnosticsSnapshot after = measurement.After;
+            using var directory = new MMapDirectory(trialPath);
+            IndexWriterConfig config = CreateConfig(representation, durable);
+            using var writer = new IndexWriter(directory, config);
+            using var detailedMeasurement = FileSystemDiagnostics.BeginDetailedMeasurement();
 
-            row.Set("index_ms", SpikeInfrastructure.Milliseconds(measurement.IndexStarted, measurement.IndexCompleted));
+            long primingFileRequests = 0;
+            long primingDirectoryRequests = 0;
+            int? primingGenerationBefore = null;
+            int? primingGenerationAfter = null;
+            bool? primingPassed = null;
+            if (lifecycle != "fresh")
+            {
+                IndexTopology beforePriming = Topology.Read(trialPath, representation, inspectEveryDocument: false);
+                if (!Topology.HasExpectedBaseline(beforePriming))
+                    throw new InvalidDataException("The copied reopened baseline does not have the validated nine-segment topology.");
+
+                if (lifecycle == "reopened-steady")
+                {
+                    primingGenerationBefore = beforePriming.CommitGeneration;
+                    FileSystemDiagnosticsSnapshot primingBefore = FileSystemDiagnostics.GetSnapshot();
+                    config.DurableCommits = true;
+                    writer.Commit();
+                    FileSystemDiagnosticsSnapshot primingAfter = FileSystemDiagnostics.GetSnapshot();
+                    primingFileRequests = primingAfter.FileSyncCount - primingBefore.FileSyncCount;
+                    primingDirectoryRequests = primingAfter.DirectorySyncAttemptCount - primingBefore.DirectorySyncAttemptCount;
+                    IndexTopology afterPriming = Topology.Read(trialPath, representation, inspectEveryDocument: false);
+                    primingGenerationAfter = afterPriming.CommitGeneration;
+                    primingPassed = primingGenerationBefore is int generationBefore
+                        && primingGenerationAfter == generationBefore + 1
+                        && primingFileRequests > 0
+                        && Topology.HasExpectedBaseline(afterPriming)
+                        && SameLogicalTopology(beforePriming, afterPriming);
+                    if (primingPassed != true)
+                        throw new InvalidDataException("The unmeasured durable priming commit did not establish the reopened durability baseline.");
+                    config.DurableCommits = durable;
+                }
+            }
+
+            IndexTopology preTopology = Topology.Read(trialPath, representation, inspectEveryDocument: false);
+            if (lifecycle == "fresh" && preTopology.SegmentCount != 0
+                || lifecycle != "fresh" && !Topology.HasExpectedBaseline(preTopology))
+                throw new InvalidDataException("The pre-measurement topology does not match the declared lifecycle.");
+
+            observer = new SpikeObserver();
+            observer.Attach();
+            FileSystemDiagnosticsSnapshot before = FileSystemDiagnostics.GetSnapshot();
+            long allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
+            int gen0Before = GC.CollectionCount(0);
+            int gen1Before = GC.CollectionCount(1);
+            int gen2Before = GC.CollectionCount(2);
+
+            long indexStarted = Stopwatch.GetTimestamp();
+            foreach (LeanDocument document in documents)
+                writer.AddDocument(document);
+            long indexCompleted = Stopwatch.GetTimestamp();
+
+            observer.BeginCommit();
+            long commitStarted = Stopwatch.GetTimestamp();
+            writer.Commit();
+            long commitCompleted = Stopwatch.GetTimestamp();
+            observer.Checkpoint("after_commit_return");
+
+            long allocatedAfter = GC.GetTotalAllocatedBytes(precise: false);
+            int gen0After = GC.CollectionCount(0);
+            int gen1After = GC.CollectionCount(1);
+            int gen2After = GC.CollectionCount(2);
+            FileSystemDiagnosticsSnapshot after = FileSystemDiagnostics.GetSnapshot();
+            SpikeInstrumentation.Observer = null;
+            writer.Dispose();
+            IndexTopology postTopology = Topology.Read(trialPath, representation, inspectEveryDocument: false);
+            bool expectedTopology = HasExpectedMeasuredTopology(postTopology, lifecycle);
+            if (!expectedTopology)
+                error = AppendError(error, "Post-measurement segment boundaries do not match the declared 10,000-document batch topology.");
+
+            row.Set("index_ms", SpikeInfrastructure.Milliseconds(indexStarted, indexCompleted));
             row.Set("forced_flush_ms", 0d);
             row.Set("forced_flush_embedded_in_commit", true);
             row.Set("compound_pack_ms", observer.PackMilliseconds);
@@ -153,11 +231,21 @@ internal static partial class SpikeRunner
             row.Set("durability_sync_ms", observer.DurabilityMilliseconds);
             row.Set("post_commit_ms", observer.DurabilityEndTimestamp == 0
                 ? 0d
-                : SpikeInfrastructure.Milliseconds(observer.DurabilityEndTimestamp, measurement.CommitCompleted));
-            row.Set("commit_call_ms", SpikeInfrastructure.Milliseconds(measurement.CommitStarted, measurement.CommitCompleted));
-            row.Set("operation_ms", SpikeInfrastructure.Milliseconds(measurement.IndexStarted, measurement.IndexCompleted)
-                + SpikeInfrastructure.Milliseconds(measurement.CommitStarted, measurement.CommitCompleted));
+                : SpikeInfrastructure.Milliseconds(observer.DurabilityEndTimestamp, commitCompleted));
+            row.Set("commit_call_ms", SpikeInfrastructure.Milliseconds(commitStarted, commitCompleted));
+            row.Set("operation_ms", SpikeInfrastructure.Milliseconds(indexStarted, indexCompleted)
+                + SpikeInfrastructure.Milliseconds(commitStarted, commitCompleted));
             row.Set("pack_member_count", observer.PackMemberCount);
+            row.Set("pack_member_size_vector_bytes", observer.PackMemberSizeVectorBytes);
+            row.Set("pre_measure_segment_count", preTopology.SegmentCount);
+            row.Set("pre_measure_segment_doc_vector", preTopology.DocumentVector);
+            row.Set("post_measure_segment_count", postTopology.SegmentCount);
+            row.Set("post_measure_segment_doc_vector", postTopology.DocumentVector);
+            row.Set("priming_commit_generation_before", primingGenerationBefore);
+            row.Set("priming_commit_generation_after", primingGenerationAfter);
+            row.Set("priming_file_persist_requests", primingFileRequests);
+            row.Set("priming_directory_persist_requests", primingDirectoryRequests);
+            row.Set("priming_durable_baseline_pass", primingPassed is null ? "not_applicable" : primingPassed.Value);
             row.Set("pack_input_bytes", observer.PackInputBytes);
             row.Set("pack_output_bytes", observer.PackOutputBytes);
             row.Set("pack_source_read_bytes", observer.PackSourceReadBytes);
@@ -181,10 +269,10 @@ internal static partial class SpikeRunner
             row.Set("files_deleted", observer.FilesDeleted);
             row.Set("windows_retry_count", after.RetryCount - before.RetryCount);
             row.Set("windows_retry_delay_ms", after.RetryDelayMilliseconds - before.RetryDelayMilliseconds);
-            row.Set("allocated_bytes_delta", measurement.AllocatedBytesDelta);
-            row.Set("gen0_delta", measurement.Gen0Delta);
-            row.Set("gen1_delta", measurement.Gen1Delta);
-            row.Set("gen2_delta", measurement.Gen2Delta);
+            row.Set("allocated_bytes_delta", allocatedAfter - allocatedBefore);
+            row.Set("gen0_delta", gen0After - gen0Before);
+            row.Set("gen1_delta", gen1After - gen1Before);
+            row.Set("gen2_delta", gen2After - gen2Before);
 
             ValidationResult validation = ValidateIndex(trialPath, expectedDocs, representation,
                 LookupOffsets.Select(offset => Dataset.ReadRecord(paths, Dataset.BatchStart + offset).Id).ToArray());
@@ -192,13 +280,15 @@ internal static partial class SpikeRunner
             row.Set("actual_doc_count", validation.ActualDocumentCount);
             row.Set("id_lookup_pass", validation.IdLookupPass);
             row.Set("index_integrity_pass", validation.IndexIntegrityPass);
-            error = validation.Error;
-            if (Convert.ToInt64(after.FileSyncCount - before.FileSyncCount, CultureInfo.InvariantCulture) != observer.FilePersistRequests)
+            error = AppendError(error, validation.Error);
+            if (after.FileSyncCount - before.FileSyncCount != observer.FilePersistRequests)
                 error = AppendError(error, "FileSystemDiagnostics FileSyncCount did not match observed file persistence requests.");
             if (observer.PackInputBytes != observer.PackSourceReadBytes)
                 error = AppendError(error, "Pack input bytes did not match bytes actually read from loose members.");
             if (observer.PackTempWrittenBytes != observer.PackOutputBytes)
                 error = AppendError(error, "Closed compound temporary lengths did not match published compound lengths.");
+            if (observer.PackTempExplicitPersistRequests != 0)
+                error = AppendError(error, "The production compound temporary output unexpectedly received an explicit persistence request.");
 
             row.Set("error", error ?? string.Empty);
             row.Append(paths.ProductionTrialsPath);
@@ -210,6 +300,7 @@ internal static partial class SpikeRunner
         }
         catch (Exception exception)
         {
+            SpikeInstrumentation.Observer = null;
             error = exception.ToString();
             row.Set("error", error);
             row.Append(paths.ProductionTrialsPath);
@@ -236,59 +327,23 @@ internal static partial class SpikeRunner
             IndexingConcurrency = 1,
             MaxConcurrentFlushes = 1,
             RamBufferSizeMB = 32,
+            MaxBufferedDocs = 10_000,
             MergePolicy = NoMergePolicy.Instance,
             UseCompoundFile = representation == "compound",
             DurableCommits = durable
         };
 
-    private static ProductionMeasurements MeasureProductionCommit(
-        string trialPath,
-        IReadOnlyList<LeanDocument> documents,
-        string representation,
-        bool durable)
+    private static bool HasExpectedMeasuredTopology(IndexTopology topology, string lifecycle)
     {
-        using var directory = new MMapDirectory(trialPath);
-        using var writer = new IndexWriter(directory, CreateConfig(representation, durable));
-        using var detailedMeasurement = FileSystemDiagnostics.BeginDetailedMeasurement();
-        var observer = new SpikeObserver(
-            Environment.GetEnvironmentVariable("SPIKE_FAILPOINT"),
-            Environment.GetEnvironmentVariable("SPIKE_CONTROL_LOG"));
-        observer.Attach();
-
-        FileSystemDiagnosticsSnapshot before = FileSystemDiagnostics.GetSnapshot();
-        long allocatedBefore = GC.GetTotalAllocatedBytes(precise: false);
-        int gen0Before = GC.CollectionCount(0);
-        int gen1Before = GC.CollectionCount(1);
-        int gen2Before = GC.CollectionCount(2);
-
-        long indexStarted = Stopwatch.GetTimestamp();
-        foreach (LeanDocument document in documents)
-            writer.AddDocument(document);
-        long indexCompleted = Stopwatch.GetTimestamp();
-
-        observer.BeginCommit();
-        long commitStarted = Stopwatch.GetTimestamp();
-        writer.Commit();
-        long commitCompleted = Stopwatch.GetTimestamp();
-        observer.Checkpoint("after_commit_return");
-
-        long allocatedAfter = GC.GetTotalAllocatedBytes(precise: false);
-        int gen0After = GC.CollectionCount(0);
-        int gen1After = GC.CollectionCount(1);
-        int gen2After = GC.CollectionCount(2);
-        FileSystemDiagnosticsSnapshot after = FileSystemDiagnostics.GetSnapshot();
-        return new ProductionMeasurements(
-            observer,
-            before,
-            after,
-            indexStarted,
-            indexCompleted,
-            commitStarted,
-            commitCompleted,
-            allocatedAfter - allocatedBefore,
-            gen0After - gen0Before,
-            gen1After - gen1Before,
-            gen2After - gen2Before);
+        int expectedSegments = lifecycle == "fresh" ? 1 : 10;
+        if (topology.SegmentCount != expectedSegments)
+            return false;
+        if (lifecycle != "fresh" && !Topology.HasExpectedBaseline(new IndexTopology(topology.Segments.Take(9).ToArray())))
+            return false;
+        SegmentTopology measured = topology.Segments[^1];
+        return measured.MinDocumentOrdinal == Dataset.BatchStart
+            && measured.MaxDocumentOrdinal == Dataset.BatchStart + Dataset.BatchCount - 1
+            && measured.DocumentCount == Dataset.BatchCount;
     }
 
     private static ValidationResult ValidateIndex(
@@ -350,15 +405,15 @@ internal static partial class SpikeRunner
         int baselineDocs)
     {
         var row = new CsvRowBuilder(CsvSchemas.Production);
-        var identity = Dataset.ReadIdentity(paths);
+        DataForgeDatasetIdentity identity = Dataset.ReadIdentity(paths);
         row.Set("run_id", arguments.Required("run-id"));
         row.Set("platform_id", arguments.Required("platform"));
+        row.Set("experiment_sha", arguments.Required("experiment-sha"));
+        row.Set("base_sha", arguments.Required("base-sha"));
         row.Set("launch", arguments.Int32("launch"));
         row.Set("cell_order", arguments.Int32("cell-order"));
         row.Set("observation", arguments.Int32("observation"));
         row.Set("warmup", arguments.Boolean("warmup"));
-        row.Set("base_sha", arguments.Required("base-sha"));
-        row.Set("spike_sha", arguments.Required("spike-sha"));
         row.Set("dataset_id", identity.GetShortKey());
         row.Set("corpus_sha256", identity.ContentSha256);
         row.Set("representation", arguments.Required("representation"));
@@ -369,6 +424,7 @@ internal static partial class SpikeRunner
         row.Set("indexing_concurrency", 1);
         row.Set("flush_concurrency", 1);
         row.Set("ram_buffer_mib", 32);
+        row.Set("max_buffered_docs", 10_000);
         row.Set("merge_policy", "NoMergePolicy");
         row.Set("expected_doc_count", expectedDocs);
         row.Set("reopen_ok", false);
@@ -379,24 +435,150 @@ internal static partial class SpikeRunner
         return row;
     }
 
+    private static void EnsureProductionFailureRecorded(
+        SpikePaths paths,
+        IReadOnlyDictionary<string, string> workerArguments,
+        ProcessResult result,
+        string logPath)
+    {
+        int launch = int.Parse(workerArguments["launch"], CultureInfo.InvariantCulture);
+        int cellOrder = int.Parse(workerArguments["cell-order"], CultureInfo.InvariantCulture);
+        int observation = int.Parse(workerArguments["observation"], CultureInfo.InvariantCulture);
+        if (Csv.Read(paths.ProductionTrialsPath).Any(row =>
+            row["launch"] == launch.ToString(CultureInfo.InvariantCulture)
+            && row["cell_order"] == cellOrder.ToString(CultureInfo.InvariantCulture)
+            && row["observation"] == observation.ToString(CultureInfo.InvariantCulture)))
+            return;
+
+        var row = new CsvRowBuilder(CsvSchemas.Production);
+        DataForgeDatasetIdentity identity = Dataset.ReadIdentity(paths);
+        string lifecycle = workerArguments["lifecycle"];
+        int baselineDocs = lifecycle == "fresh" ? 0 : Dataset.BaselineCount;
+        row.Set("run_id", workerArguments["run-id"]);
+        row.Set("platform_id", workerArguments["platform"]);
+        row.Set("experiment_sha", workerArguments["experiment-sha"]);
+        row.Set("base_sha", workerArguments["base-sha"]);
+        row.Set("launch", launch);
+        row.Set("cell_order", cellOrder);
+        row.Set("observation", observation);
+        row.Set("warmup", workerArguments["warmup"]);
+        row.Set("dataset_id", identity.GetShortKey());
+        row.Set("corpus_sha256", identity.ContentSha256);
+        row.Set("representation", workerArguments["representation"]);
+        row.Set("durable", workerArguments["durable"]);
+        row.Set("lifecycle", lifecycle);
+        row.Set("batch_docs", Dataset.BatchCount);
+        row.Set("baseline_docs", baselineDocs);
+        row.Set("indexing_concurrency", 1);
+        row.Set("flush_concurrency", 1);
+        row.Set("ram_buffer_mib", 32);
+        row.Set("max_buffered_docs", 10_000);
+        row.Set("merge_policy", "NoMergePolicy");
+        row.Set("expected_doc_count", baselineDocs + Dataset.BatchCount);
+        row.Set("reopen_ok", false);
+        row.Set("id_lookup_pass", false);
+        row.Set("index_integrity_pass", false);
+        row.Set("error", $"Worker exited {result.ExitCode}; log={Path.GetFileName(logPath)}; stderr={result.StandardError.Trim()}");
+        row.Append(paths.ProductionTrialsPath);
+    }
+
+    private static void WriteProductionPairsForLaunch(SpikePaths paths, int launch)
+    {
+        var rows = Csv.Read(paths.ProductionTrialsPath)
+            .Where(row => int.Parse(row["launch"], CultureInfo.InvariantCulture) == launch)
+            .ToDictionary(row => (
+                int.Parse(row["observation"], CultureInfo.InvariantCulture),
+                row["lifecycle"],
+                bool.Parse(row["durable"]),
+                row["representation"]));
+        for (int observation = 0; observation <= 5; observation++)
+        foreach (string lifecycle in new[] { "fresh", "reopened-first", "reopened-steady" })
+        foreach (bool durable in new[] { false, true })
+        {
+            rows.TryGetValue((observation, lifecycle, durable, "loose"), out Dictionary<string, string>? loose);
+            rows.TryGetValue((observation, lifecycle, durable, "compound"), out Dictionary<string, string>? compound);
+            string status = "valid";
+            string reason = string.Empty;
+            if (loose is null || compound is null)
+            {
+                status = "missing_observation";
+                reason = "One representation has no raw observation row.";
+            }
+            else if (!string.IsNullOrEmpty(loose["error"]) || !string.IsNullOrEmpty(compound["error"]))
+            {
+                status = "observation_failure";
+                reason = "At least one raw observation recorded an error.";
+            }
+            else if (NormalizeVector(loose["pre_measure_segment_doc_vector"]) != NormalizeVector(compound["pre_measure_segment_doc_vector"])
+                || NormalizeVector(loose["post_measure_segment_doc_vector"]) != NormalizeVector(compound["post_measure_segment_doc_vector"]))
+            {
+                status = "topology_mismatch";
+                reason = "Loose and compound logical document-boundary vectors differ.";
+            }
+
+            var pair = new CsvRowBuilder(CsvSchemas.ProductionPairs);
+            pair.Set("platform_id", loose?["platform_id"] ?? compound?["platform_id"]);
+            pair.Set("launch", launch);
+            pair.Set("observation", observation);
+            pair.Set("lifecycle", lifecycle);
+            pair.Set("durable", durable);
+            pair.Set("pair_status", status);
+            pair.Set("exclusion_reason", reason);
+            pair.Set("loose_pre_vector", loose?["pre_measure_segment_doc_vector"]);
+            pair.Set("compound_pre_vector", compound?["pre_measure_segment_doc_vector"]);
+            pair.Set("loose_post_vector", loose?["post_measure_segment_doc_vector"]);
+            pair.Set("compound_post_vector", compound?["post_measure_segment_doc_vector"]);
+            pair.Set("loose_durability_sync_ms", loose?["durability_sync_ms"]);
+            pair.Set("compound_durability_sync_ms", compound?["durability_sync_ms"]);
+            pair.Set("durability_saving_ms", Difference(loose, compound, "durability_sync_ms"));
+            pair.Set("loose_commit_call_ms", loose?["commit_call_ms"]);
+            pair.Set("compound_commit_call_ms", compound?["commit_call_ms"]);
+            pair.Set("loose_operation_ms", loose?["operation_ms"]);
+            pair.Set("compound_operation_ms", compound?["operation_ms"]);
+            pair.Set("operation_saving_ms", Difference(loose, compound, "operation_ms"));
+            pair.Set("loose_durability_candidate_files", loose?["durability_candidate_files"]);
+            pair.Set("compound_durability_candidate_files", compound?["durability_candidate_files"]);
+            pair.Set("loose_file_persist_requests", loose?["file_persist_requests"]);
+            pair.Set("compound_file_persist_requests", compound?["file_persist_requests"]);
+            pair.Append(paths.ProductionPairsPath);
+        }
+    }
+
+    private static object? Difference(
+        IReadOnlyDictionary<string, string>? left,
+        IReadOnlyDictionary<string, string>? right,
+        string column)
+    {
+        if (left is null || right is null
+            || !double.TryParse(left[column], NumberStyles.Float, CultureInfo.InvariantCulture, out double loose)
+            || !double.TryParse(right[column], NumberStyles.Float, CultureInfo.InvariantCulture, out double compound))
+            return null;
+        return loose - compound;
+    }
+
+    private static string NormalizeVector(string vector)
+    {
+        using JsonDocument document = JsonDocument.Parse(string.IsNullOrWhiteSpace(vector) ? "[]" : vector);
+        return JsonSerializer.Serialize(document.RootElement);
+    }
+
     private static List<(int CellOrder, string CellId)> ReadExecutionOrder(string root, int launch)
-        => File.ReadLines(Path.Combine(root, "execution-order.csv"))
-            .Skip(1)
-            .Select(static line => line.Split(','))
-            .Where(fields => int.Parse(fields[0], CultureInfo.InvariantCulture) == launch)
-            .Select(fields => (int.Parse(fields[1], CultureInfo.InvariantCulture), fields[2]))
-            .OrderBy(static item => item.Item1)
-            .Select(static item => (item.Item1, item.Item2))
+        => Csv.Read(Path.Combine(root, "execution-order.csv"))
+            .Where(row => int.Parse(row["launch"], CultureInfo.InvariantCulture) == launch)
+            .OrderBy(row => int.Parse(row["cell_order"], CultureInfo.InvariantCulture))
+            .Select(row => (int.Parse(row["cell_order"], CultureInfo.InvariantCulture), row["cell_id"]))
             .ToList();
 
     private static void EnsureDataset(SpikePaths paths)
     {
         if (!File.Exists(paths.IdentityPath) || !File.Exists(paths.RecordsPath) || !File.Exists(paths.OffsetsPath))
-            throw new FileNotFoundException("Run the spike prepare mode to generate the frozen DataForge dataset first.");
+            throw new FileNotFoundException("Run prepare mode to generate the DataForge dataset first.");
     }
 
     private static string AppendError(string? current, string next)
-        => string.IsNullOrEmpty(current) ? next : current + " | " + next;
+        => string.IsNullOrEmpty(next) ? current ?? string.Empty
+            : string.IsNullOrEmpty(current) ? next
+            : current + " | " + next;
 
     private static void PreserveFailedTrial(SpikePaths paths, string trialPath, string trialId)
     {
@@ -435,7 +617,8 @@ internal static partial class SpikeRunner
         {
             string[] parts = value.Split('-');
             if (parts.Length != 3 || parts[0] is not ("loose" or "compound")
-                || parts[1] is not ("disabled" or "enabled") || parts[2] is not ("fresh" or "reopened"))
+                || parts[1] is not ("disabled" or "enabled")
+                || parts[2] is not ("fresh" or "reopened-first" or "reopened-steady"))
                 throw new InvalidDataException($"Invalid production cell ID '{value}'.");
             return new Cell(parts[0], parts[1] == "enabled", parts[2]);
         }
