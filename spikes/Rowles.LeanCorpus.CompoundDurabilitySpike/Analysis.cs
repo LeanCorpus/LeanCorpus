@@ -413,6 +413,7 @@ internal static partial class SpikeRunner
 
     private static Dictionary<string, string>[] ValidCardinalityRows(PlatformData platform, IReadOnlyList<int> launches)
         => platform.Cardinality.Where(row => launches.Contains(ParseInt(row["launch"]))
+            && !ParseBoolean(row["warmup"])
             && row["payload_reconstruction_pass"] == "true" && string.IsNullOrEmpty(row["error"])
             && ParseDouble(row["durability_sync_ms"]) is not null).ToArray();
 
