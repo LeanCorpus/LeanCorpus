@@ -615,12 +615,24 @@ internal static partial class SpikeRunner
     {
         public static Cell Parse(string value)
         {
-            string[] parts = value.Split('-');
-            if (parts.Length != 3 || parts[0] is not ("loose" or "compound")
-                || parts[1] is not ("disabled" or "enabled")
-                || parts[2] is not ("fresh" or "reopened-first" or "reopened-steady"))
+            string? representation = value.StartsWith("loose-", StringComparison.Ordinal) ? "loose"
+                : value.StartsWith("compound-", StringComparison.Ordinal) ? "compound"
+                : null;
+            if (representation is null)
                 throw new InvalidDataException($"Invalid production cell ID '{value}'.");
-            return new Cell(parts[0], parts[1] == "enabled", parts[2]);
+
+            string remainder = value[(representation.Length + 1)..];
+            int separator = remainder.IndexOf('-');
+            if (separator < 0)
+                throw new InvalidDataException($"Invalid production cell ID '{value}'.");
+
+            string durability = remainder[..separator];
+            string lifecycle = remainder[(separator + 1)..];
+            if (durability is not ("disabled" or "enabled")
+                || lifecycle is not ("fresh" or "reopened-first" or "reopened-steady"))
+                throw new InvalidDataException($"Invalid production cell ID '{value}'.");
+
+            return new Cell(representation, durability == "enabled", lifecycle);
         }
     }
 }

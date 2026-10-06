@@ -41,8 +41,12 @@ internal static class Topology
             .ToArray();
         if (commitFiles.Length == 0)
         {
-            if (Directory.EnumerateFiles(indexPath).Any())
-                throw new InvalidDataException($"Fresh index '{indexPath}' has files but no committed topology.");
+            string[] uncommittedFiles = Directory.EnumerateFiles(indexPath)
+                .Select(static path => Path.GetFileName(path)!)
+                .Where(static file => !string.Equals(file, "write.lock", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (uncommittedFiles.Length > 0)
+                throw new InvalidDataException($"Fresh index '{indexPath}' has files but no committed topology: {string.Join(", ", uncommittedFiles)}.");
             return new IndexTopology([]);
         }
 
