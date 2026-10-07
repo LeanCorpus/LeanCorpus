@@ -36,6 +36,7 @@
     <InternalsVisibleTo Include="Rowles.LeanCorpus.Tests.AOTSmoke" />
     <InternalsVisibleTo Include="Rowles.LeanCorpus.Benchmarks" />
     <InternalsVisibleTo Include="Rowles.LeanCorpus.Server.Core" />
+    <InternalsVisibleTo Include="Rowles.LeanCorpus.WindowsDurabilitySpike" />
   </ItemGroup>
 
   <ItemGroup>

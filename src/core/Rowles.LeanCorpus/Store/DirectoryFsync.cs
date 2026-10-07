@@ -22,6 +22,8 @@ internal static class DirectoryFsync
     public static void Sync(string directoryPath, bool strict = false)
     {
         if (string.IsNullOrEmpty(directoryPath)) return;
+        bool observing = DurabilitySpikeInstrumentation.Current is not null;
+        long observedStartedAt = observing ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long directoryStartedAt = Diagnostics.FileSystemDiagnostics.StartDirectorySync();
         DirectorySyncResult result = DirectorySyncResult.Failed;
@@ -43,6 +45,14 @@ internal static class DirectoryFsync
         {
             Diagnostics.FileSystemDiagnostics.RecordDirectorySync(directoryStartedAt, result);
             Diagnostics.FileSystemDiagnostics.RecordSync(startedAt);
+            if (observing)
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.DirectoryPersist,
+                    directoryPath,
+                    observedStartedAt,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    succeeded: result == DirectorySyncResult.Succeeded,
+                    value: (long)result));
         }
     }
 
@@ -54,18 +64,23 @@ internal static class DirectoryFsync
     public static void SyncFile(string filePath, bool strict = false)
     {
         if (string.IsNullOrEmpty(filePath)) return;
+        bool observing = DurabilitySpikeInstrumentation.Current is not null;
+        long observedStartedAt = observing ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long fileStartedAt = Diagnostics.FileSystemDiagnostics.StartFileSync();
+        bool succeeded = false;
         try
         {
             if (strict)
             {
                 SyncFileCore(filePath);
+                succeeded = true;
                 return;
             }
             try
             {
                 SyncFileCore(filePath);
+                succeeded = true;
             }
             catch (FileNotFoundException ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "fsync (non-strict)"); }
             catch (DirectoryNotFoundException ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "fsync (non-strict)"); }
@@ -76,6 +91,13 @@ internal static class DirectoryFsync
         {
             Diagnostics.FileSystemDiagnostics.RecordFileSync(fileStartedAt);
             Diagnostics.FileSystemDiagnostics.RecordSync(startedAt);
+            if (observing)
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.FilePersist,
+                    filePath,
+                    observedStartedAt,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    succeeded: succeeded));
         }
     }
 

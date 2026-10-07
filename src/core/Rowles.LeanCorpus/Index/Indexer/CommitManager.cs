@@ -89,9 +89,23 @@ internal static class CommitManager
 
     private static void CommitCore(IndexWriter writer)
     {
+        long flushStageStartedAt = DurabilitySpikeInstrumentation.Current is null
+            ? 0
+            : Stopwatch.GetTimestamp();
         DwptManager.WaitForPendingFlushes(writer);
         DwptManager.FlushDwptPool(writer);
         DwptManager.WaitForPendingFlushes(writer);
+        if (DurabilitySpikeInstrumentation.Current is not null)
+        {
+            DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                DurabilitySpikeOperation.CommitFlushStage,
+                writer.Directory.DirectoryPath,
+                flushStageStartedAt,
+                Stopwatch.GetTimestamp()));
+            DurabilitySpikeInstrumentation.Checkpoint(
+                DurabilitySpikeCheckpoint.AfterSegmentFilesComplete,
+                writer.Directory.DirectoryPath);
+        }
 
         // Apply pending deletes to all committed segments after flush.
         // This covers both: queued deletes targeting previously committed
@@ -149,9 +163,46 @@ internal static class CommitManager
 
         if (writer.Config.DurableCommits)
         {
+            long changedFilesStartedAt = DurabilitySpikeInstrumentation.Current is null
+                ? 0
+                : Stopwatch.GetTimestamp();
             SyncChangedFiles(writer);
-            DirectoryFsync.Sync(dirPath, strict: true);
-            IndexAtomicFileWriter.WriteText(commitFile, fileContent, durable: true);
+            if (DurabilitySpikeInstrumentation.Current is not null)
+            {
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.ChangedFileSyncStage,
+                    dirPath,
+                    changedFilesStartedAt,
+                    Stopwatch.GetTimestamp()));
+                DurabilitySpikeInstrumentation.Checkpoint(
+                    DurabilitySpikeCheckpoint.AfterDataFilesPersisted,
+                    dirPath);
+            }
+
+            long directorySyncStartedAt = DurabilitySpikeInstrumentation.Current is null
+                ? 0
+                : Stopwatch.GetTimestamp();
+            bool directorySyncSucceeded = false;
+            try
+            {
+                if (DurabilitySpikeInstrumentation.Current is not null)
+                    DurabilitySpikeInstrumentation.BeforeDurabilityOperation("directory_persist_prepublication");
+                DirectoryFsync.Sync(dirPath, strict: true);
+                directorySyncSucceeded = true;
+                if (DurabilitySpikeInstrumentation.Current is not null)
+                    DurabilitySpikeInstrumentation.AfterDurabilityOperation("directory_persist_prepublication");
+            }
+            finally
+            {
+                if (DurabilitySpikeInstrumentation.Current is not null)
+                    DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                        DurabilitySpikeOperation.PrePublicationDirectorySync,
+                        dirPath,
+                        directorySyncStartedAt,
+                        Stopwatch.GetTimestamp(),
+                        succeeded: directorySyncSucceeded));
+            }
+            IndexAtomicFileWriter.WriteText(commitFile, fileContent, durable: true, syncDirectory: true, isCommitMarker: true);
             if (!pending)
                 DirtyFileTracker.MarkDurableGeneration(dirPath, gen);
         }
@@ -187,12 +238,28 @@ internal static class CommitManager
             if (SegmentFileSet.IsTemporaryFileName(fileName, writer.Config.CodecCatalog))
                 continue;
 
+            if (DurabilitySpikeInstrumentation.Current is not null)
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.DurabilityCandidateFile,
+                    dirtyFile.Path,
+                    0,
+                    0,
+                    value: 1));
+
             try
             {
                 DirectoryFsync.SyncFile(dirtyFile.Path, strict: true);
-                bytes += FileOpenRetry.GetFileLength(dirtyFile.Path);
+                long fileBytes = FileOpenRetry.GetFileLength(dirtyFile.Path);
+                bytes += fileBytes;
                 count++;
                 DirtyFileTracker.MarkSynced(dirtyFile);
+                if (DurabilitySpikeInstrumentation.Current is not null)
+                    DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                        DurabilitySpikeOperation.DurabilityCandidateBytes,
+                        dirtyFile.Path,
+                        0,
+                        0,
+                        value: fileBytes));
             }
             catch (IOException) when (!FileOpenRetry.FileExists(dirtyFile.Path))
             {

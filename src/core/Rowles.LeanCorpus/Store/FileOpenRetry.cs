@@ -184,7 +184,38 @@ internal static class FileOpenRetry
         {
             try
             {
-                File.Move(sourcePath, destPath, overwrite);
+                if (!DurabilitySpikeInstrumentation.IsMarkerPublicationCall)
+                {
+                    File.Move(sourcePath, destPath, overwrite);
+                }
+                else
+                {
+                    long publicationStartedAt = Stopwatch.GetTimestamp();
+                    bool published = false;
+                    int errorCode = 0;
+                    try
+                    {
+                        File.Move(sourcePath, destPath, overwrite);
+                        published = true;
+                    }
+                    catch (Exception exception)
+                    {
+                        errorCode = exception.HResult & 0xffff;
+                        throw;
+                    }
+                    finally
+                    {
+                        DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                            DurabilitySpikeOperation.MarkerPublicationApiCall,
+                            destPath,
+                            publicationStartedAt,
+                            Stopwatch.GetTimestamp(),
+                            errorCode,
+                            published));
+                    }
+                    if (published)
+                        DurabilitySpikeInstrumentation.AfterDurabilityOperation("publication_call");
+                }
                 return DirtyFileTracker.Move(sourcePath, destPath);
             }
             catch (Exception ex) when (ShouldRetry(ex, ref retries)) { DelayBeforeRetry(); }
@@ -345,7 +376,16 @@ internal static class FileOpenRetry
     private static void DelayBeforeRetry()
     {
         Diagnostics.FileSystemDiagnostics.RecordRetry(TransientRetryDelayMs);
+        bool observing = DurabilitySpikeInstrumentation.Current is not null;
+        long startedAt = observing ? Stopwatch.GetTimestamp() : 0;
         Thread.Sleep(TransientRetryDelayMs);
+        if (observing)
+            DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                DurabilitySpikeOperation.RetryDelay,
+                null,
+                startedAt,
+                Stopwatch.GetTimestamp(),
+                value: TransientRetryDelayMs));
     }
 
     private static void RecordCreation(FileMode mode)

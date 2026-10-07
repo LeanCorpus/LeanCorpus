@@ -4,6 +4,7 @@
   <Project Path="src/devops/Rowles.Text.Benchmarks/Rowles.Text.Benchmarks.csproj" />
   <Project Path="src/devops/Rowles.DataForge/Rowles.DataForge.csproj" />
   <Project Path="src/devops/Rowles.DataForge.Workloads/Rowles.DataForge.Workloads.csproj" />
+  <Project Path="spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/Rowles.LeanCorpus.WindowsDurabilitySpike.csproj" />
   <Project Path="src/devops/Rowles.DataForge.Tool/Rowles.DataForge.Tool.csproj" />
   <Project Path="src/devops/Rowles.DataForge.Tests/Rowles.DataForge.Tests.csproj" />
   <Project Path="src/devops/Rowles.LeanCorpus.Tests.Core/Rowles.LeanCorpus.Tests.Core.csproj" />

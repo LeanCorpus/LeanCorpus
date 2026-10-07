@@ -25,6 +25,9 @@ internal static class CompoundFileWriter
         if (sourceFiles.Length > MaxEntries)
             throw new InvalidDataException($"Segment '{segmentId}' has too many files for a compound file.");
 
+        long packStartedAt = DurabilitySpikeInstrumentation.Current is null
+            ? 0
+            : System.Diagnostics.Stopwatch.GetTimestamp();
         var cfsName = segmentId + ".cfs";
         var cfsPath = Path.Combine(directoryPath, cfsName);
         var temporaryPath = cfsPath + ".tmp";
@@ -34,9 +37,14 @@ internal static class CompoundFileWriter
         long expectedLength = OperatingSystem.IsWindows()
             ? 0
             : GetExpectedLength(directoryPath, sourceFiles);
+        long totalInputBytes = 0;
         try
         {
             long directoryOffset;
+            long outputLength;
+            long outputStartedAt = DurabilitySpikeInstrumentation.Current is null
+                ? 0
+                : System.Diagnostics.Stopwatch.GetTimestamp();
             using (var output = new IndexOutput(temporaryPath, preallocationSize: expectedLength))
             {
                 output.WriteInt32(Magic);
@@ -59,6 +67,9 @@ internal static class CompoundFileWriter
                         string sourcePath = Path.Combine(directoryPath, sourceFiles[i]);
                         entries[i] = new Entry(sourceFiles[i], output.Position, 0);
                         long copied = 0;
+                        long copyStartedAt = DurabilitySpikeInstrumentation.Current is null
+                            ? 0
+                            : System.Diagnostics.Stopwatch.GetTimestamp();
                         using var source = FileOpenRetry.OpenReadDelete(sourcePath);
                         int read;
                         while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
@@ -67,6 +78,15 @@ internal static class CompoundFileWriter
                             copied += read;
                         }
                         entries[i] = entries[i] with { Length = copied };
+                        if (DurabilitySpikeInstrumentation.Current is not null)
+                            totalInputBytes += copied;
+                        if (DurabilitySpikeInstrumentation.Current is not null)
+                            DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                                DurabilitySpikeOperation.CompoundCopy,
+                                sourcePath,
+                                copyStartedAt,
+                                System.Diagnostics.Stopwatch.GetTimestamp(),
+                                value: copied));
                     }
                 }
                 finally
@@ -81,11 +101,62 @@ internal static class CompoundFileWriter
                     output.WriteInt64(entry.Offset);
                     output.WriteInt64(entry.Length);
                 }
+                outputLength = output.Position;
             }
 
+            if (DurabilitySpikeInstrumentation.Current is not null)
+            {
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.CompoundClose,
+                    temporaryPath,
+                    outputStartedAt,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    value: outputLength));
+                DurabilitySpikeInstrumentation.Checkpoint(
+                    DurabilitySpikeCheckpoint.AfterCompoundTempCloseBeforeRename,
+                    temporaryPath);
+            }
+
+            long renameStartedAt = DurabilitySpikeInstrumentation.Current is null
+                ? 0
+                : System.Diagnostics.Stopwatch.GetTimestamp();
             FileOpenRetry.Move(temporaryPath, cfsPath, overwrite: true);
+            if (DurabilitySpikeInstrumentation.Current is not null)
+            {
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.CompoundRename,
+                    cfsPath,
+                    renameStartedAt,
+                    System.Diagnostics.Stopwatch.GetTimestamp()));
+                DurabilitySpikeInstrumentation.Checkpoint(
+                    DurabilitySpikeCheckpoint.AfterCompoundRename,
+                    cfsPath);
+            }
+
+            long deleteStartedAt = DurabilitySpikeInstrumentation.Current is null
+                ? 0
+                : System.Diagnostics.Stopwatch.GetTimestamp();
             foreach (var name in sourceFiles)
                 FileOpenRetry.Delete(Path.Combine(directoryPath, name));
+            if (DurabilitySpikeInstrumentation.Current is not null)
+            {
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.CompoundLooseDelete,
+                    directoryPath,
+                    deleteStartedAt,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    value: sourceFiles.Length));
+                DurabilitySpikeInstrumentation.Checkpoint(
+                    DurabilitySpikeCheckpoint.AfterLooseMembersDeleted,
+                    directoryPath);
+                DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.CompoundPack,
+                    cfsPath,
+                    packStartedAt,
+                    System.Diagnostics.Stopwatch.GetTimestamp(),
+                    value: totalInputBytes,
+                    auxiliaryValue: sourceFiles.Length));
+            }
             return true;
         }
         catch

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -64,7 +65,10 @@ internal sealed partial class WindowsFileSystem : IPlatformFileSystem
 
     private static DirectorySyncResult SyncHandle(string path, bool isDirectory)
     {
-        using SafeFileHandle handle = CreateFileW(
+        IDurabilitySpikeObserver? observer = DurabilitySpikeInstrumentation.Current;
+        long openStartedAt = observer is null ? 0 : Stopwatch.GetTimestamp();
+        DurabilitySpikeInstrumentation.RecordNativeCall(DurabilitySpikeOperation.WindowsOpen);
+        SafeFileHandle handle = CreateFileW(
             path,
             GenericWrite,
             FileShareRead | FileShareWrite | FileShareDelete,
@@ -72,21 +76,57 @@ internal sealed partial class WindowsFileSystem : IPlatformFileSystem
             OpenExisting,
             isDirectory ? FileFlagBackupSemantics : 0,
             0);
+        int openError = handle.IsInvalid ? Marshal.GetLastWin32Error() : 0;
+        if (observer is not null)
+        {
+            long openedAt = Stopwatch.GetTimestamp();
+            observer.OnEvent(new DurabilitySpikeEvent(
+                DurabilitySpikeOperation.WindowsOpen, path, openStartedAt, openedAt,
+                openError, !handle.IsInvalid));
+        }
 
-        if (handle.IsInvalid)
-            ThrowWin32(path, isDirectory, Marshal.GetLastWin32Error());
+        try
+        {
+            if (handle.IsInvalid)
+                ThrowWin32(path, isDirectory, openError);
 
-        if (FlushFileBuffers(handle))
+            long flushStartedAt = observer is null ? 0 : Stopwatch.GetTimestamp();
+            if (!handle.IsInvalid)
+                DurabilitySpikeInstrumentation.RecordNativeCall(DurabilitySpikeOperation.WindowsFlush);
+            bool flushed = FlushFileBuffers(handle);
+            int flushError = flushed ? 0 : Marshal.GetLastWin32Error();
+            if (observer is not null)
+            {
+                long flushedAt = Stopwatch.GetTimestamp();
+                observer.OnEvent(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.WindowsFlush, path, flushStartedAt, flushedAt,
+                    flushError, flushed));
+            }
+
+            if (flushed)
+                return DirectorySyncResult.Succeeded;
+
+            if (isDirectory && flushError == ErrorAccessDenied)
+                return DirectorySyncResult.Unsupported;
+
+            ThrowWin32(path, isDirectory, flushError);
             return DirectorySyncResult.Succeeded;
-
-        int error = Marshal.GetLastWin32Error();
-        // Windows commonly refuses FlushFileBuffers on a directory handle. NTFS still
-        // journals the metadata operation, so match the established best-effort contract.
-        if (isDirectory && error == ErrorAccessDenied)
-            return DirectorySyncResult.Unsupported;
-
-        ThrowWin32(path, isDirectory, error);
-        return DirectorySyncResult.Succeeded;
+        }
+        finally
+        {
+            long closeStartedAt = observer is null ? 0 : Stopwatch.GetTimestamp();
+            bool closeWasValid = !handle.IsInvalid;
+            if (closeWasValid)
+                DurabilitySpikeInstrumentation.RecordNativeCall(DurabilitySpikeOperation.WindowsClose);
+            handle.Dispose();
+            if (observer is not null)
+            {
+                long closedAt = Stopwatch.GetTimestamp();
+                observer.OnEvent(new DurabilitySpikeEvent(
+                    DurabilitySpikeOperation.WindowsClose, path, closeStartedAt, closedAt,
+                    succeeded: closeWasValid));
+            }
+        }
     }
 
     private static void ThrowWin32(string path, bool isDirectory, int error)

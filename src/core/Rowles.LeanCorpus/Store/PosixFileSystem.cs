@@ -33,7 +33,10 @@ internal sealed partial class PosixFileSystem : IPlatformFileSystem
 
             int descriptor;
             fixed (byte* pointer = rented)
+            {
+                DurabilitySpikeInstrumentation.RecordNativeCall(DurabilitySpikeOperation.PosixOpen);
                 descriptor = open(pointer, flags);
+            }
 
             if (descriptor < 0)
                 ThrowErrno("open", path, Marshal.GetLastWin32Error());
@@ -42,10 +45,15 @@ internal sealed partial class PosixFileSystem : IPlatformFileSystem
             int syncError;
             try
             {
+                DurabilitySpikeInstrumentation.RecordNativeCall(DurabilitySpikeOperation.PosixFsync);
                 syncResult = fsync(descriptor);
                 syncError = syncResult == 0 ? 0 : Marshal.GetLastWin32Error();
             }
-            finally { _ = close(descriptor); }
+            finally
+            {
+                DurabilitySpikeInstrumentation.RecordNativeCall(DurabilitySpikeOperation.PosixClose);
+                _ = close(descriptor);
+            }
 
             if (syncResult != 0)
                 ThrowErrno("fsync", path, syncError);

@@ -52,7 +52,21 @@ internal static class PlatformFileSystem
             {
                 retries--;
                 Diagnostics.FileSystemDiagnostics.RecordRetry(SyncRetryDelayMilliseconds);
-                delay(SyncRetryDelayMilliseconds);
+                if (DurabilitySpikeInstrumentation.Current is null)
+                {
+                    delay(SyncRetryDelayMilliseconds);
+                }
+                else
+                {
+                    long startedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+                    delay(SyncRetryDelayMilliseconds);
+                    DurabilitySpikeInstrumentation.Record(new DurabilitySpikeEvent(
+                        DurabilitySpikeOperation.RetryDelay,
+                        path,
+                        startedAt,
+                        System.Diagnostics.Stopwatch.GetTimestamp(),
+                        value: SyncRetryDelayMilliseconds));
+                }
             }
         }
     }
