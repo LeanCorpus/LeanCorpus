@@ -35,10 +35,17 @@ jobs:
 
     env:
       PLATFORM_ID: ${{ matrix.platform }}
-      EVIDENCE_ROOT: ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}
-      CURATED_ROOT: ${{ runner.temp }}/compound-durability-ci-curated/${{ matrix.platform }}
 
     steps:
+      - name: Set runner-temporary evidence paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidenceRoot = Join-Path (Join-Path $env:RUNNER_TEMP 'compound-durability-ci') $env:PLATFORM_ID
+          $curatedRoot = Join-Path (Join-Path $env:RUNNER_TEMP 'compound-durability-ci-curated') $env:PLATFORM_ID
+          "EVIDENCE_ROOT=$evidenceRoot" >> $env:GITHUB_ENV
+          "CURATED_ROOT=$curatedRoot" >> $env:GITHUB_ENV
+
       - name: Check out measured source
         uses: actions/checkout@v6
         with:
