@@ -166,9 +166,9 @@ internal static class RecoveryRunner
         var directory = new MMapDirectory(indexPath);
         var writer = new Rowles.LeanCorpus.Index.Indexer.IndexWriter(directory,
             PublicationRunner.CreateConfig(representation == "compound"));
-        PublicationRunner.AddBatch(writer, dataset.Records);
         using (DurabilitySpikeInstrumentation.Begin(observer))
         {
+            PublicationRunner.AddBatch(writer, dataset.Records);
             if (mode == "fault")
             {
                 try
@@ -222,6 +222,83 @@ internal static class RecoveryRunner
         DatasetDescription identity = BuildRecoveryDatasetIdentity(dataset);
         Console.WriteLine($"Recovery dataset contract passed: 100,000-record DataForge identity, measured ordinals 90,000..99,999, content SHA-256 {identity.Identity.ContentSha256}.");
         return 0;
+    }
+
+    internal static int ValidateCompoundCheckpointReachability(SpikeArguments arguments)
+    {
+        string dataRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(arguments.Required("data-root")));
+        string output = Path.GetFullPath(arguments.Required("output"));
+        RecoveryDataset dataset = ReadRecoveryDataset(Path.GetFullPath(arguments.Required("dataset")));
+        EnsureEvidenceOutsideDataRoot(dataRoot, output);
+        if (!Directory.Exists(dataRoot))
+            throw new DirectoryNotFoundException($"Regression data root does not exist: {dataRoot}");
+
+        const string candidate = "P0";
+        const string representation = "compound";
+        string indexPath = Path.Combine(dataRoot, "spike2-compound-checkpoint-regression");
+        if (Directory.Exists(indexPath))
+            throw new IOException($"Regression index already exists and will not be reused: {indexPath}");
+        if (File.Exists(output))
+            throw new IOException($"Regression evidence already exists and will not be replaced: {output}");
+        if (dataset.Records.Length != 10_000)
+            throw new InvalidDataException($"Expected exactly 10,000 recovery records, found {dataset.Records.Length}.");
+
+        var expected = new[]
+        {
+            DurabilitySpikeCheckpoint.AfterCompoundTempCloseBeforeRename,
+            DurabilitySpikeCheckpoint.AfterCompoundRename,
+            DurabilitySpikeCheckpoint.AfterLooseMembersDeleted
+        };
+        var observer = new PublicationRunner.PublicationObserver(candidate);
+        bool commitSucceeded = false;
+        string? error = null;
+        try
+        {
+            using var directory = new MMapDirectory(indexPath);
+            using var writer = new Rowles.LeanCorpus.Index.Indexer.IndexWriter(directory,
+                PublicationRunner.CreateConfig(compound: true));
+            using (DurabilitySpikeInstrumentation.Begin(observer))
+            {
+                PublicationRunner.AddBatch(writer, dataset.Records);
+                writer.Commit();
+                commitSucceeded = true;
+            }
+        }
+        catch (Exception exception)
+        {
+            error = $"{exception.GetType().Name}: {exception.Message}";
+        }
+
+        DurabilitySpikeCheckpoint[] reached = observer.Checkpoints;
+        string[] expectedNames = expected.Select(CheckpointName).ToArray();
+        string[] reachedNames = reached.Select(CheckpointName).ToArray();
+        string[] missing = expected.Where(checkpoint => !reached.Contains(checkpoint))
+            .Select(CheckpointName).ToArray();
+        bool passed = commitSucceeded && missing.Length == 0 &&
+                      expected.All(checkpoint => reached.Count(value => value == checkpoint) == 1);
+        var report = new
+        {
+            schema_version = 1,
+            validation = "compound_recovery_checkpoint_reachability",
+            measured_source_sha = Environment.GetEnvironmentVariable("SPIKE_MEASURED_SOURCE_SHA") ??
+                                  Environment.GetEnvironmentVariable("SPIKE_EXPERIMENT_SHA") ?? "unknown",
+            candidate_id = candidate,
+            representation,
+            document_count = dataset.Records.Length,
+            max_buffered_docs = 10_000,
+            observer_active_for = new[] { "AddBatch", "Commit" },
+            commit_succeeded = commitSucceeded,
+            expected_failpoints = expectedNames,
+            reached_failpoints = reachedNames,
+            missing_failpoints = missing,
+            passed,
+            error
+        };
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+        File.WriteAllText(output, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }) + "\n",
+            new UTF8Encoding(false));
+        Console.WriteLine(JsonSerializer.Serialize(new { passed, reached_failpoints = reachedNames, missing_failpoints = missing }));
+        return passed ? 0 : 1;
     }
 
     private static RecoveryOutcome RunProcessChild(

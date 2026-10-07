@@ -32,15 +32,22 @@ internal static class HostedReplicationAnalysis
             .Select(static row => row.WorkflowFileSha256).Distinct(StringComparer.Ordinal).Count() == 1 &&
             windowsRunners.Launches.Concat(ubuntuRunners.Launches)
                 .All(static row => row.WorkflowFileSha256 != "unknown");
-        bool experimentShaConsistent = localAudit.Launches.Count == 5 && windowsRunners.Launches.Count == 3 &&
-            localAudit.Launches.Select(static row => row.ExperimentSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 &&
-            windowsRunners.Launches.Concat(ubuntuRunners.Launches).All(row =>
-                string.Equals(row.GithubSha, localAudit.Launches[0].ExperimentSha, StringComparison.OrdinalIgnoreCase));
+        RunnerIdentity[] hostedLaunches = windowsRunners.Launches.Concat(ubuntuRunners.Launches).ToArray();
+        bool workflowShaConsistent = hostedLaunches.Length == 6 &&
+            hostedLaunches.Select(static row => row.WorkflowSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 &&
+            hostedLaunches.All(static row => row.WorkflowSha != "unknown" &&
+                string.Equals(row.WorkflowSha, row.GithubSha, StringComparison.OrdinalIgnoreCase));
+        bool measuredSourceShaConsistent = localAudit.Launches.Count == 5 &&
+            windowsRunners.Launches.Count == 3 && ubuntuRunners.Launches.Count == 3 &&
+            localAudit.Launches.Select(static row => row.MeasuredSourceSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 &&
+            hostedLaunches.All(row => SameMeasuredSourceSha(localAudit.Launches[0].MeasuredSourceSha,
+                row.MeasuredSourceSha));
         bool localComplete = localRoot.GetProperty("matrix_complete").GetBoolean() &&
-                             localRoot.GetProperty("environment_stable").GetBoolean() && localAudit.Complete && experimentShaConsistent;
+                             localRoot.GetProperty("environment_stable").GetBoolean() && localAudit.Complete &&
+                             measuredSourceShaConsistent;
         bool windowsComplete = windowsRoot.GetProperty("matrix_complete").GetBoolean() &&
                                windowsRoot.GetProperty("environment_stable").GetBoolean() && windowsRunners.Complete &&
-                               workflowHashConsistent && experimentShaConsistent;
+                               workflowHashConsistent && workflowShaConsistent && measuredSourceShaConsistent;
         string localClass = localRoot.GetProperty("primary_classification").GetString() ?? "unstable_or_inconclusive";
         string windowsClass = windowsRoot.GetProperty("primary_classification").GetString() ?? "unstable_or_inconclusive";
         bool scalingAgrees = localComplete && windowsComplete && CardinalityDirectionsAgree(localRoot, windowsRoot);
@@ -56,7 +63,7 @@ internal static class HostedReplicationAnalysis
                     : "environment_sensitive";
 
         bool ubuntuComplete = ubuntuRoot.GetProperty("matrix_complete").GetBoolean() && ubuntuRunners.Complete &&
-                              workflowHashConsistent && experimentShaConsistent;
+                              workflowHashConsistent && workflowShaConsistent && measuredSourceShaConsistent;
         object ubuntuControl = InterpretUbuntuControl(localRoot, ubuntuRoot, localComplete, ubuntuComplete);
         var report = new
         {
@@ -82,6 +89,9 @@ internal static class HostedReplicationAnalysis
             hosted_windows_runner_audit = windowsRunners,
             ubuntu_runner_audit = ubuntuRunners,
             raw_timings_pooled = false,
+            local_measured_source_sha = localAudit.Launches.FirstOrDefault()?.MeasuredSourceSha ?? "unknown",
+            hosted_measured_source_shas = hostedLaunches.Select(static row => row.MeasuredSourceSha).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            hosted_workflow_shas = hostedLaunches.Select(static row => row.WorkflowSha).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
             source_and_assembly_sha256 = new
             {
                 local = HashFile(localPath),
@@ -90,7 +100,8 @@ internal static class HostedReplicationAnalysis
             },
             workflow_file_sha256 = ReadWorkflowHash(windowsInput),
             workflow_hash_consistent_across_all_six_jobs = workflowHashConsistent,
-            experiment_sha_consistent_across_local_and_hosted = experimentShaConsistent,
+            workflow_sha_consistent_across_all_six_jobs = workflowShaConsistent,
+            measured_source_sha_consistent_across_local_and_hosted = measuredSourceShaConsistent,
             generated_utc = DateTimeOffset.UtcNow
         };
 
@@ -122,32 +133,34 @@ internal static class HostedReplicationAnalysis
         {
             using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
             JsonElement root = document.RootElement;
-            string expectedSha = Get(root, "experiment_sha");
+            string measuredSourceSha = GetIdentity(root, "measured_source_sha", "experiment_sha");
             string githubSha = Get(root, "github_sha");
             string hashesPath = Path.Combine(Path.GetDirectoryName(path)!, "source-and-assembly-hashes.json");
             using JsonDocument hashes = JsonDocument.Parse(File.ReadAllText(hashesPath));
             JsonElement hashRoot = hashes.RootElement;
+            string hashesMeasuredSourceSha = GetIdentity(hashRoot, "measured_source_sha", "experiment_sha");
             rows.Add(new LocalEnvironmentIdentity(
-                Get(root, "environment_id"), Get(root, "environment_class"), expectedSha,
+                Get(root, "environment_id"), Get(root, "environment_class"), measuredSourceSha,
                 Get(root, "github_ref"), Get(root, "operating_system"), Get(root, "windows_edition"),
                 Get(root, "windows_build"), Get(root, "cpu_model"), Get(root, "logical_processors"),
                 Get(root, "ram_bytes"), Get(root, "filesystem"), Get(root, "hypervisor"),
                 Get(root, "libvirt_cache_mode"), Get(root, "libvirt_io_mode"),
                 Get(hashRoot.GetProperty("spike_assembly"), "sha256"),
                 Get(hashRoot.GetProperty("core_assembly"), "sha256"),
-                expectedSha != "unknown" && (githubSha == "unknown" ||
-                    string.Equals(expectedSha, githubSha, StringComparison.OrdinalIgnoreCase))));
+                measuredSourceSha != "unknown" &&
+                string.Equals(measuredSourceSha, hashesMeasuredSourceSha, StringComparison.OrdinalIgnoreCase) &&
+                (githubSha == "unknown" || githubSha == "not_applicable")));
         }
         bool complete = rows.Select(static row => row.EnvironmentId).Distinct(StringComparer.Ordinal).Count() == 5 &&
                         rows.All(static row => row.EnvironmentClass == "local_windows_vm" && row.ShaMatches &&
-                                               row.ExperimentSha != "unknown" && row.OperatingSystem != "unknown" &&
+                                               row.MeasuredSourceSha != "unknown" && row.OperatingSystem != "unknown" &&
                                                row.WindowsEdition != "unknown" && row.WindowsBuild != "unknown" &&
                                                row.CpuModel != "unknown" && row.LogicalProcessors != "unknown" &&
                                                row.RamBytes != "unknown" && row.Filesystem == "NTFS" &&
                                                row.Hypervisor != "unknown" && row.LibvirtCacheMode != "unknown" &&
                                                row.LibvirtIoMode != "unknown" && row.SpikeAssemblySha256 != "unknown" &&
                                                row.CoreAssemblySha256 != "unknown") &&
-                        rows.Select(static row => row.ExperimentSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 &&
+                        rows.Select(static row => row.MeasuredSourceSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1 &&
                         rows.Select(static row => row.SpikeAssemblySha256).Distinct(StringComparer.Ordinal).Count() == 1 &&
                         rows.Select(static row => row.CoreAssemblySha256).Distinct(StringComparer.Ordinal).Count() == 1;
         return new LocalInputAudit(rows.Count, complete, rows);
@@ -177,11 +190,17 @@ internal static class HostedReplicationAnalysis
             string environment = Get(root, "environment_class");
             if (environment != expectedEnvironment)
                 throw new InvalidDataException($"Environment file '{path}' identifies {environment}, expected {expectedEnvironment}.");
-            string expectedSha = Get(root, "experiment_sha");
+            string measuredSourceSha = GetIdentity(root, "measured_source_sha", "experiment_sha");
+            string workflowSha = Get(root, "workflow_sha");
             string githubSha = Get(root, "github_sha");
-            bool shaMatches = expectedSha != "unknown" && string.Equals(expectedSha, githubSha, StringComparison.OrdinalIgnoreCase);
             string hashesPath = Path.Combine(Path.GetDirectoryName(path)!, "source-and-assembly-hashes.json");
             using JsonDocument hashes = JsonDocument.Parse(File.ReadAllText(hashesPath));
+            string hashesMeasuredSourceSha = GetIdentity(hashes.RootElement, "measured_source_sha", "experiment_sha");
+            string hashesWorkflowSha = Get(hashes.RootElement, "workflow_sha");
+            string hashesWorkflowFileSha256 = Get(hashes.RootElement, "workflow_file_sha256");
+            bool shaMatches = HostedProvenanceMatches(measuredSourceSha, workflowSha, githubSha,
+                hashesMeasuredSourceSha, hashesWorkflowSha) &&
+                string.Equals(Get(root, "workflow_file_sha256"), hashesWorkflowFileSha256, StringComparison.Ordinal);
             string spikeHash = hashes.RootElement.GetProperty("spike_assembly").GetProperty("sha256").GetString() ?? "unknown";
             string coreHash = hashes.RootElement.GetProperty("core_assembly").GetProperty("sha256").GetString() ?? "unknown";
             rows.Add(new RunnerIdentity(
@@ -189,6 +208,8 @@ internal static class HostedReplicationAnalysis
                 Get(root, "github_run_id"),
                 Get(root, "github_run_attempt"),
                 Get(root, "github_job"),
+                measuredSourceSha,
+                workflowSha,
                 githubSha,
                 Get(root, "github_ref"),
                 Get(root, "runner_os"),
@@ -216,6 +237,7 @@ internal static class HostedReplicationAnalysis
                         rows.Select(static row => row.RunnerName).Distinct(StringComparer.Ordinal).Count() == 3 &&
                         rows.All(row => row.ShaMatches && row.GithubRunId != "unknown" && row.GithubRunAttempt != "unknown" &&
                                         row.GithubRef == "refs/heads/spike/windows-durability-publication" &&
+                                        row.MeasuredSourceSha != "unknown" && row.WorkflowSha != "unknown" &&
                                         row.RunnerOs == expectedOs && row.RunnerArch != "unknown" &&
                                         row.RunnerName != "unknown" && row.RunnerEnvironment != "unknown" &&
                                         row.RunnerImageOs != "unknown" && row.RunnerImageVersion != "unknown" &&
@@ -227,7 +249,8 @@ internal static class HostedReplicationAnalysis
         complete &= rows.Select(static row => row.WorkflowFileSha256).Distinct(StringComparer.Ordinal).Count() == 1;
         complete &= rows.Select(static row => row.SpikeAssemblySha256).Distinct(StringComparer.Ordinal).Count() == 1;
         complete &= rows.Select(static row => row.CoreAssemblySha256).Distinct(StringComparer.Ordinal).Count() == 1;
-        complete &= rows.Select(static row => row.GithubSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
+        complete &= rows.Select(static row => row.MeasuredSourceSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
+        complete &= rows.Select(static row => row.WorkflowSha).Distinct(StringComparer.OrdinalIgnoreCase).Count() == 1;
         return new RunnerAudit(expectedEnvironment, rows.Count, complete, rows);
     }
 
@@ -330,6 +353,23 @@ internal static class HostedReplicationAnalysis
     private static string Get(JsonElement element, string property)
         => element.TryGetProperty(property, out JsonElement value) ? value.ToString() : "unknown";
 
+    private static string GetIdentity(JsonElement element, string primary, string fallback)
+    {
+        string value = Get(element, primary);
+        return value == "unknown" ? Get(element, fallback) : value;
+    }
+
+    internal static bool HostedProvenanceMatches(string measuredSourceSha, string workflowSha,
+        string githubSha, string hashesMeasuredSourceSha, string hashesWorkflowSha)
+        => measuredSourceSha != "unknown" && workflowSha != "unknown" &&
+           string.Equals(measuredSourceSha, hashesMeasuredSourceSha, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(workflowSha, hashesWorkflowSha, StringComparison.OrdinalIgnoreCase) &&
+           string.Equals(workflowSha, githubSha, StringComparison.OrdinalIgnoreCase);
+
+    internal static bool SameMeasuredSourceSha(string localMeasuredSourceSha, string hostedMeasuredSourceSha)
+        => localMeasuredSourceSha != "unknown" && hostedMeasuredSourceSha != "unknown" &&
+           string.Equals(localMeasuredSourceSha, hostedMeasuredSourceSha, StringComparison.OrdinalIgnoreCase);
+
     private static string ReadWorkflowHash(string input)
     {
         string[] paths = Directory.EnumerateFiles(input, "environment.json", SearchOption.AllDirectories).ToArray();
@@ -357,7 +397,7 @@ internal static class HostedReplicationAnalysis
         builder.AppendLine();
         builder.AppendLine("## Runner provenance");
         builder.AppendLine();
-        builder.AppendLine("Each hosted launch must identify a distinct GitHub job and runner name, the frozen SHA, runner image, CPU, memory, filesystem, runtime and assembly hashes. See the JSON report for every captured field.");
+        builder.AppendLine("Each hosted launch identifies the workflow SHA separately from the measured source SHA, as well as its runner image, CPU, memory, filesystem, runtime and assembly hashes. The measured source SHA must match the local frozen source; the workflow SHA may advance independently.");
         builder.AppendLine();
         builder.AppendLine("## Ubuntu control");
         builder.AppendLine();
@@ -387,13 +427,13 @@ internal static class HostedReplicationAnalysis
     }
 
     private sealed record LocalInputAudit(int LaunchCount, bool Complete, IReadOnlyList<LocalEnvironmentIdentity> Launches);
-    private sealed record LocalEnvironmentIdentity(string EnvironmentId, string EnvironmentClass, string ExperimentSha,
+    private sealed record LocalEnvironmentIdentity(string EnvironmentId, string EnvironmentClass, string MeasuredSourceSha,
         string GithubRef, string OperatingSystem, string WindowsEdition, string WindowsBuild, string CpuModel,
         string LogicalProcessors, string RamBytes, string Filesystem, string Hypervisor, string LibvirtCacheMode,
         string LibvirtIoMode, string SpikeAssemblySha256, string CoreAssemblySha256, bool ShaMatches);
     private sealed record RunnerAudit(string Environment, int LaunchCount, bool Complete, IReadOnlyList<RunnerIdentity> Launches);
     private sealed record RunnerIdentity(string EnvironmentId, string GithubRunId, string GithubRunAttempt, string GithubJob,
-        string GithubSha, string GithubRef, string RunnerOs, string RunnerArch, string RunnerName, string RunnerEnvironment,
+        string MeasuredSourceSha, string WorkflowSha, string GithubSha, string GithubRef, string RunnerOs, string RunnerArch, string RunnerName, string RunnerEnvironment,
         string RunnerImageOs, string RunnerImageVersion, string CpuModel, string LogicalProcessors, string RamBytes,
         string Filesystem, string DotnetSdk, string DotnetRuntime, string WorkflowFileSha256,
         string SpikeAssemblySha256, string CoreAssemblySha256, bool ShaMatches);

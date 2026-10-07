@@ -166,36 +166,34 @@ internal static class PublicationRunner
                 var observer = new PublicationObserver(order.Candidate);
                 using (var directory = new MMapDirectory(trialPath))
                 using (var writer = new IndexWriter(directory, CreateConfig(order.Representation == "compound")))
+                using (DurabilitySpikeInstrumentation.Begin(observer))
                 {
                     AddBatch(writer, batch.Records.Skip(90_000).Take(10_000).ToArray());
-                    using (DurabilitySpikeInstrumentation.Begin(observer))
+                    long commitStartedAt = Stopwatch.GetTimestamp();
+                    bool commitSucceeded = false;
+                    Exception? commitException = null;
+                    long commitCompletedAt;
+                    try
                     {
-                        long commitStartedAt = Stopwatch.GetTimestamp();
-                        bool commitSucceeded = false;
-                        Exception? commitException = null;
-                        long commitCompletedAt;
-                        try
-                        {
-                            writer.Commit();
-                            commitSucceeded = true;
-                        }
-                        catch (Exception exception)
-                        {
-                            commitException = exception;
-                        }
-                        finally
-                        {
-                            commitCompletedAt = Stopwatch.GetTimestamp();
-                        }
-                        if (commitSucceeded)
-                            DurabilitySpikeInstrumentation.Checkpoint(DurabilitySpikeCheckpoint.AfterCommitReturn, trialPath);
-                        result.CommitCallMs = TicksToMs(commitCompletedAt - commitStartedAt);
-                        result.CommitSucceeded = commitSucceeded;
-                        result.Error = commitException is null
-                            ? null
-                            : $"{commitException.GetType().Name}: {commitException.Message}";
-                        FillMetrics(result, observer, commitStartedAt, commitCompletedAt);
+                        writer.Commit();
+                        commitSucceeded = true;
                     }
+                    catch (Exception exception)
+                    {
+                        commitException = exception;
+                    }
+                    finally
+                    {
+                        commitCompletedAt = Stopwatch.GetTimestamp();
+                    }
+                    if (commitSucceeded)
+                        DurabilitySpikeInstrumentation.Checkpoint(DurabilitySpikeCheckpoint.AfterCommitReturn, trialPath);
+                    result.CommitCallMs = TicksToMs(commitCompletedAt - commitStartedAt);
+                    result.CommitSucceeded = commitSucceeded;
+                    result.Error = commitException is null
+                        ? null
+                        : $"{commitException.GetType().Name}: {commitException.Message}";
+                    FillMetrics(result, observer, commitStartedAt, commitCompletedAt);
                 }
                 if (result.CommitSucceeded)
                     cleanup.Add(trialPath);
@@ -282,17 +280,15 @@ internal static class PublicationRunner
         var result = new PublicationResult(orderRow, trialPath, batch.Identity.ContentSha256);
         using (var directory = new MMapDirectory(trialPath))
         using (var writer = new IndexWriter(directory, CreateConfig(representation == "compound")))
+        using (DurabilitySpikeInstrumentation.Begin(observer))
         {
             AddBatch(writer, measuredRecords);
             long startedAt = Stopwatch.GetTimestamp();
-            using (DurabilitySpikeInstrumentation.Begin(observer))
-            {
-                writer.Commit();
-                long completedAt = Stopwatch.GetTimestamp();
-                result.CommitSucceeded = true;
-                result.CommitCallMs = TicksToMs(completedAt - startedAt);
-                FillMetrics(result, observer, startedAt, completedAt);
-            }
+            writer.Commit();
+            long completedAt = Stopwatch.GetTimestamp();
+            result.CommitSucceeded = true;
+            result.CommitCallMs = TicksToMs(completedAt - startedAt);
+            FillMetrics(result, observer, startedAt, completedAt);
         }
 
         DurabilitySpikeEvent[] events = observer.Events.OrderBy(static item => item.StartedAt).ToArray();
@@ -622,6 +618,11 @@ internal static class PublicationRunner
         internal DurabilitySpikeEvent[] Events
         {
             get { lock (_gate) return _events.ToArray(); }
+        }
+
+        internal DurabilitySpikeCheckpoint[] Checkpoints
+        {
+            get { lock (_gate) return _checkpoints.ToArray(); }
         }
 
         internal string SameVolumeCheck { get; private set; } = "not_checked";

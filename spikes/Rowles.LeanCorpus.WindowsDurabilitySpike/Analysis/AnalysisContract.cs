@@ -11,6 +11,7 @@ internal static class AnalysisContract
         ValidateOmissionSemantics();
         ValidateClassificationBoundaries();
         Publication.PublicationAnalysis.ValidateContract();
+        ValidateHostedProvenance();
 
         string output = Path.GetFullPath(arguments.Required("output"));
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
@@ -82,6 +83,22 @@ internal static class AnalysisContract
         Require(atFlushBoundary == "flush_dominated", "The flush threshold is inclusive at 70%.");
         Require(belowFlushBoundary == "unstable_or_inconclusive", "Values below 70% cannot be flush-dominated.");
         Require(atMixedBoundary == "mixed", "The mixed threshold is inclusive at 80% for four cells.");
+    }
+
+    private static void ValidateHostedProvenance()
+    {
+        const string measuredSourceSha = "96aa962fb9bb10be50a260d1da092dbdf69ad9cf";
+        const string workflowSha = "57264dd8abcf573b6494cbb7373b06dfc67996e1";
+        Require(HostedReplicationAnalysis.HostedProvenanceMatches(measuredSourceSha, workflowSha, workflowSha,
+                measuredSourceSha, workflowSha),
+            "Hosted provenance must accept a workflow commit that differs from the measured source commit.");
+        Require(HostedReplicationAnalysis.SameMeasuredSourceSha(measuredSourceSha, measuredSourceSha),
+            "Hosted and local measurements must use the same measured source commit.");
+        Require(!HostedReplicationAnalysis.SameMeasuredSourceSha(measuredSourceSha, workflowSha),
+            "A workflow SHA must not be accepted as a substitute for the measured source SHA.");
+        Require(!HostedReplicationAnalysis.HostedProvenanceMatches(measuredSourceSha, workflowSha, measuredSourceSha,
+                measuredSourceSha, workflowSha),
+            "The recorded workflow SHA must match GitHub's workflow SHA independently of the measured source SHA.");
     }
 
     private static void Require(bool condition, string message)

@@ -14,14 +14,24 @@ internal static class EnvironmentSnapshot
     internal static void Write(string evidenceDirectory, string environmentClass, string dataRoot, string orderFile, int launch)
     {
         string? experimentSha = Environment.GetEnvironmentVariable("SPIKE_EXPERIMENT_SHA");
-        string githubSha = Environment.GetEnvironmentVariable("GITHUB_SHA") ?? "unknown";
-        string? providedSha = experimentSha ?? Environment.GetEnvironmentVariable("EXPERIMENT_SHA");
-        if (string.IsNullOrWhiteSpace(providedSha) || providedSha == "unknown")
-            throw new InvalidOperationException("Set SPIKE_EXPERIMENT_SHA to the committed experiment SHA before measurement.");
-        EnsureFrozenCheckout(providedSha);
-        if (environmentClass.StartsWith("hosted_", StringComparison.Ordinal) &&
-            !string.Equals(githubSha, providedSha, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"GITHUB_SHA '{githubSha}' does not equal experiment_sha '{providedSha}'.");
+        string? measuredSourceSha = Environment.GetEnvironmentVariable("SPIKE_MEASURED_SOURCE_SHA")
+            ?? experimentSha
+            ?? Environment.GetEnvironmentVariable("EXPERIMENT_SHA");
+        string githubSha = ReadEnvironment("GITHUB_SHA");
+        string workflowSha = ReadEnvironment("SPIKE_WORKFLOW_SHA");
+        if (environmentClass.StartsWith("hosted_", StringComparison.Ordinal) && workflowSha == "unknown")
+            workflowSha = githubSha;
+        else if (!environmentClass.StartsWith("hosted_", StringComparison.Ordinal))
+            workflowSha = "not_applicable";
+        if (environmentClass.StartsWith("hosted_", StringComparison.Ordinal) && workflowSha == "unknown")
+            throw new InvalidOperationException("Set SPIKE_WORKFLOW_SHA or GITHUB_SHA to the hosted workflow commit.");
+        if (string.IsNullOrWhiteSpace(measuredSourceSha) || measuredSourceSha == "unknown")
+            throw new InvalidOperationException("Set SPIKE_MEASURED_SOURCE_SHA to the committed source SHA before measurement.");
+        EnsureFrozenCheckout(measuredSourceSha);
+        string reportedGithubSha = environmentClass.StartsWith("hosted_", StringComparison.Ordinal)
+            ? workflowSha
+            : githubSha;
+        string workflowFileSha256 = HashWorkflowFile();
 
         string? volumeRoot = null;
         string? fileSystem = null;
@@ -58,12 +68,14 @@ internal static class EnvironmentSnapshot
             schema_version = 1,
             environment_id = $"{environmentClass}-launch-{launch}",
             environment_class = environmentClass,
-            experiment_sha = providedSha,
+            experiment_sha = measuredSourceSha,
+            measured_source_sha = measuredSourceSha,
+            workflow_sha = workflowSha,
             github_run_id = ReadEnvironment("GITHUB_RUN_ID"),
             github_run_attempt = ReadEnvironment("GITHUB_RUN_ATTEMPT"),
             github_job = ReadEnvironment("SPIKE_GITHUB_JOB"),
             github_job_id = ReadEnvironment("GITHUB_JOB"),
-            github_sha = githubSha,
+            github_sha = reportedGithubSha,
             github_ref = ReadEnvironment("GITHUB_REF"),
             runner_os = ReadEnvironment("RUNNER_OS"),
             runner_arch = ReadEnvironment("RUNNER_ARCH"),
@@ -121,7 +133,7 @@ internal static class EnvironmentSnapshot
             snapshot_id = ReadEnvironment("SPIKE_SNAPSHOT_ID"),
             data_root = dataRoot,
             order_file_sha256 = HashFile(orderFile),
-            workflow_file_sha256 = HashWorkflowFile(),
+            workflow_file_sha256 = workflowFileSha256,
             workflow_ref = ReadEnvironment("GITHUB_WORKFLOW_REF"),
             captured_utc = DateTimeOffset.UtcNow
         };
@@ -133,9 +145,11 @@ internal static class EnvironmentSnapshot
         Assembly coreAssembly = typeof(IndexWriter).Assembly;
         var hashes = new
         {
-            experiment_sha = providedSha,
-            github_sha = githubSha,
-            workflow_file_sha256 = HashWorkflowFile(),
+            experiment_sha = measuredSourceSha,
+            measured_source_sha = measuredSourceSha,
+            workflow_sha = workflowSha,
+            github_sha = reportedGithubSha,
+            workflow_file_sha256 = workflowFileSha256,
             spike_assembly = new { name = spikeAssembly.GetName().Name, path = spikeAssembly.Location, sha256 = HashFile(spikeAssembly.Location) },
             core_assembly = new { name = coreAssembly.GetName().Name, path = coreAssembly.Location, sha256 = HashFile(coreAssembly.Location) }
         };
@@ -148,7 +162,9 @@ internal static class EnvironmentSnapshot
 
     private static string HashWorkflowFile()
     {
-        string workspace = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE") ?? Environment.CurrentDirectory;
+        string workspace = Environment.GetEnvironmentVariable("SPIKE_WORKFLOW_ROOT")
+            ?? Environment.GetEnvironmentVariable("GITHUB_WORKSPACE")
+            ?? Environment.CurrentDirectory;
         string path = Path.Combine(workspace, ".github", "workflows", "build.yml");
         return File.Exists(path) ? HashFile(path) : "unknown";
     }

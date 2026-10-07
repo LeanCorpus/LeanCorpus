@@ -40,6 +40,7 @@ internal static class Program
                 "crash-child" => RecoveryRunner.Child(options),
                 "recovery-inspect" => RecoveryRunner.Inspect(options),
                 "validate-recovery-dataset" => RecoveryRunner.ValidateDataset(options),
+                "validate-compound-checkpoint-reachability" => RecoveryRunner.ValidateCompoundCheckpointReachability(options),
                 "verify-evidence" => EvidenceVerifier.Run(options),
                 _ => UnknownCommand(args[0])
             };
@@ -84,6 +85,7 @@ internal static class Program
         Console.WriteLine("  crash-child --mode <process-crash|hard-reset|fault> --candidate <P0|P1|P2> ...");
         Console.WriteLine("  recovery-inspect --trial-index <path> --output <path> --dataset <path> [--after-commit-return true]");
         Console.WriteLine("  validate-recovery-dataset --dataset <path>");
+        Console.WriteLine("  validate-compound-checkpoint-reachability --data-root <path> --dataset <path> --output <path>");
         Console.WriteLine("  verify-evidence --root <path>");
     }
 }

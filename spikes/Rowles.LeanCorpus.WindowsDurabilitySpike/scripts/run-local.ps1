@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('mechanism-launch', 'publication-launch', 'process-crash', 'fault-injection', 'analyse-mechanisms', 'traces')][string]$Stage,
+    [Parameter(Mandatory = $true)][ValidateSet('mechanism-launch', 'publication-launch', 'process-crash', 'fault-injection', 'analyse-mechanisms', 'traces', 'checkpoint-regression')][string]$Stage,
     [Parameter(Mandatory = $true)][string]$ExperimentSha,
     [Parameter(Mandatory = $true)][string]$EvidenceRoot,
     [Parameter(Mandatory = $true)][string]$DataRoot,
@@ -50,6 +50,11 @@ switch ($Stage) {
         Invoke-Spike @('run-fault-injection', '--data-root', $data,
             '--evidence', (Join-Path $root 'fault-injection'), '--neutrality-validation', $neutrality,
             '--dataset', (Join-Path $root 'recovery-dataset.json'))
+    }
+    'checkpoint-regression' {
+        Invoke-Spike @('validate-compound-checkpoint-reachability', '--data-root', $data,
+            '--dataset', (Join-Path $root 'recovery-dataset.json'),
+            '--output', (Join-Path $root 'compound-checkpoint-regression.json'))
     }
     'analyse-mechanisms' {
         $summary = Join-Path $root 'mechanism-summary.md'
