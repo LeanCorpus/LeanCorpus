@@ -39,12 +39,15 @@ internal static class ObservationNeutrality
             if (!disabledCalls.SequenceEqual(expected))
                 throw new InvalidOperationException(
                     $"Expected one ordered native open, durability flush and close, observed [{string.Join(',', disabledCalls)}].");
-            if (OperatingSystem.IsWindows() &&
-                (!observer.Operations.SequenceEqual(expected) ||
-                 observer.Count(DurabilitySpikeOperation.WindowsOpen) != 1 ||
-                 observer.Count(DurabilitySpikeOperation.WindowsFlush) != 1 ||
-                 observer.Count(DurabilitySpikeOperation.WindowsClose) != 1))
-                throw new InvalidOperationException("Windows observer events do not match the existing native open/flush/close sequence.");
+            if (OperatingSystem.IsWindows())
+            {
+                DurabilitySpikeOperation[] expectedObserverEvents =
+                [.. expected, DurabilitySpikeOperation.FilePersist];
+                if (!observer.Operations.SequenceEqual(expectedObserverEvents))
+                    throw new InvalidOperationException(
+                        $"Windows observer events differed from the native open/flush/close sequence plus one wrapper event: " +
+                        $"expected=[{string.Join(',', expectedObserverEvents)}], observed=[{string.Join(',', observer.Operations)}].");
+            }
         }
         finally
         {
