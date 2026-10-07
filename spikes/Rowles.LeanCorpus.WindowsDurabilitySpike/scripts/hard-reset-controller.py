@@ -469,23 +469,25 @@ def main() -> int:
                     raise RuntimeError("Guest checkout provenance failed the hard-reset preflight.")
 
                 collect_script = str(PureWindowsPath(script_root) / "collect-windows-environment.ps1")
-                primary_disk = next(row for row in disk["disks"] if row["disk_bus"] != "unknown")
+                index_disk = next((row for row in disk["disks"] if row["target_dev"] == "hdd"), None)
+                if index_disk is None:
+                    raise RuntimeError("The disposable NTFS index disk is missing from the clone configuration.")
                 collect_arguments = {
                     "ExperimentSha": args.experiment_sha,
                     "Hypervisor": host_metadata["hypervisor"],
                     "HostOs": host_metadata["host_os"],
                     "HostStorage": host_storage_device if host_storage_device != "unknown" else "unknown",
-                    "HostCachePolicy": primary_disk["cache_mode"],
+                    "HostCachePolicy": index_disk["cache_mode"],
                     "GuestCachePolicy": "unknown",
-                    "VirtualDiskType": primary_disk["driver_type"],
-                    "VirtualController": primary_disk["target_dev"],
-                    "DiskBus": primary_disk["disk_bus"],
-                    "LibvirtCacheMode": primary_disk["cache_mode"],
-                    "LibvirtIoMode": primary_disk["io_mode"],
-                    "DiscardMode": primary_disk["discard_mode"],
-                    "DetectZeroesMode": primary_disk["detect_zeroes_mode"],
-                    "BackingStoreType": primary_disk["backing_store_type"],
-                    "BackingStore": primary_disk["source_file"],
+                    "VirtualDiskType": index_disk["driver_type"],
+                    "VirtualController": index_disk["target_dev"],
+                    "DiskBus": index_disk["disk_bus"],
+                    "LibvirtCacheMode": index_disk["cache_mode"],
+                    "LibvirtIoMode": index_disk["io_mode"],
+                    "DiscardMode": index_disk["discard_mode"],
+                    "DetectZeroesMode": index_disk["detect_zeroes_mode"],
+                    "BackingStoreType": index_disk["backing_store_type"],
+                    "BackingStore": index_disk["source_file"],
                     "HostFilesystem": filesystem,
                     "ResetMethod": "virsh reset (abrupt domain reset)",
                     "SnapshotId": args.snapshot,
