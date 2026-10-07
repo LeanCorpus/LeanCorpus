@@ -150,12 +150,18 @@ jobs:
     if: (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/spike/windows-durability-publication'
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      SPIKE2_MEASURED_SOURCE_SHA: 96aa962fb9bb10be50a260d1da092dbdf69ad9cf
     strategy:
       fail-fast: false
       matrix:
         launch: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          ref: 96aa962fb9bb10be50a260d1da092dbdf69ad9cf
+          path: measured-source
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: '10.0.x' }
       - uses: actions/setup-dotnet@v5
@@ -164,27 +170,40 @@ jobs:
           dotnet-quality: preview
       - name: Build the frozen Spike 2 assembly
         shell: pwsh
-        run: ./devops.ps1 build -Project spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/Rowles.LeanCorpus.WindowsDurabilitySpike.csproj -Framework net10.0
+        run: |
+          Push-Location (Join-Path $env:GITHUB_WORKSPACE 'measured-source')
+          try {
+            ./devops.ps1 build -Project spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/Rowles.LeanCorpus.WindowsDurabilitySpike.csproj -Framework net10.0
+          }
+          finally {
+            Pop-Location
+          }
       - name: Run independent Windows mechanism launch
         shell: pwsh
-        run: ./spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/scripts/run-hosted-launch.ps1 -Runner windows-2025 -Launch '${{ matrix.launch }}' -ExperimentSha '${{ github.sha }}'
+        run: ./.github/scripts/run-spike2-hosted-launch.ps1 -Runner windows-2025 -Launch '${{ matrix.launch }}' -SourceRoot (Join-Path $env:GITHUB_WORKSPACE 'measured-source') -MeasuredSourceSha $env:SPIKE2_MEASURED_SOURCE_SHA
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: spike2-hosted-windows-2025-launch-${{ matrix.launch }}
-          path: artifacts/spike2-hosted/windows-2025/launch-${{ matrix.launch }}
+          path: measured-source/artifacts/spike2-hosted/windows-2025/launch-${{ matrix.launch }}
           if-no-files-found: warn
 
   spike2-ubuntu-control:
     if: (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/spike/windows-durability-publication'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      SPIKE2_MEASURED_SOURCE_SHA: 96aa962fb9bb10be50a260d1da092dbdf69ad9cf
     strategy:
       fail-fast: false
       matrix:
         launch: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          ref: 96aa962fb9bb10be50a260d1da092dbdf69ad9cf
+          path: measured-source
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: '10.0.x' }
       - uses: actions/setup-dotnet@v5
@@ -193,15 +212,22 @@ jobs:
           dotnet-quality: preview
       - name: Build the frozen Spike 2 assembly
         shell: pwsh
-        run: ./devops.ps1 build -Project spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/Rowles.LeanCorpus.WindowsDurabilitySpike.csproj -Framework net10.0
+        run: |
+          Push-Location (Join-Path $env:GITHUB_WORKSPACE 'measured-source')
+          try {
+            ./devops.ps1 build -Project spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/Rowles.LeanCorpus.WindowsDurabilitySpike.csproj -Framework net10.0
+          }
+          finally {
+            Pop-Location
+          }
       - name: Run independent Ubuntu control launch
         shell: pwsh
-        run: ./spikes/Rowles.LeanCorpus.WindowsDurabilitySpike/scripts/run-hosted-launch.ps1 -Runner ubuntu-24.04 -Launch '${{ matrix.launch }}' -ExperimentSha '${{ github.sha }}'
+        run: ./.github/scripts/run-spike2-hosted-launch.ps1 -Runner ubuntu-24.04 -Launch '${{ matrix.launch }}' -SourceRoot (Join-Path $env:GITHUB_WORKSPACE 'measured-source') -MeasuredSourceSha $env:SPIKE2_MEASURED_SOURCE_SHA
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: spike2-hosted-ubuntu-24.04-launch-${{ matrix.launch }}
-          path: artifacts/spike2-hosted/ubuntu-24.04/launch-${{ matrix.launch }}
+          path: measured-source/artifacts/spike2-hosted/ubuntu-24.04/launch-${{ matrix.launch }}
           if-no-files-found: warn
 
   deploy:
