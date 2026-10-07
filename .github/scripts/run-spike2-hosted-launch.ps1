@@ -21,7 +21,12 @@ if ($LASTEXITCODE -ne 0 -or $actualWorkflowSha -ne $workflowSha) {
     throw "Workflow checkout '$actualWorkflowSha' does not match GITHUB_SHA '$workflowSha'."
 }
 $workflowFile = Join-Path $workflowRoot '.github/workflows/build.yml'
-$workflowFileSha256 = (Get-FileHash -LiteralPath $workflowFile -Algorithm SHA256).Hash.ToLowerInvariant()
+# Git may check this file out with CRLF on Windows and LF on Linux. Hash a
+# canonical UTF-8/LF representation so the same workflow has one provenance hash.
+$workflowFileText = [System.IO.File]::ReadAllText($workflowFile).Replace("`r`n", "`n").Replace("`r", "`n")
+$workflowFileBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($workflowFileText)
+$workflowFileSha256 = [Convert]::ToHexString(
+    [System.Security.Cryptography.SHA256]::HashData($workflowFileBytes)).ToLowerInvariant()
 
 $actualSourceSha = (& git -C $sourceRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualSourceSha -ne $MeasuredSourceSha) {
