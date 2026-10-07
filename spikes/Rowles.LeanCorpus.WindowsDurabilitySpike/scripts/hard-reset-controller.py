@@ -139,6 +139,24 @@ def host_os() -> str:
     return platform.platform()
 
 
+def load_password(path: Path) -> str:
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line != ""]
+    if len(lines) == 1:
+        password = lines[0]
+    elif (
+        len(lines) == 3
+        and lines[0] == lines[1]
+        and lines[2].strip().startswith("Administrator@")
+        and lines[2].strip().endswith("'s password:")
+    ):
+        password = lines[0]
+    else:
+        raise RuntimeError("Administrator password file must contain one value or a duplicated SSH prompt transcript.")
+    if not password or password.isspace():
+        raise RuntimeError("The Administrator password file is empty.")
+    return password
+
+
 def verify_domain_name(domain: str) -> None:
     if domain in PROTECTED_DOMAINS or not re.fullmatch(r"leancorpus-windows2025-spike2-[a-z0-9-]+", domain):
         raise RuntimeError(
@@ -358,9 +376,7 @@ def main() -> int:
     password_stat = password_path.stat()
     if os.name != "nt" and password_stat.st_mode & 0o077:
         raise RuntimeError("The Administrator password file must be mode 600 or stricter.")
-    password = password_path.read_text(encoding="utf-8").strip()
-    if not password:
-        raise RuntimeError("The Administrator password file is empty.")
+    password = load_password(password_path)
 
     output = Path(args.evidence).expanduser().resolve()
     if not output.is_dir():
