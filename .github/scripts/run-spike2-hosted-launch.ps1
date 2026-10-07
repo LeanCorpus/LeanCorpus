@@ -65,7 +65,8 @@ finally {
 
 $runnerFolder = if ($Runner -eq 'windows-2025') { 'windows-2025' } else { 'ubuntu-24.04' }
 $evidenceRoot = Join-Path $sourceRoot "artifacts/spike2-hosted/$runnerFolder/launch-$Launch"
-& (Join-Path $workflowRoot '.github/scripts/stamp-spike2-hosted-provenance.ps1') -EvidenceRoot $evidenceRoot -WorkflowSha $workflowSha -MeasuredSourceSha $MeasuredSourceSha -WorkflowFileSha256 $workflowFileSha256
+$launchEvidenceRoot = Join-Path $evidenceRoot "launch-$Launch"
+& (Join-Path $workflowRoot '.github/scripts/stamp-spike2-hosted-provenance.ps1') -EvidenceRoot $launchEvidenceRoot -WorkflowSha $workflowSha -MeasuredSourceSha $MeasuredSourceSha -WorkflowFileSha256 $workflowFileSha256
 if ($LASTEXITCODE -ne 0) {
     throw "Hosted provenance stamping failed with exit code $LASTEXITCODE."
 }
