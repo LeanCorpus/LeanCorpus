@@ -66,9 +66,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $measurementBranch = 'spike/compound-durability-confirmation'
+          git checkout -B $measurementBranch $env:MEASUREMENT_SHA
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not create the pinned measurement branch '$measurementBranch'."
+          }
+
           $head = (git rev-parse HEAD).Trim()
           if ($head -ne $env:MEASUREMENT_SHA) {
               throw "Expected measurement SHA $env:MEASUREMENT_SHA but checked out $head."
+          }
+
+          $branch = (git branch --show-current).Trim()
+          if ($branch -ne $measurementBranch) {
+              throw "Expected measurement branch $measurementBranch but checked out $branch."
           }
 
           $status = @(git status --porcelain)
