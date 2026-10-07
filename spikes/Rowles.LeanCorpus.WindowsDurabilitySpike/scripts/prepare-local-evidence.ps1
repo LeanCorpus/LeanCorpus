@@ -22,6 +22,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required for Spike 2 local preparation.' }
 if (-not $IsWindows) { throw 'Local evidence preparation must run on the disposable Windows guest.' }
 if ($ExperimentSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'ExperimentSha must be the frozen 40-character commit SHA.' }
 

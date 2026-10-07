@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required for hard-reset preflight.' }
 if (-not $IsWindows) { throw 'This preflight must run inside the Windows guest.' }
 if ($ExpectedExperimentSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'ExpectedExperimentSha must be a 40-character commit SHA.' }
 

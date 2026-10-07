@@ -176,7 +176,7 @@ class Guest:
     @staticmethod
     def ps_command(script: str) -> str:
         encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-        return f"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
+        return f"pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
 
     @staticmethod
     def run_ps(client: paramiko.SSHClient, script: str, *, check: bool = True) -> tuple[int, str, str]:

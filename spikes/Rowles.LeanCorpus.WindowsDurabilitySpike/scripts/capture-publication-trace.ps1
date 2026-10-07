@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required for WPR trace capture.' }
 if (-not $IsWindows) { throw 'Publication WPR capture must run on Windows.' }
 if ($ExperimentSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'ExperimentSha must be a frozen 40-character commit SHA.' }
 if ($env:SPIKE_EXPERIMENT_SHA -and $env:SPIKE_EXPERIMENT_SHA -ne $ExperimentSha) { throw 'SPIKE_EXPERIMENT_SHA does not match the requested source SHA.' }

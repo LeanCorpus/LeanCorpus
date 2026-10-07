@@ -7,6 +7,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required for Spike 2 local collection.' }
 if (-not $IsWindows) { throw 'Local Windows collection must run inside the disposable Windows guest.' }
 $root = [System.IO.Path]::GetFullPath($EvidenceRoot)
 $data = [System.IO.Path]::GetFullPath($DataRoot)

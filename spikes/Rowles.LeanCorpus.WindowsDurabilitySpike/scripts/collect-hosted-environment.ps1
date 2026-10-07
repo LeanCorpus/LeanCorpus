@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required by the hosted evidence collector.' }
 
 if ($IsWindows) {
     $cpuModel = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name).Trim()

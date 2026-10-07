@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required for hard-reset child orchestration.' }
 $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
 if ($config.ExperimentSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'ExperimentSha must be a frozen 40-character commit SHA.' }
 if (-not $IsWindows) { throw 'This child launcher runs inside the Windows guest.' }

@@ -20,6 +20,7 @@ param(
     [string]$OutputPath = ''
 )
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'PowerShell 7 is required by the Windows evidence collector.' }
 if (-not $IsWindows) {
     throw 'This metadata collector runs inside the disposable Windows guest.'
 }
