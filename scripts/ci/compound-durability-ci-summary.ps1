@@ -64,13 +64,13 @@ function Get-Int64 {
 }
 
 function Format-Milliseconds {
-    param([Nullable[double]] $Value)
+    param([object] $Value)
 
-    if (-not $Value.HasValue) {
+    if ($null -eq $Value) {
         return 'n/a'
     }
 
-    return $Value.Value.ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
+    return ([double]$Value).ToString('0.###', [Globalization.CultureInfo]::InvariantCulture)
 }
 
 function Get-MetricMedian {
@@ -99,8 +99,13 @@ function Get-StructuralMedian {
 }
 
 function Test-Positive {
-    param([Nullable[double]] $Value)
-    return $Value.HasValue -and $Value.Value -gt 0
+    param([object] $Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    return [double]$Value -gt 0
 }
 
 $platformResults = @()
