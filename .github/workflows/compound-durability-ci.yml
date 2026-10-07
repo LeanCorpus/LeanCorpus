@@ -1,0 +1,324 @@
+name: Compound durability CI replication
+
+on:
+  push:
+    branches:
+      - spike/compound-durability-confirmation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compound-durability-ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MEASUREMENT_SHA: 28bafe74efad7b1ce47aac5925db32cf5286b608
+  EXPECTED_DATASET_SHA: b5c8d3db31e67c676a5dc245be9557eca6cda5d574e38f2f932b5e7ea4d676e5
+  SPIKE_PROJECT: spikes/Rowles.LeanCorpus.CompoundDurabilitySpike/Rowles.LeanCorpus.CompoundDurabilitySpike.csproj
+  SPIKE_DLL: artifacts/bin/Rowles.LeanCorpus.CompoundDurabilitySpike/release/Rowles.LeanCorpus.CompoundDurabilitySpike.dll
+
+jobs:
+  production-replication:
+    name: Production replication (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-ext4
+          - os: windows-2025
+            platform: windows-ntfs
+
+    env:
+      PLATFORM_ID: ${{ matrix.platform }}
+      EVIDENCE_ROOT: ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}
+      CURATED_ROOT: ${{ runner.temp }}/compound-durability-ci-curated/${{ matrix.platform }}
+
+    steps:
+      - name: Check out measured source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.MEASUREMENT_SHA }}
+          fetch-depth: 0
+
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install pinned .NET 11 preview SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 11.0.100-preview.7.26381.103
+
+      - name: Verify measured source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = (git rev-parse HEAD).Trim()
+          if ($head -ne $env:MEASUREMENT_SHA) {
+              throw "Expected measurement SHA $env:MEASUREMENT_SHA but checked out $head."
+          }
+
+          $status = @(git status --porcelain)
+          if ($status.Count -ne 0) {
+              throw "Measured checkout is not clean:`n$($status -join "`n")"
+          }
+
+          "measurement_sha=$head"
+          dotnet --info
+
+      - name: Build measured spike
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./devops.ps1 build -Project $env:SPIKE_PROJECT -Framework net10.0
+
+          if (-not (Test-Path $env:SPIKE_DLL)) {
+              throw "Measured spike assembly was not produced at $env:SPIKE_DLL."
+          }
+
+      - name: Prepare platform evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (Test-Path $env:EVIDENCE_ROOT) {
+              Remove-Item $env:EVIDENCE_ROOT -Recurse -Force
+          }
+
+          dotnet $env:SPIKE_DLL `
+            --mode prepare `
+            --root $env:EVIDENCE_ROOT `
+            --platform $env:PLATFORM_ID `
+            --repo $env:GITHUB_WORKSPACE
+
+          $identity = Get-Content (Join-Path $env:EVIDENCE_ROOT 'dataset-identity.json') -Raw | ConvertFrom-Json
+          if ($identity.canonical_content_sha256 -ne $env:EXPECTED_DATASET_SHA) {
+              throw "Dataset SHA-256 differs from the locked Spike 1B dataset. Expected $env:EXPECTED_DATASET_SHA, found $($identity.canonical_content_sha256)."
+          }
+
+          $environment = Get-Content (Join-Path $env:EVIDENCE_ROOT 'environment.json') -Raw | ConvertFrom-Json
+          $expectedFileSystem = if ($env:PLATFORM_ID -eq 'linux-ext4') { 'ext4' } else { 'NTFS' }
+          if (-not [string]::Equals([string]$environment.fileSystem, $expectedFileSystem, [StringComparison]::OrdinalIgnoreCase)) {
+              throw "Runner filesystem is '$($environment.fileSystem)', expected '$expectedFileSystem'. Do not collect this replication on a different filesystem."
+          }
+
+      - name: Capture GitHub runner metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $metadata = [ordered]@{
+              provider = 'github-hosted'
+              workflow_repository = $env:GITHUB_REPOSITORY
+              workflow_ref = $env:GITHUB_REF
+              workflow_sha = $env:GITHUB_SHA
+              measurement_sha = $env:MEASUREMENT_SHA
+              run_id = $env:GITHUB_RUN_ID
+              run_number = $env:GITHUB_RUN_NUMBER
+              run_attempt = $env:GITHUB_RUN_ATTEMPT
+              runner_name = $env:RUNNER_NAME
+              runner_os = $env:RUNNER_OS
+              runner_arch = $env:RUNNER_ARCH
+              image_os = $env:ImageOS
+              image_version = $env:ImageVersion
+              platform_id = $env:PLATFORM_ID
+              captured_utc = [DateTime]::UtcNow.ToString('O')
+          }
+
+          $metadata | ConvertTo-Json -Depth 5 |
+              Set-Content (Join-Path $env:EVIDENCE_ROOT 'ci-runner-metadata.json') -Encoding utf8NoBOM
+
+          dotnet --info |
+              Set-Content (Join-Path $env:EVIDENCE_ROOT 'ci-dotnet-info.txt') -Encoding utf8NoBOM
+
+          if ($IsLinux) {
+              (& uname -a) |
+                  Set-Content (Join-Path $env:EVIDENCE_ROOT 'ci-system.txt') -Encoding utf8NoBOM
+              (& lscpu) |
+                  Add-Content (Join-Path $env:EVIDENCE_ROOT 'ci-system.txt') -Encoding utf8NoBOM
+              (& findmnt -T $env:EVIDENCE_ROOT -o SOURCE,FSTYPE,OPTIONS) |
+                  Set-Content (Join-Path $env:EVIDENCE_ROOT 'ci-filesystem.txt') -Encoding utf8NoBOM
+              (& df -hT $env:EVIDENCE_ROOT) |
+                  Add-Content (Join-Path $env:EVIDENCE_ROOT 'ci-filesystem.txt') -Encoding utf8NoBOM
+          }
+          else {
+              (Get-ComputerInfo | Out-String -Width 240) |
+                  Set-Content (Join-Path $env:EVIDENCE_ROOT 'ci-system.txt') -Encoding utf8NoBOM
+              (Get-CimInstance Win32_Processor | Format-List * | Out-String -Width 240) |
+                  Add-Content (Join-Path $env:EVIDENCE_ROOT 'ci-system.txt') -Encoding utf8NoBOM
+              (Get-Volume | Format-Table -AutoSize | Out-String -Width 240) |
+                  Set-Content (Join-Path $env:EVIDENCE_ROOT 'ci-filesystem.txt') -Encoding utf8NoBOM
+              (Get-CimInstance Win32_LogicalDisk | Format-Table -AutoSize | Out-String -Width 240) |
+                  Add-Content (Join-Path $env:EVIDENCE_ROOT 'ci-filesystem.txt') -Encoding utf8NoBOM
+          }
+
+      - name: Run five production launches
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          for ($launch = 1; $launch -le 5; $launch++) {
+              Write-Host "Starting production launch $launch on $env:PLATFORM_ID"
+              dotnet $env:SPIKE_DLL `
+                --mode production-launch `
+                --root $env:EVIDENCE_ROOT `
+                --platform $env:PLATFORM_ID `
+                --launch $launch
+
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Production launch $launch failed with exit code $LASTEXITCODE."
+              }
+          }
+
+      - name: Validate and curate platform handoff
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $trialsPath = Join-Path $env:EVIDENCE_ROOT 'production-trials.csv'
+          $pairsPath = Join-Path $env:EVIDENCE_ROOT 'production-pairs.csv'
+          $trials = @(Import-Csv $trialsPath)
+          $pairs = @(Import-Csv $pairsPath)
+
+          if ($trials.Count -ne 360) {
+              throw "Expected 360 production rows, found $($trials.Count)."
+          }
+          if (@($trials | Where-Object warmup -eq 'false').Count -ne 300) {
+              throw 'Expected 300 measured production rows.'
+          }
+          if (@($trials | Where-Object warmup -eq 'true').Count -ne 60) {
+              throw 'Expected 60 production warm-ups.'
+          }
+          if ($pairs.Count -ne 180) {
+              throw "Expected 180 production pair rows, found $($pairs.Count)."
+          }
+          if (@($pairs | Where-Object { $_.observation -ne '0' -and $_.pair_status -eq 'valid' }).Count -ne 150) {
+              throw 'Expected 150 valid measured production pairs.'
+          }
+
+          $measuredErrors = @($trials | Where-Object {
+              $_.warmup -eq 'false' -and -not [string]::IsNullOrWhiteSpace($_.error)
+          })
+          if ($measuredErrors.Count -ne 0) {
+              throw "Measured production errors were recorded: $($measuredErrors.Count)."
+          }
+
+          if (Test-Path $env:CURATED_ROOT) {
+              Remove-Item $env:CURATED_ROOT -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $env:CURATED_ROOT -Force | Out-Null
+
+          $required = @(
+              'environment.json',
+              'source-and-assembly-hashes.json',
+              'dataset-identity.json',
+              'run-metadata.json',
+              'experiment-sha.txt',
+              'base-sha.txt',
+              'run-id.txt',
+              'started-utc.txt',
+              'baseline-topology-loose.csv',
+              'baseline-topology-compound.csv',
+              'execution-order.csv',
+              'production-trials.csv',
+              'production-pairs.csv',
+              'ci-runner-metadata.json',
+              'ci-dotnet-info.txt',
+              'ci-system.txt',
+              'ci-filesystem.txt'
+          )
+
+          foreach ($name in $required) {
+              $source = Join-Path $env:EVIDENCE_ROOT $name
+              if (-not (Test-Path $source)) {
+                  throw "Required CI handoff file is missing: $name"
+              }
+              Copy-Item $source (Join-Path $env:CURATED_ROOT $name)
+          }
+
+          $manifest = Join-Path $env:CURATED_ROOT 'ci-platform-sha256sums.txt'
+          Get-ChildItem $env:CURATED_ROOT -File -Recurse |
+              Where-Object FullName -ne $manifest |
+              Sort-Object FullName |
+              ForEach-Object {
+                  $relative = [IO.Path]::GetRelativePath($env:CURATED_ROOT, $_.FullName).Replace('\', '/')
+                  "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+              } |
+              Set-Content $manifest -Encoding utf8NoBOM
+
+      - name: Upload platform evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: compound-durability-ci-${{ matrix.platform }}
+          path: ${{ runner.temp }}/compound-durability-ci-curated/${{ matrix.platform }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: compound-durability-ci-${{ matrix.platform }}-failure-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/environment.json
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/source-and-assembly-hashes.json
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/dataset-identity.json
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/baseline-topology-*.csv
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/production-trials.csv
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/production-pairs.csv
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/logs
+            ${{ runner.temp }}/compound-durability-ci/${{ matrix.platform }}/failed
+          if-no-files-found: warn
+          retention-days: 30
+
+  summarise:
+    name: Build CI replication handoff
+    needs: production-replication
+    if: ${{ needs.production-replication.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out CI orchestration commit
+        uses: actions/checkout@v6
+
+      - name: Download Linux evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: compound-durability-ci-linux-ext4
+          path: artifacts/compound-durability-ci/linux-ext4
+
+      - name: Download Windows evidence
+        uses: actions/download-artifact@v8
+        with:
+          name: compound-durability-ci-windows-ntfs
+          path: artifacts/compound-durability-ci/windows-ntfs
+
+      - name: Produce comparison summary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/ci/compound-durability-ci-summary.ps1 `
+            -Root artifacts/compound-durability-ci `
+            -ExpectedMeasurementSha $env:MEASUREMENT_SHA `
+            -ExpectedDatasetSha $env:EXPECTED_DATASET_SHA
+
+      - name: Add summary to workflow run
+        shell: pwsh
+        run: |
+          Get-Content artifacts/compound-durability-ci/ci-replication-summary.md |
+              Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload complete handoff
+        uses: actions/upload-artifact@v7
+        with:
+          name: compound-durability-ci-handoff-${{ github.sha }}
+          path: artifacts/compound-durability-ci
+          if-no-files-found: error
+          retention-days: 30
