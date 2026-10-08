@@ -9,12 +9,23 @@ using Rowles.LeanCorpus.Tests.Shared.Fixtures;
 namespace Rowles.LeanCorpus.Tests.Core.Index;
 
 /// <summary>
+/// Keeps filesystem churn from other test collections out of the bounded
+/// commit and searcher lifetime regressions. Background merges remain concurrent.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class CommitSearcherFileLifetimeCollection
+{
+    public const string Name = "Commit searcher file lifetime";
+}
+
+/// <summary>
 /// Reproduction test for GitHub issue: IndexWriter.Commit() throws FileNotFoundException
 /// when SearcherManager holds segment references across many incremental commit cycles.
 /// See: ADR007 (merge-must-not-block-commit) and the segment-file lifecycle under churn.
 /// </summary>
 [Category(TestCategory.Integration)]
 [Area(TestArea.Index)]
+[Collection(CommitSearcherFileLifetimeCollection.Name)]
 public sealed class CommitSearcherRaceReproTests : IClassFixture<TestDirectoryFixture>
 {
     private readonly TestDirectoryFixture _fixture;
