@@ -916,7 +916,11 @@ public sealed class Lean9FoundationFixTests : IClassFixture<TestDirectoryFixture
             ]), TestContext.Current.CancellationToken);
 
             Assert.True(flushStarted.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
-            Assert.Equal(0, semaphore.CurrentCount);
+            // The physical worker can start before the producer reacquires the
+            // permit released when its buffered document was detached.
+            Assert.True(SpinWait.SpinUntil(
+                () => semaphore.CurrentCount == 0,
+                TimeSpan.FromSeconds(10)));
             releaseFlush.Set();
 
             Exception? blockFailure = Record.Exception(() => block.GetAwaiter().GetResult());
