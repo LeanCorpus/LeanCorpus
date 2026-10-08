@@ -97,6 +97,11 @@ var near = new SpanNearQuery(
 
 Set `inOrder: false` when either order is acceptable.
 
+`ComplexPhraseQueryParser.InOrder` has a narrower scope: it controls ordering
+only for multi-slot flat-alternative complex phrases. It defaults to `true`;
+ordinary analysed phrases remain graph-aware and ordered. A single alternative
+slot is returned as `SpanOrQuery` and has no ordering relationship.
+
 ## `SpanNotQuery`
 
 Return include spans only from documents without an excluded span:

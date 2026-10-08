@@ -105,19 +105,89 @@ terms and phrases.
 
 ## Complex phrases
 
-`ComplexPhraseQueryParser` uses the configured analyser for ordinary quoted
-phrases and supports flat, single-token alternatives separated by `OR`:
+`ComplexPhraseQueryParser` keeps ordinary quoted phrases on the graph-aware
+phrase compiler. Flat, parenthesised `OR` groups are the only supported complex
+phrase slots. For example:
 
 ```csharp
 var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
-Query query = parser.Parse("\"quick (fast OR swift) brown\"~1");
+Query ordinary = parser.Parse("\"quick brown fox\"");
+Query ordinaryWithSlop = parser.Parse("\"quick brown fox\"~2");
+Query alternatives = parser.Parse("\"quick (fast OR swift) brown\"");
+Query alternativesWithSlop = parser.Parse("\"quick (fast OR swift) brown\"~2");
 ```
 
-Each alternative group must contain at least two terms. `OR` is
-case-insensitive. Every term in a phrase containing alternatives must analyse
-to one linear token. Nested groups, missing or misplaced operators, and other
-embedded operators are rejected. Phrases without alternative groups retain the
-regular parser's graph-aware phrase analysis.
+Each alternative group must contain at least two simple, unescaped terms, and
+each term must analyse to one linear token. `OR` is case-insensitive and has
+grammar meaning only inside a flat parenthesised alternative group. The words
+`AND`, `OR`, `NOT` and `TO` remain analyser text in an ordinary quoted phrase.
+Phrases without alternatives retain token-graph-aware analysis.
+
+`InOrder` defaults to `true` and controls whether slots in a multi-slot,
+span-based complex phrase must match in query order. Setting it to `false`
+exposes the existing unordered `SpanNearQuery` behaviour without changing
+slop. It does not affect ordinary analysed phrases or broaden the accepted
+grammar:
+
+```csharp
+var unorderedParser = new ComplexPhraseQueryParser("body", new StandardAnalyser())
+{
+    InOrder = false
+};
+
+Query unordered = unorderedParser.Parse("\"quick (fast OR swift) brown\"");
+```
+
+With slop `0`, `InOrder = true` matches `quick fast brown` but not
+`brown fast quick`; `InOrder = false` permits either order. A single group such
+as `"(fast OR swift)"` is one slot and returns `SpanOrQuery` directly, so it
+has no relative ordering requirement.
+
+Embedded query operators that cannot retain position-preserving semantics are
+unsupported and throw `QueryParseException`:
+
+```text
+"foo* bar"
+"foo~2 bar"
+"/foo.*/ bar"
+"foo^2 bar"
+"foo^=2 bar"
+"foo|bar baz"
+"field:foo bar"
+"[alpha TO omega]"
+"{alpha TO omega}"
+"+foo bar"
+"-foo bar"
+"quick (fast^2 OR swift) brown"
+```
+
+This is the LeanCorpus 4.0 parser contract: unsupported syntax is rejected
+rather than simplified or translated to spans.
+
+On the ordinary quoted-phrase path, in-token punctuation remains analyser
+input:
+
+```text
+foo-bar
+c++
+a+b
+foo/bar
+```
+
+Escaped operator characters on that path also remain analyser input:
+
+```text
+foo\^bar
+foo\|bar
+\+foo
+\-foo
+\/foo
+foo\*bar
+```
+
+The configured analyser determines the resulting tokens. Escapes do not
+broaden the flat alternative grammar; terms inside `(a OR b)` remain simple
+and unescaped.
 
 ## See also
 

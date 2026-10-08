@@ -65,5 +65,8 @@ signals by deriving from `DoubleValuesSource`.
   terms.
 - `ComplexPhraseQueryParser` composes flat `(a OR b)` alternative groups inside
   quotes as span slots; nested groups and other embedded operators are rejected.
+  `InOrder` defaults to `true` and applies only to multi-slot complex phrases
+  compiled as `SpanNearQuery`. Ordinary analysed phrases keep their graph-aware
+  ordered behaviour, and a single alternative slot remains a `SpanOrQuery`.
 - `TermsQuery` accepts exact UTF-8 terms for large sets without converting
   them to strings during lookup.

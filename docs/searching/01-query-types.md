@@ -51,6 +51,11 @@ These queries require indexed positions.
 | `SpanMultiTermQueryWrapper` | Position-aware multi-term expansion | Supports prefix, wildcard, fuzzy, regex, and term ranges. |
 | `IntervalsQuery` | Ordered, unordered, alternative, containment, or exclusion trees | Best for a complex positional expression. |
 
+`ComplexPhraseQueryParser` accepts ordinary analysed quoted phrases and flat
+parenthesised `OR` alternative slots. Unsupported embedded multi-term and
+operator syntax is rejected. Its `InOrder` property applies only to multi-slot
+span-based complex phrases; ordinary analysed phrases are unaffected.
+
 See [Phrase and proximity](03-phrase-and-proximity.md) and [Intervals](10-intervals.md).
 
 ## Multi-term text queries

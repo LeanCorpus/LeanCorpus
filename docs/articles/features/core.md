@@ -70,7 +70,7 @@ Return to the [feature comparison overview](index.md) for status definitions and
 | Query rescoring | ✔ | ✔ | ✔ | Candidate-only second-pass scoring. |
 | Search-after pagination | ✔ | ✔ | ✔ | Score and multi-field sort cursors. |
 | Classic query parser | ✔ | ✔ | ✔ | Fields, phrases, proximity, ranges, fuzzy terms, prefixes, and boosts. |
-| Complex phrase and analysing parsers | ✔ | ✔ | ✔ | Analysis-aware multi-term and span translation. |
+| Complex phrase and analysing parsers | ◐ | ✔ | ✔ | Analysed phrases plus flat OR-alternative phrase slots; unsupported embedded multi-term/operator syntax is rejected. |
 | Typed LINQ query provider | ✔ | ❌ | ❌ | Translates expressions through source-generated mappings. |
 | Standard, Surround, and XML parsers | ❌ | ✔ | ✔ | Not currently available. |
 | Term-based joins and multi-level block joins | ❌ | ✔ | ✔ | Single-level block join is available. |

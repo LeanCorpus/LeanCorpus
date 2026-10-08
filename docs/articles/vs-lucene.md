@@ -256,7 +256,7 @@ Lucene (Java) refers to Lucene 10.3.1,
 | Full grammar error positions | ❌ | ✔ | ✔ | Backlog |
 | Standard query parser (SQP) | ❌ | ✔ | ✔ | Backlog |
 | Analysing query parser | ✔   `AnalysingQueryParser` | ✔ | ✔ | Analyses literal portions of prefix and wildcard terms. |
-| Complex phrase query parser | ✔   `ComplexPhraseQueryParser` | ✔ | ✔ | Supports analysed quoted phrases and flat `(a OR b)` groups; nested groups and other embedded operators are rejected. |
+| Complex phrase query parser | ◐   `ComplexPhraseQueryParser` | ✔ | ✔ | LeanCorpus supports analysed quoted phrases and flat OR-alternative phrase slots. Embedded wildcard, fuzzy, regexp, range, boost and other query operators inside complex phrases are rejected rather than translated to spans. |
 | Surround query parser | ❌ | ✔ | ✔ | `SurroundQueryParser` supports span-oriented query syntax. |
 | XML query parser | ❌ | ✔ | ✔ | `CoreParser` / `XmlQueryParser`. |
 
