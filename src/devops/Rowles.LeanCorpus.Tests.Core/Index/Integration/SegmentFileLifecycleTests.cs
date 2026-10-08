@@ -40,17 +40,29 @@ public sealed class SegmentFileLifecycleTests : IClassFixture<TestDirectoryFixtu
     {
         string path = SubDir(nameof(CompoundPacking_PreservesSegmentOwnershipAndMutableSidecars));
         const string segmentId = "seg_1";
-        string[] members = ["seg_1.dic", "seg_1.pos", "seg_1_v_embedding.vec", "seg_1_v_embedding.hnsw"];
+        string[] members = ["seg_1.dic", "seg_1.pos", "seg_1_v_embedding.vec", "seg_1_v_embedding.hnsw", "seg_1.custom"];
         string[] sidecars = ["seg_1.seg", "seg_1.del", "seg_1_gen_4.del", "seg_1.stats.json",
-            "seg_1_gen_4.stats.json", "seg_1.dic.tmp", "seg_1.unknown", "seg_10.dic", "seg_1_extra.dic"];
+            "seg_1_gen_4.stats.json", "seg_1.dic.tmp", "seg_1.custom.codec.staging", "seg_1.unknown",
+            "seg_10.dic", "seg_1_extra.dic", "segments_4", "write.lock"];
         foreach (string name in members.Concat(sidecars))
             File.WriteAllBytes(Path.Combine(path, name), [1, 2, 3]);
 
-        Assert.True(SegmentFileSet.Pack(path, segmentId));
+        var customFile = new CodecFileDescriptor(
+            "unit-test.compound.custom", "unit-test.compound", "Custom compound member",
+            CodecFileMatcher.Extension(".custom"), currentFormatVersion: null,
+            temporaryFileMatchers: [CodecFileMatcher.ExtensionWithTrailingSuffix(".custom", ".codec.staging")]);
+        var catalog = new CodecCatalogBuilder().AddBuiltIns()
+            .Add(new CodecFamilyDescriptor("unit-test.compound", "Compound packing test", [customFile]))
+            .Build();
+        string[] selected = SegmentFileSet.Enumerate(path, segmentId, catalog, includeTemporary: false)
+            .ImmutableCodecFileNames.ToArray();
+        Assert.Equal(members.OrderBy(static name => name, StringComparer.Ordinal), selected);
+
+        Assert.True(SegmentFileSet.Pack(path, segmentId, catalog));
 
         using var directory = new MMapDirectory(path);
         using var compound = CompoundFileReader.Open(directory, segmentId + ".cfs");
-        Assert.Equal(members.OrderBy(static name => name, StringComparer.Ordinal), compound.FileNames);
+        Assert.Equal(selected, compound.FileNames);
         foreach (string name in members)
         {
             Assert.False(File.Exists(Path.Combine(path, name)));

@@ -1,7 +1,7 @@
 ﻿namespace Rowles.LeanCorpus.Store;
 
 /// <summary>
-/// Thrown when an <see cref="Rowles.LeanCorpus.Index.Indexer.IndexWriter"/> cannot acquire the
+/// Thrown when a writer cannot acquire the
 /// write lock because another writer already holds it for the same directory.
 /// </summary>
 public sealed class WriteLockException : IOException

@@ -66,6 +66,7 @@
 
 ## Fixed
 
+- Reject duplicate compound-file inputs before changing the destination or deleting source files.
 - Reject corrupt field-length counts, names, values and trailing data before allocating document arrays or exposing a segment reader. ([af6aacfa7](https://github.com/jordansrowles/LeanCorpus/commit/af6aacfa7d1128e0f8876ab1c6d1511cb62f7c25))
 - Make repeated LZ4, Snappy and Zstandard registration calls safe after automatic registration, while retaining duplicate-policy checks for custom codecs. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Exclude missing vectors from flat, filtered and HNSW reranking paths, and preserve sparse vector presence through merge, deletion and index-sort remapping, including explicitly supplied zero vectors. ([2228d0d52](https://github.com/jordansrowles/LeanCorpus/commit/2228d0d5291cade5c00d9de5115a56c6e7658a23))

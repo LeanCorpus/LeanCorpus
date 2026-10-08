@@ -3,30 +3,35 @@ using System.Text;
 
 namespace Rowles.LeanCorpus.Store;
 
-/// <summary>Writes and opens memory-mapped compound files used by immutable segments.</summary>
+/// <summary>Writes compound containers from explicitly supplied source files.</summary>
 internal static class CompoundFileWriter
 {
     internal const int Magic = 0x5346434C;
     internal const int Version = 1;
     internal const int MaxEntries = 4096;
 
-    internal static bool Pack(string directoryPath, string segmentId, IEnumerable<string> fileNames)
+    internal static bool Pack(string directoryPath, string destinationFileName, IEnumerable<string> fileNames)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(segmentId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationFileName);
         ArgumentNullException.ThrowIfNull(fileNames);
 
-        var sourceFiles = fileNames
-            .OrderBy(static name => name, StringComparer.Ordinal)
-            .ToArray();
+        // Selection and deterministic ordering belong to the caller.
+        var sourceFiles = fileNames.ToArray();
 
         if (sourceFiles.Length == 0)
             return false;
         if (sourceFiles.Length > MaxEntries)
-            throw new InvalidDataException($"Segment '{segmentId}' has too many files for a compound file.");
+            throw new InvalidDataException($"Compound file '{destinationFileName}' has too many source files.");
 
-        var cfsName = segmentId + ".cfs";
-        var cfsPath = Path.Combine(directoryPath, cfsName);
+        var sourceNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string name in sourceFiles)
+        {
+            if (!sourceNames.Add(name))
+                throw new InvalidDataException($"Compound file '{destinationFileName}' contains duplicate source '{name}'.");
+        }
+
+        var cfsPath = Path.Combine(directoryPath, destinationFileName);
         var temporaryPath = cfsPath + ".tmp";
         var entries = new Entry[sourceFiles.Length];
         // Keep Windows compound writes incremental rather than eagerly extending every output.

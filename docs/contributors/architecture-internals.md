@@ -89,6 +89,18 @@ The reference-valued defaults follow the implementation lifecycles:
 | `SlowQueryLog` | It owns a background writer loop and is disposable. | A standalone searcher owns a factory-created log; a manager keeps one across refresh and disposes it with the manager. |
 | `SearchAnalytics` | It is a thread-safe bounded event buffer without a disposal contract. | Factories create one per searcher graph, and a manager retains it across refresh. |
 
+## Compound-file ownership
+
+Index owns compound-member selection through `SegmentFileSet.Pack`. It uses the
+codec catalogue to select immutable members in ordinal filename order, excluding
+deletion generations, statistics, commit metadata, locks and registered temporary
+files. Flush, merge and migration use this same selector.
+
+Store receives an explicit destination filename and the already ordered source
+filenames. It does not scan or classify segment files, and rejects duplicate
+entries before opening an output or deleting sources. Packing retains the existing
+compound format and publication and cleanup behaviour.
+
 ## Commit publication
 
 A commit must not expose a manifest that names incomplete files. The writer flushes pending work, makes file contents durable when configured to do so, and publishes the new `segments_N` file last.

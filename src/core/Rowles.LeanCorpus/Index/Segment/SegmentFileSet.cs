@@ -60,7 +60,7 @@ internal sealed class SegmentFileSet
     internal static bool Pack(string directoryPath, string segmentId, CodecCatalog? catalog = null)
         => CompoundFileWriter.Pack(
             directoryPath,
-            segmentId,
+            segmentId + ".cfs",
             Enumerate(directoryPath, segmentId, catalog, includeTemporary: false).ImmutableCodecFileNames);
 
     internal static SegmentFileSet Enumerate(
