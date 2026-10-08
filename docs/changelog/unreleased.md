@@ -66,6 +66,7 @@
 
 ## Fixed
 
+- Bound single-field, multi-field and index-sort result collection to top-N candidates, with shared timeout and cancellation checks across ordinary sorting and best-first spatial search.
 - Enforce Geo/XY point kinds in queries, distance sorting and merge preflight; preserve legacy Geo fallback and keep wrong-kind sort results as missing values. ([work item 20](https://gitlab.com/jordansrowles/leancorpus/-/work_items/20))
 - Reject duplicate compound-file inputs before changing the destination or deleting source files. ([eb24531ea](https://github.com/jordansrowles/LeanCorpus/commit/eb24531eae6487d5f9a42666b3d65338d629d435))
 - Reject corrupt field-length counts, names, values and trailing data before allocating document arrays or exposing a segment reader. ([af6aacfa7](https://github.com/jordansrowles/LeanCorpus/commit/af6aacfa7d1128e0f8876ab1c6d1511cb62f7c25))

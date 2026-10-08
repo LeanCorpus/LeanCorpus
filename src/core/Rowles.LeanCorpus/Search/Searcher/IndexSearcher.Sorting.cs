@@ -15,6 +15,49 @@ namespace Rowles.LeanCorpus.Search.Searcher;
 /// </summary>
 public sealed partial class IndexSearcher
 {
+    internal enum SearchExecutionCheckpoint
+    {
+        BeforeQueryRewrite,
+        AfterQueryRewrite,
+        BeforePrecompute,
+        AfterPrecompute,
+        BeforeSegment,
+        AfterSegment,
+        BeforeFilterBitmap,
+        AfterFilterBitmap,
+        BeforeSpatialTraversal
+    }
+
+    internal Action<SearchExecutionCheckpoint>? SearchExecutionCheckpointForTesting { get; set; }
+    internal bool EnableSortedSearchDiagnosticsForTesting { get; set; }
+
+    private int _lastSortedSearchPeakCandidateCountForTesting;
+
+    internal int LastSortedSearchPeakCandidateCountForTesting
+        => System.Threading.Volatile.Read(ref _lastSortedSearchPeakCandidateCountForTesting);
+
+    private void ResetSortedSearchPeakCandidateCountForTesting()
+    {
+        if (EnableSortedSearchDiagnosticsForTesting)
+            System.Threading.Interlocked.Exchange(ref _lastSortedSearchPeakCandidateCountForTesting, 0);
+    }
+
+    private void RecordSortedSearchPeakCandidateCountForTesting(int candidateCount)
+    {
+        if (!EnableSortedSearchDiagnosticsForTesting)
+            return;
+
+        int current;
+        while ((current = System.Threading.Volatile.Read(ref _lastSortedSearchPeakCandidateCountForTesting)) < candidateCount)
+        {
+            if (System.Threading.Interlocked.CompareExchange(
+                    ref _lastSortedSearchPeakCandidateCountForTesting,
+                    candidateCount,
+                    current) == current)
+                return;
+        }
+    }
+
     /// <summary>Searches using an ordered list of sort fields.</summary>
     public TopDocs Search(Query query, int topN, params SortField[] sorts)
         => Search(query, topN, (IReadOnlyList<SortField>)sorts, SearchOptions.Default);
@@ -26,6 +69,7 @@ public sealed partial class IndexSearcher
         IReadOnlyList<SortField> sorts,
         SearchOptions options)
     {
+        ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(sorts);
         if (sorts.Count == 0)
             throw new ArgumentException("At least one sort field is required.", nameof(sorts));
@@ -35,25 +79,19 @@ public sealed partial class IndexSearcher
             return TopDocs.Empty;
 
         ArgumentNullException.ThrowIfNull(options);
-        long topNBytes = checked((long)topN * Scoring.ScoreDoc.EstimatedBytes);
-        if (topNBytes > options.MaxResultBytes)
-            throw new ArgumentException(
-                $"MaxResultBytes ({options.MaxResultBytes}) is smaller than the requested top-N heap ({topNBytes} bytes).",
-                nameof(options));
+        ValidateSortedTopNBudget(topN, options);
+        ResetSortedSearchPeakCandidateCountForTesting();
 
-        options.CancellationToken.ThrowIfCancellationRequested();
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var allDocs = Search(query, _totalDocCount);
-        if (allDocs.TotalHits == 0)
-            return TopDocs.Empty;
+        var budget = new SearchExecutionBudget(this, options);
+        if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeQueryRewrite))
+            return budget.EmptyPartialResult();
 
-        var sorted = SortCandidates(allDocs.ScoreDocs, sorts, topN);
+        Query rewrittenQuery = RewriteQuery(query);
+        if (budget.Checkpoint(SearchExecutionCheckpoint.AfterQueryRewrite))
+            return budget.EmptyPartialResult();
 
-        bool partial = options.CancellationToken.IsCancellationRequested
-            || (options.Timeout.HasValue && stopwatch.Elapsed > options.Timeout.Value);
-        return partial
-            ? new TopDocs(allDocs.TotalHits, sorted, isPartial: true)
-            : new TopDocs(allDocs.TotalHits, sorted);
+        var strategy = new FieldSortCollectorStrategy(this, topN, sorts);
+        return SearchWithBudgetedCollector(rewrittenQuery, strategy, budget);
     }
 
     /// <summary>
@@ -165,6 +203,7 @@ public sealed partial class IndexSearcher
     /// </summary>
     public TopDocs Search(Query query, int topN, SortField sort, SearchOptions options)
     {
+        ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(options);
 
         if (sort.Type == SortFieldType.Score)
@@ -173,78 +212,124 @@ public sealed partial class IndexSearcher
         if (topN <= 0)
             return TopDocs.Empty;
 
+        ValidateSortedTopNBudget(topN, options);
+        ResetSortedSearchPeakCandidateCountForTesting();
+
+        var budget = new SearchExecutionBudget(this, options);
+        if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeQueryRewrite))
+            return budget.EmptyPartialResult();
+
+        Query rewrittenQuery = RewriteQuery(query);
+        if (budget.Checkpoint(SearchExecutionCheckpoint.AfterQueryRewrite))
+            return budget.EmptyPartialResult();
+
+        if (!sort.Descending
+            && (sort.Type is SortFieldType.GeoDistance or SortFieldType.XYDistance)
+            && TrySearchBestFirstSpatial(rewrittenQuery, topN, sort, budget, out TopDocs nearest))
+            return nearest;
+
+        // Fast path: if the sort matches the index sort, iterate postings in doc-ID
+        // order (which is sort-key order) and stop after collecting topN live docs.
+        if (_readers.Count > 0 && rewrittenQuery is TermQuery tq
+            && TryGetIndexSort(out var indexSort) && MatchesSort(sort, indexSort))
+        {
+            return SearchWithIndexSortEarlyTermination(tq, topN, sort, budget);
+        }
+
+        var strategy = new FieldSortCollectorStrategy(this, topN, [sort]);
+        return SearchWithBudgetedCollector(rewrittenQuery, strategy, budget);
+    }
+
+    private static void ValidateSortedTopNBudget(int topN, SearchOptions options)
+    {
         long topNBytes = checked((long)topN * Scoring.ScoreDoc.EstimatedBytes);
         if (topNBytes > options.MaxResultBytes)
             throw new ArgumentException(
                 $"MaxResultBytes ({options.MaxResultBytes}) is smaller than the requested top-N heap ({topNBytes} bytes).",
                 nameof(options));
+    }
 
-        // Check cancellation and timeout before the expensive full fetch.
-        options.CancellationToken.ThrowIfCancellationRequested();
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        long? deadlineTicks = options.Timeout.HasValue
-            ? sw.ElapsedTicks + (long)(options.Timeout.Value.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
-            : null;
-        if (deadlineTicks.HasValue && sw.ElapsedTicks > deadlineTicks.Value)
+    private TopDocs SearchWithBudgetedCollector(
+        Query query,
+        ITopNCollectorStrategy strategy,
+        SearchExecutionBudget budget)
+    {
+        if (_readers.Count == 0)
             return TopDocs.Empty;
 
-        Query rewrittenQuery = RewriteQuery(query);
-        if (!sort.Descending
-            && (sort.Type is SortFieldType.GeoDistance or SortFieldType.XYDistance)
-            && TrySearchBestFirstSpatial(rewrittenQuery, topN, sort, options, sw, deadlineTicks, out TopDocs nearest))
-            return nearest;
+        if (budget.Checkpoint(SearchExecutionCheckpoint.BeforePrecompute))
+            return strategy.ToTopDocs().AsPartial();
 
-        // Fast path: if the sort matches the index sort, iterate postings in doc-ID
-        // order (which is sort-key order) and stop after collecting topN live docs.
-        if (_readers.Count > 0 && query is TermQuery tq
-            && TryGetIndexSort(out var indexSort) && MatchesSort(sort, indexSort))
+        // These query families coordinate results across segments themselves. Preserve
+        // their existing execution until their coordinators can consume bounded field
+        // sort strategies without first materialising their full candidate set.
+        if (query is MoreLikeThisQuery or RrfQuery or BlockJoinQuery)
         {
-            return SearchWithIndexSortEarlyTermination(tq, topN, sort);
+            TopDocs coordinated = SearchCore(query, _totalDocCount);
+            foreach (ScoreDoc candidate in coordinated.ScoreDocs)
+                strategy.Collect(candidate.DocId, candidate.Score);
+            if (strategy is FieldSortCollectorStrategy fieldStrategy)
+                fieldStrategy.AddUncollectedHitCount(coordinated.TotalHits - coordinated.ScoreDocs.Length);
+
+            TopDocs coordinatedResult = strategy.ToTopDocs();
+            return budget.IsStopped ? coordinatedResult.AsPartial() : coordinatedResult;
         }
 
-        // We still need every match to pick the top-N by sort key, but topN itself
-        // bounds how many we return. _totalDocCount is the upper bound on matches.
-        // A field sort does not need relevance scores. Keep the term-query path
-        // aligned with Lucene's sorted search by scanning matching postings with
-        // a constant score instead of calculating BM25 for every document.
-        var allDocs = query is TermQuery termQuery && sort.Type == SortFieldType.Numeric
-            ? SearchTermQueryUnscored(termQuery)
-            : Search(query, _totalDocCount);
-        if (allDocs.TotalHits == 0) return TopDocs.Empty;
+        Dictionary<(string Field, string Term), int>? globalDFs = PrecomputeWithResourceChecks(
+            query,
+            budget.Options,
+            budget.Stopwatch,
+            budget.DeadlineTicks);
+        if (globalDFs is null || budget.Checkpoint(SearchExecutionCheckpoint.AfterPrecompute))
+            return strategy.ToTopDocs().AsPartial();
 
-        bool partial = options.CancellationToken.IsCancellationRequested
-            || (deadlineTicks.HasValue && sw.ElapsedTicks > deadlineTicks.Value);
-
-        var docs = allDocs.ScoreDocs;
-        int effectiveN = Math.Min(topN, docs.Length);
-
-        var sorted = sort.Type is SortFieldType.GeoDistance or SortFieldType.XYDistance
-            ? SortCandidates(docs, [sort], effectiveN)
-            : sort.Type switch
+        bool partial = false;
+        if (CanSearchSegmentsInParallel()
+            && budget.CanRunParallel
+            && strategy is IParallelTopNCollectorStrategy parallelStrategy)
+        {
+            var mergeLock = new Lock();
+            Parallel.ForEach(
+                _readers,
+                new ParallelOptions { MaxDegreeOfParallelism = ResolvedSearchConcurrency },
+                reader =>
+                {
+                    var workerStrategy = parallelStrategy.CreateWorker();
+                    var workerCollector = new TopNCollector(workerStrategy);
+                    ExecuteQuery(query, reader, globalDFs, ref workerCollector);
+                    lock (mergeLock)
+                        parallelStrategy.MergeWorker(workerStrategy);
+                });
+        }
+        else
+        {
+            foreach (SegmentReader reader in _readers)
             {
-                SortFieldType.DocId => SelectTopByDocId(docs, effectiveN, sort.Descending),
-                SortFieldType.Numeric => SelectTopByNumericField(
-                    docs, effectiveN, sort.FieldName, sort.Descending, sort.Selector),
-                SortFieldType.Int64 => SelectTopByInt64Field(
-                    docs, effectiveN, sort.FieldName, sort.Descending, sort.Selector),
-                SortFieldType.String => SelectTopByStringField(
-                    docs, effectiveN, sort.FieldName, sort.Descending, sort.Selector),
-                _ => docs.Length > effectiveN ? docs[..effectiveN] : docs
-            };
+                if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeSegment))
+                {
+                    partial = true;
+                    break;
+                }
 
-        sw.Stop();
-        return partial
-            ? new TopDocs(allDocs.TotalHits, sorted, isPartial: true)
-            : new TopDocs(allDocs.TotalHits, sorted);
+                var collector = new TopNCollector(strategy);
+                ExecuteQuery(query, reader, globalDFs, ref collector);
+                if (budget.Checkpoint(SearchExecutionCheckpoint.AfterSegment))
+                {
+                    partial = true;
+                    break;
+                }
+            }
+        }
+
+        TopDocs result = strategy.ToTopDocs();
+        return partial || budget.IsStopped ? result.AsPartial() : result;
     }
 
     private bool TrySearchBestFirstSpatial(
         Query query,
         int topN,
         SortField sort,
-        SearchOptions options,
-        System.Diagnostics.Stopwatch stopwatch,
-        long? deadlineTicks,
+        SearchExecutionBudget budget,
         out TopDocs result)
     {
         result = TopDocs.Empty;
@@ -254,38 +339,74 @@ public sealed partial class IndexSearcher
             || (sort.Type == SortFieldType.XYDistance && sort.XYOrigin is null))
             return false;
 
-        int totalHits = Count(query);
-        if (totalHits == 0)
+        var globalTopN = new SortedSet<SpatialDistanceCandidate>(SpatialDistanceCandidateComparer.Instance);
+        ConstantScoreQuery? constantScoreQuery = query as ConstantScoreQuery;
+        int totalHits = 0;
+        int peakCandidateCount = 0;
+        if (budget.Checkpoint(SearchExecutionCheckpoint.BeforePrecompute))
         {
-            result = TopDocs.Empty;
+            result = budget.EmptyPartialResult();
             return true;
         }
 
-        int perSegmentTopN = Math.Min(topN, totalHits);
-        var globalTopN = new SortedSet<SpatialDistanceCandidate>(SpatialDistanceCandidateComparer.Instance);
-        ConstantScoreQuery? constantScoreQuery = query as ConstantScoreQuery;
-        Dictionary<(string Field, string Term), int> globalDFs = constantScoreQuery is null
-            ? new Dictionary<(string Field, string Term), int>()
-            : PrecomputeGlobalDocFreqsForSearch(constantScoreQuery.Inner);
+        Dictionary<(string Field, string Term), int>? globalDFs = constantScoreQuery is null
+            ? EmptyGlobalDFs
+            : PrecomputeWithResourceChecks(
+                constantScoreQuery.Inner,
+                budget.Options,
+                budget.Stopwatch,
+                budget.DeadlineTicks);
+        if (globalDFs is null || budget.Checkpoint(SearchExecutionCheckpoint.AfterPrecompute))
+        {
+            result = budget.EmptyPartialResult();
+            return true;
+        }
+
         bool partial = false;
         foreach (SegmentReader reader in _readers)
         {
-            if (options.CancellationToken.IsCancellationRequested
-                || (deadlineTicks.HasValue && stopwatch.ElapsedTicks > deadlineTicks.Value))
+            if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeSegment))
             {
                 partial = true;
                 break;
             }
 
-            int capacity = Math.Min(perSegmentTopN, reader.MaxDoc);
-            if (capacity == 0)
-                continue;
+            Util.RoaringBitmap? filterBitmap = null;
+            int segmentMatchCount;
+            if (constantScoreQuery is null)
+            {
+                segmentMatchCount = reader.Info.LiveDocCount;
+            }
+            else
+            {
+                if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeFilterBitmap))
+                {
+                    partial = true;
+                    break;
+                }
+                filterBitmap = ExecuteFilterToBitmap(constantScoreQuery.Inner, reader, globalDFs);
+                segmentMatchCount = filterBitmap.Cardinality;
+                totalHits += segmentMatchCount;
+                if (budget.Checkpoint(SearchExecutionCheckpoint.AfterFilterBitmap))
+                {
+                    partial = true;
+                    break;
+                }
+            }
 
-            Util.RoaringBitmap? filterBitmap = constantScoreQuery is null
-                ? null
-                : ExecuteFilterToBitmap(constantScoreQuery.Inner, reader, globalDFs);
-            if (filterBitmap is { Cardinality: 0 })
+            if (constantScoreQuery is null)
+                totalHits += segmentMatchCount;
+
+            int capacity = Math.Min(topN, segmentMatchCount);
+            if (capacity == 0)
+            {
+                if (budget.Checkpoint(SearchExecutionCheckpoint.AfterSegment))
+                {
+                    partial = true;
+                    break;
+                }
                 continue;
+            }
 
             float score = constantScoreQuery is null
                 ? ((MatchAllDocsQuery)query).Boost
@@ -299,9 +420,7 @@ public sealed partial class IndexSearcher
                 score,
                 constantScoreQuery?.Field,
                 filterBitmap,
-                options.CancellationToken,
-                stopwatch,
-                deadlineTicks);
+                budget);
             SpatialFieldKind expectedKind = sort.Type == SortFieldType.GeoDistance
                 ? SpatialFieldKind.GeoPoint
                 : SpatialFieldKind.XYPoint;
@@ -310,6 +429,11 @@ public sealed partial class IndexSearcher
 
             if (compatiblePackedField)
             {
+                if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeSpatialTraversal))
+                {
+                    partial = true;
+                    break;
+                }
                 reader.TraversePackedBkdBestFirst(sort.FieldName, ref collector, out _);
                 if (!collector.ShouldStop)
                 {
@@ -325,7 +449,9 @@ public sealed partial class IndexSearcher
             }
 
             collector.MergeInto(globalTopN, topN);
-            if (collector.ShouldStop)
+            peakCandidateCount = Math.Max(peakCandidateCount, Math.Max(collector.PeakCandidateCount, globalTopN.Count));
+            RecordSortedSearchPeakCandidateCountForTesting(peakCandidateCount);
+            if (collector.ShouldStop || budget.Checkpoint(SearchExecutionCheckpoint.AfterSegment))
             {
                 partial = true;
                 break;
@@ -336,96 +462,9 @@ public sealed partial class IndexSearcher
         int resultIndex = 0;
         foreach (SpatialDistanceCandidate candidate in globalTopN)
             sorted[resultIndex++] = new ScoreDoc(candidate.GlobalDocId, candidate.Score);
-        partial |= options.CancellationToken.IsCancellationRequested
-            || (deadlineTicks.HasValue && stopwatch.ElapsedTicks > deadlineTicks.Value);
+        partial |= budget.IsStopped;
         result = new TopDocs(totalHits, sorted, isPartial: partial);
         return true;
-    }
-
-    private TopDocs SearchTermQueryUnscored(TermQuery query)
-    {
-        var qt = query.CachedQualifiedTerm ??= string.Concat(query.Field, "\x00", query.Term);
-        int readerCount = _readers.Count;
-        if (t_postingsBuffer is null || t_postingsBuffer.Length < readerCount)
-            t_postingsBuffer = new PostingsEnum[readerCount];
-
-        var postingsArr = t_postingsBuffer;
-        var collector = new TopNCollector(_totalDocCount);
-        try
-        {
-            for (int i = 0; i < readerCount; i++)
-            {
-                postingsArr[i] = _readers[i].GetPostingsEnum(qt);
-                if (postingsArr[i].IsExhausted)
-                    continue;
-
-                var reader = _readers[i];
-                using var queryLease = reader.AcquireQueryLease();
-                int docBase = reader.DocBase;
-                bool hasDeletions = reader.HasDeletions;
-                while (postingsArr[i].MoveNext())
-                {
-                    int docId = postingsArr[i].DocId;
-                    if (hasDeletions && !reader.IsLive(docId))
-                        continue;
-                    collector.Collect(docBase + docId, 1.0f);
-                }
-            }
-
-            return collector.ToTopDocs();
-        }
-        finally
-        {
-            for (int i = 0; i < readerCount; i++)
-                postingsArr[i].Dispose();
-        }
-    }
-
-    private static ScoreDoc[] SelectTopByDocId(ScoreDoc[] docs, int topN, bool descending)
-    {
-        // Sort key is docId; reuse the numeric heap-select with double keys.
-        var keys = new double[docs.Length];
-        for (int i = 0; i < docs.Length; i++) keys[i] = docs[i].DocId;
-        return TopNSortHelper.SelectTopN(docs, keys, topN, descending);
-    }
-
-    private ScoreDoc[] SelectTopByNumericField(
-        ScoreDoc[] docs,
-        int topN,
-        string fieldName,
-        bool descending,
-        SortValueSelector selector)
-    {
-        var keys = new double[docs.Length];
-        for (int i = 0; i < docs.Length; i++)
-            keys[i] = ResolveNumeric(docs[i].DocId, fieldName, selector);
-        return TopNSortHelper.SelectTopN(docs, keys, topN, descending);
-    }
-
-    private ScoreDoc[] SelectTopByStringField(
-        ScoreDoc[] docs,
-        int topN,
-        string fieldName,
-        bool descending,
-        SortValueSelector selector)
-    {
-        var keys = new string[docs.Length];
-        for (int i = 0; i < docs.Length; i++)
-            keys[i] = ResolveString(docs[i].DocId, fieldName, selector);
-        return TopNSortHelper.SelectTopN(docs, keys, topN, descending);
-    }
-
-    private ScoreDoc[] SelectTopByInt64Field(
-        ScoreDoc[] docs,
-        int topN,
-        string fieldName,
-        bool descending,
-        SortValueSelector selector)
-    {
-        var keys = new long[docs.Length];
-        for (int i = 0; i < docs.Length; i++)
-            keys[i] = ResolveInt64(docs[i].DocId, fieldName, selector);
-        return TopNSortHelper.SelectTopN(docs, keys, topN, descending);
     }
 
     private double ResolveNumeric(int globalId, string fieldName)
@@ -779,9 +818,7 @@ public sealed partial class IndexSearcher
         private readonly float _score;
         private readonly string? _scoreField;
         private readonly Util.RoaringBitmap? _filterBitmap;
-        private readonly CancellationToken _cancellationToken;
-        private readonly System.Diagnostics.Stopwatch _stopwatch;
-        private readonly long? _deadlineTicks;
+        private readonly SearchExecutionBudget _budget;
         private readonly SortedSet<SpatialDistanceCandidate> _ordered = new(SpatialDistanceCandidateComparer.Instance);
         private readonly Dictionary<int, SpatialDistanceCandidate> _byGlobalDoc = new();
         private int _peakCandidateCount;
@@ -797,9 +834,7 @@ public sealed partial class IndexSearcher
             float score,
             string? scoreField,
             Util.RoaringBitmap? filterBitmap,
-            CancellationToken cancellationToken,
-            System.Diagnostics.Stopwatch stopwatch,
-            long? deadlineTicks)
+            SearchExecutionBudget budget)
         {
             _searcher = searcher;
             _reader = reader;
@@ -808,9 +843,7 @@ public sealed partial class IndexSearcher
             _score = score;
             _scoreField = scoreField;
             _filterBitmap = filterBitmap;
-            _cancellationToken = cancellationToken;
-            _stopwatch = stopwatch;
-            _deadlineTicks = deadlineTicks;
+            _budget = budget;
         }
 
         internal int Count => _ordered.Count;
@@ -825,8 +858,7 @@ public sealed partial class IndexSearcher
 
         public long CandidateUpdates => _candidateUpdates;
 
-        public bool ShouldStop => _cancellationToken.IsCancellationRequested
-            || (_deadlineTicks.HasValue && _stopwatch.ElapsedTicks > _deadlineTicks.Value);
+        public bool ShouldStop => _budget.IsStopped;
 
         public bool HasFullCandidateSet => _ordered.Count >= _capacity;
 
@@ -1052,6 +1084,60 @@ public sealed partial class IndexSearcher
         return docs[left].DocId.CompareTo(docs[right].DocId);
     }
 
+    private static void FillSortValues(
+        IndexSearcher searcher,
+        ScoreDoc scoreDoc,
+        SortField[] sorts,
+        Span<SortValue> destination)
+    {
+        for (int i = 0; i < sorts.Length; i++)
+        {
+            SortField sort = sorts[i];
+            destination[i] = sort.Type switch
+            {
+                SortFieldType.Score => SortValue.FromNumeric(scoreDoc.Score),
+                SortFieldType.DocId => SortValue.FromInt64(scoreDoc.DocId),
+                SortFieldType.Numeric => SortValue.FromNumeric(
+                    searcher.ResolveNumeric(scoreDoc.DocId, sort.FieldName, sort.Selector)),
+                SortFieldType.Int64 => SortValue.FromInt64(
+                    searcher.ResolveInt64(scoreDoc.DocId, sort.FieldName, sort.Selector)),
+                SortFieldType.String => SortValue.FromString(
+                    searcher.ResolveString(scoreDoc.DocId, sort.FieldName, sort.Selector)),
+                SortFieldType.GeoDistance or SortFieldType.XYDistance =>
+                    searcher.ResolveSpatialSortValue(scoreDoc.DocId, sort),
+                _ => default
+            };
+        }
+    }
+
+    private static int CompareSortValues(
+        SortField[] sorts,
+        ReadOnlySpan<SortValue> left,
+        int leftDocId,
+        ReadOnlySpan<SortValue> right,
+        int rightDocId,
+        bool includeDocumentIdTieBreak = true)
+    {
+        for (int i = 0; i < sorts.Length; i++)
+        {
+            int comparison = CompareSortValue(sorts[i], left[i], right[i]);
+            if (comparison != 0)
+                return comparison;
+        }
+
+        return includeDocumentIdTieBreak ? leftDocId.CompareTo(rightDocId) : 0;
+    }
+
+    private static int CompareSortValue(SortField sort, SortValue left, SortValue right)
+    {
+        if (sort.Type is SortFieldType.GeoDistance or SortFieldType.XYDistance
+            && left.Missing != right.Missing)
+            return left.Missing ? 1 : -1;
+
+        int comparison = left.CompareTo(right, sort.Type);
+        return sort.Descending ? -comparison : comparison;
+    }
+
     private sealed class SortColumn
     {
         private readonly SortField _field;
@@ -1074,29 +1160,17 @@ public sealed partial class IndexSearcher
         }
 
         internal int Compare(int left, int right)
-        {
-            if (_field.Type is SortFieldType.GeoDistance or SortFieldType.XYDistance)
-            {
-                bool leftMissing = MissingValues![left];
-                bool rightMissing = MissingValues[right];
-                if (leftMissing != rightMissing)
-                    return leftMissing ? 1 : -1;
-                if (leftMissing)
-                    return 0;
-            }
+            => CompareSortValue(_field, GetValue(left), GetValue(right));
 
-            int comparison = _field.Type switch
-            {
-                SortFieldType.Score or SortFieldType.Numeric or SortFieldType.GeoDistance or SortFieldType.XYDistance =>
-                    NumericValues![left].CompareTo(NumericValues[right]),
-                SortFieldType.DocId or SortFieldType.Int64 =>
-                    Int64Values![left].CompareTo(Int64Values[right]),
-                SortFieldType.String =>
-                    string.CompareOrdinal(StringValues![left], StringValues[right]),
-                _ => 0
-            };
-            return _field.Descending ? -comparison : comparison;
-        }
+        private SortValue GetValue(int index) => _field.Type switch
+        {
+            SortFieldType.Score or SortFieldType.Numeric => SortValue.FromNumeric(NumericValues![index]),
+            SortFieldType.GeoDistance or SortFieldType.XYDistance =>
+                SortValue.FromNumeric(NumericValues![index], MissingValues![index]),
+            SortFieldType.DocId or SortFieldType.Int64 => SortValue.FromInt64(Int64Values![index]),
+            SortFieldType.String => SortValue.FromString(StringValues![index]),
+            _ => default
+        };
     }
 
     private sealed class ScoreAfterCollectorStrategy : ITopNCollectorStrategy, IParallelTopNCollectorStrategy
@@ -1144,6 +1218,186 @@ public sealed partial class IndexSearcher
             _totalHits += scoreWorker._totalHits;
             foreach (var scoreDoc in scoreWorker._collector.ToTopDocs().ScoreDocs)
                 _collector.Collect(scoreDoc.DocId, scoreDoc.Score);
+        }
+    }
+
+    private sealed class FieldSortCollectorStrategy : ITopNCollectorStrategy, IParallelTopNCollectorStrategy
+    {
+        private readonly IndexSearcher _searcher;
+        private readonly SortField[] _sorts;
+        private readonly ScoreDoc[] _heap;
+        private readonly SortValue[] _heapValues;
+        private readonly SortValue[] _candidateValues;
+        private int _size;
+        private int _totalHits;
+
+        internal FieldSortCollectorStrategy(
+            IndexSearcher searcher,
+            int topN,
+            IReadOnlyList<SortField> sorts)
+        {
+            _searcher = searcher;
+            _sorts = sorts.ToArray();
+            _heap = new ScoreDoc[topN];
+            _heapValues = new SortValue[checked(topN * sorts.Count)];
+            _candidateValues = new SortValue[sorts.Count];
+        }
+
+        public int TotalHits => _totalHits;
+        public int Capacity => _heap.Length;
+        public bool IsFull => _size == _heap.Length;
+        public float MinScore => float.NegativeInfinity;
+        internal int PeakCandidateCount { get; private set; }
+
+        public void Collect(int docId, float score)
+        {
+            _totalHits++;
+            var candidate = new ScoreDoc(docId, score);
+            FillSortValues(_searcher, candidate, _sorts, _candidateValues);
+            AddCandidate(candidate, _candidateValues);
+        }
+
+        internal void AddUncollectedHitCount(int count)
+        {
+            if (count > 0)
+                _totalHits += count;
+        }
+
+        public ITopNCollectorStrategy CreateWorker()
+            => new FieldSortCollectorStrategy(_searcher, _heap.Length, _sorts);
+
+        public void MergeWorker(ITopNCollectorStrategy worker)
+        {
+            var fieldWorker = (FieldSortCollectorStrategy)worker;
+            _totalHits += fieldWorker._totalHits;
+            PeakCandidateCount = Math.Max(PeakCandidateCount, fieldWorker.PeakCandidateCount);
+            for (int i = 0; i < fieldWorker._size; i++)
+            {
+                ReadOnlySpan<SortValue> values = fieldWorker._heapValues.AsSpan(
+                    i * _sorts.Length,
+                    _sorts.Length);
+                AddCandidate(fieldWorker._heap[i], values);
+            }
+        }
+
+        public TopDocs ToTopDocs()
+        {
+            if (_size == 0)
+                return new TopDocs(_totalHits, []);
+
+            if (_size < _heap.Length)
+                BuildWorstHeap();
+
+            int remaining = _size;
+            var results = new ScoreDoc[remaining];
+            while (remaining > 0)
+            {
+                results[remaining - 1] = _heap[0];
+                remaining--;
+                if (remaining == 0)
+                    break;
+
+                _heap[0] = _heap[remaining];
+                CopySlot(remaining, 0);
+                SiftDown(0, remaining);
+            }
+
+            _size = 0;
+            return new TopDocs(_totalHits, results);
+        }
+
+        public void Reset()
+        {
+            _size = 0;
+            _totalHits = 0;
+            PeakCandidateCount = 0;
+        }
+
+        private void AddCandidate(ScoreDoc candidate, ReadOnlySpan<SortValue> values)
+        {
+            if (_size < _heap.Length)
+            {
+                _heap[_size] = candidate;
+                CopyValues(values, _size);
+                _size++;
+                PeakCandidateCount = Math.Max(PeakCandidateCount, _size);
+                _searcher.RecordSortedSearchPeakCandidateCountForTesting(_size);
+                if (_size == _heap.Length)
+                    BuildWorstHeap();
+                return;
+            }
+
+            if (CompareCandidateToSlot(candidate.DocId, values, 0) >= 0)
+                return;
+
+            _heap[0] = candidate;
+            CopyValues(values, 0);
+            SiftDown(0, _size);
+        }
+
+        private int CompareCandidateToSlot(int candidateDocId, ReadOnlySpan<SortValue> candidateValues, int slot)
+        {
+            int offset = slot * _sorts.Length;
+            return CompareSortValues(
+                _sorts,
+                candidateValues,
+                candidateDocId,
+                _heapValues.AsSpan(offset, _sorts.Length),
+                _heap[slot].DocId);
+        }
+
+        private int CompareSlots(int left, int right)
+        {
+            int leftOffset = left * _sorts.Length;
+            int rightOffset = right * _sorts.Length;
+            return CompareSortValues(
+                _sorts,
+                _heapValues.AsSpan(leftOffset, _sorts.Length),
+                _heap[left].DocId,
+                _heapValues.AsSpan(rightOffset, _sorts.Length),
+                _heap[right].DocId);
+        }
+
+        private void CopyValues(ReadOnlySpan<SortValue> source, int slot)
+            => source.CopyTo(_heapValues.AsSpan(slot * _sorts.Length, _sorts.Length));
+
+        private void CopySlot(int source, int destination)
+            => _heapValues.AsSpan(source * _sorts.Length, _sorts.Length).CopyTo(
+                _heapValues.AsSpan(destination * _sorts.Length, _sorts.Length));
+
+        private void BuildWorstHeap()
+        {
+            for (int i = _size / 2 - 1; i >= 0; i--)
+                SiftDown(i, _size);
+        }
+
+        private void SiftDown(int index, int size)
+        {
+            while (true)
+            {
+                int worst = index;
+                int left = (index * 2) + 1;
+                int right = left + 1;
+                if (left < size && CompareSlots(left, worst) > 0)
+                    worst = left;
+                if (right < size && CompareSlots(right, worst) > 0)
+                    worst = right;
+                if (worst == index)
+                    return;
+
+                (_heap[index], _heap[worst]) = (_heap[worst], _heap[index]);
+                SwapValues(index, worst);
+                index = worst;
+            }
+        }
+
+        private void SwapValues(int left, int right)
+        {
+            int leftOffset = left * _sorts.Length;
+            int rightOffset = right * _sorts.Length;
+            for (int i = 0; i < _sorts.Length; i++)
+                (_heapValues[leftOffset + i], _heapValues[rightOffset + i]) =
+                    (_heapValues[rightOffset + i], _heapValues[leftOffset + i]);
         }
     }
 
@@ -1292,26 +1546,7 @@ public sealed partial class IndexSearcher
         }
 
         private void FillValues(ScoreDoc scoreDoc, SortValue[] destination)
-        {
-            for (int i = 0; i < _sorts.Length; i++)
-            {
-                var sort = _sorts[i];
-                destination[i] = sort.Type switch
-                {
-                    SortFieldType.Score => SortValue.FromNumeric(scoreDoc.Score),
-                    SortFieldType.DocId => SortValue.FromInt64(scoreDoc.DocId),
-                    SortFieldType.Numeric => SortValue.FromNumeric(
-                        _searcher.ResolveNumeric(scoreDoc.DocId, sort.FieldName, sort.Selector)),
-                    SortFieldType.Int64 => SortValue.FromInt64(
-                        _searcher.ResolveInt64(scoreDoc.DocId, sort.FieldName, sort.Selector)),
-                    SortFieldType.String => SortValue.FromString(
-                        _searcher.ResolveString(scoreDoc.DocId, sort.FieldName, sort.Selector)),
-                    SortFieldType.GeoDistance or SortFieldType.XYDistance =>
-                        _searcher.ResolveSpatialSortValue(scoreDoc.DocId, sort),
-                    _ => default
-                };
-            }
-        }
+            => FillSortValues(_searcher, scoreDoc, _sorts, destination);
 
         private int CompareCandidateToSlot(int candidateDocId, int slot)
         {
@@ -1340,20 +1575,13 @@ public sealed partial class IndexSearcher
             ReadOnlySpan<SortValue> right,
             int rightDocId,
             bool includeDocumentIdTieBreak = true)
-        {
-            for (int i = 0; i < _sorts.Length; i++)
-            {
-                if (_sorts[i].Type is SortFieldType.GeoDistance or SortFieldType.XYDistance
-                    && left[i].Missing != right[i].Missing)
-                    return left[i].Missing ? 1 : -1;
-
-                int comparison = left[i].CompareTo(right[i], _sorts[i].Type);
-                if (comparison == 0)
-                    continue;
-                return _sorts[i].Descending ? -comparison : comparison;
-            }
-            return includeDocumentIdTieBreak ? leftDocId.CompareTo(rightDocId) : 0;
-        }
+            => CompareSortValues(
+                _sorts,
+                left,
+                leftDocId,
+                right,
+                rightDocId,
+                includeDocumentIdTieBreak);
 
         private void CopyValues(ReadOnlySpan<SortValue> source, int slot)
             => source.CopyTo(_heapValues.AsSpan(slot * _sorts.Length, _sorts.Length));
@@ -1421,50 +1649,88 @@ public sealed partial class IndexSearcher
         };
     }
 
-    private TopDocs SearchWithIndexSortEarlyTermination(TermQuery tq, int topN, SortField sort)
+    private TopDocs SearchWithIndexSortEarlyTermination(
+        TermQuery tq,
+        int topN,
+        SortField sort,
+        SearchExecutionBudget budget)
     {
         // Every segment is independently sorted. Its first topN live matches are
         // sufficient candidates for the global topN, but stopping after the first
-        // full segment is not: a later segment may contain better sort keys.
-        var candidates = new List<ScoreDoc>();
+        // full segment is not: a later segment may contain better sort keys. Merge
+        // candidates into one globally bounded field-sort heap as each segment ends.
+        var candidates = new FieldSortCollectorStrategy(this, topN, [sort]);
         int observedHits = 0;
         var qt = tq.CachedQualifiedTerm ??= string.Concat(tq.Field, "\x00", tq.Term);
         foreach (var reader in _readers)
         {
+            if (budget.Checkpoint(SearchExecutionCheckpoint.BeforeSegment))
+                break;
+
             using var pe = reader.GetPostingsEnum(qt);
-            if (pe.IsExhausted) continue;
-            int docBase = reader.DocBase;
-            bool hasDeletions = reader.HasDeletions;
             int segmentHits = 0;
-            while (pe.MoveNext() && segmentHits < topN)
+            if (!pe.IsExhausted)
             {
-                int docId = pe.DocId;
-                if (hasDeletions && !reader.IsLive(docId)) continue;
-                candidates.Add(new ScoreDoc(docBase + docId, 1.0f));
-                segmentHits++;
-                observedHits++;
+                int docBase = reader.DocBase;
+                bool hasDeletions = reader.HasDeletions;
+                while (pe.MoveNext() && segmentHits < topN)
+                {
+                    int docId = pe.DocId;
+                    if (hasDeletions && !reader.IsLive(docId)) continue;
+                    candidates.Collect(docBase + docId, 1.0f);
+                    segmentHits++;
+                }
             }
+
+            observedHits += segmentHits;
+            if (budget.Checkpoint(SearchExecutionCheckpoint.AfterSegment))
+                break;
         }
 
-        var docs = candidates.ToArray();
-        int effectiveN = Math.Min(topN, docs.Length);
-        var sorted = sort.Type switch
-        {
-            SortFieldType.DocId => SelectTopByDocId(docs, effectiveN, sort.Descending),
-            SortFieldType.Numeric => SelectTopByNumericField(
-                docs, effectiveN, sort.FieldName, sort.Descending, sort.Selector),
-            SortFieldType.Int64 => SelectTopByInt64Field(
-                docs, effectiveN, sort.FieldName, sort.Descending, sort.Selector),
-            SortFieldType.String => SelectTopByStringField(
-                docs, effectiveN, sort.FieldName, sort.Descending, sort.Selector),
-            _ => docs.Length > effectiveN ? docs[..effectiveN] : docs
-        };
-
+        TopDocs selected = candidates.ToTopDocs();
         // The sorted index lets us stop once the requested page is full, so the
         // hit count is intentionally bounded to the documents observed per segment.
         // Advertise that contract to callers rather than presenting the page
         // count as the complete query hit count.
-        return new TopDocs(observedHits, sorted, isPartial: true);
+        return new TopDocs(observedHits, selected.ScoreDocs, isPartial: true);
+    }
+
+    internal sealed class SearchExecutionBudget
+    {
+        private readonly IndexSearcher _searcher;
+        private readonly SearchOptions _options;
+        private readonly System.Diagnostics.Stopwatch _stopwatch;
+        private readonly long? _deadlineTicks;
+
+        internal SearchExecutionBudget(IndexSearcher searcher, SearchOptions options)
+        {
+            _searcher = searcher;
+            _options = options;
+            _stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            _deadlineTicks = options.Timeout.HasValue
+                ? _stopwatch.ElapsedTicks
+                    + (long)(options.Timeout.Value.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
+                : null;
+        }
+
+        internal SearchOptions Options => _options;
+        internal System.Diagnostics.Stopwatch Stopwatch => _stopwatch;
+        internal long? DeadlineTicks => _deadlineTicks;
+        internal bool CanRunParallel
+            => !_deadlineTicks.HasValue && !_options.CancellationToken.CanBeCanceled;
+
+        internal bool IsStopped
+            => _options.CancellationToken.IsCancellationRequested
+                || (_deadlineTicks.HasValue && _stopwatch.ElapsedTicks >= _deadlineTicks.Value);
+
+        internal bool Checkpoint(SearchExecutionCheckpoint checkpoint)
+        {
+            _searcher.SearchExecutionCheckpointForTesting?.Invoke(checkpoint);
+            return IsStopped;
+        }
+
+        internal TopDocs EmptyPartialResult()
+            => new(0, [], isPartial: true);
     }
 
     internal interface IParallelTopNCollectorStrategy

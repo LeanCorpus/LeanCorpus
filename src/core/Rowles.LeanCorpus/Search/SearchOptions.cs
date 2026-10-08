@@ -9,7 +9,9 @@
 /// <remarks>
 /// Timeouts and cancellation are checked at segment boundaries. A query already
 /// inside a hot inner loop will complete that segment before the deadline is
-/// honoured. On early termination the returned <see cref="Scoring.TopDocs.IsPartial"/> is set.
+/// honoured. Sorted search also checks before precomputation, while packed spatial
+/// nearest traversal may stop more finely inside its specialised visitor. On early
+/// termination the returned <see cref="Scoring.TopDocs.IsPartial"/> is set.
 /// </remarks>
 public sealed class SearchOptions
 {
@@ -30,7 +32,9 @@ public sealed class SearchOptions
 
     /// <summary>
     /// Approximate budget on the bytes the retained result accumulator may hold.
-    /// Each retained candidate costs roughly 12 bytes (one <see cref="Scoring.ScoreDoc"/>).
+    /// Each retained candidate is estimated at roughly 12 bytes for one
+    /// <see cref="Scoring.ScoreDoc"/>. Sorted searches also retain sort values, so this
+    /// estimate does not account for every retained or working allocation.
     /// Regular top-N searches throw if the requested heap cannot fit within this budget.
     /// Streaming searches check the budget between segments and stop yielding when it is exhausted.
     /// </summary>

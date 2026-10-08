@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using Rowles.LeanCorpus.Document;
 using Rowles.LeanCorpus.Document.Fields;
 using Rowles.LeanCorpus.Index.Indexer;
@@ -62,8 +62,14 @@ public sealed class SpatialNearestChaosTests : IDisposable
 
         var query = new MatchAllDocsQuery();
         var sort = SortField.XYDistance("position", new XYPoint(0, 0));
-        Assert.Throws<OperationCanceledException>(
-            () => searcher.Search(query, 3, sort, new SearchOptions { CancellationToken = cancellation.Token }));
+        TopDocs cancelled = searcher.Search(
+            query,
+            3,
+            sort,
+            new SearchOptions { CancellationToken = cancellation.Token });
+        Assert.True(cancelled.IsPartial);
+        Assert.Equal(0, cancelled.TotalHits);
+        Assert.Empty(cancelled.ScoreDocs);
 
         TopDocs nearest = searcher.Search(query, 3, sort);
         TopDocs exhaustive = searcher.Search(query, 3, [sort, SortField.DocId]);

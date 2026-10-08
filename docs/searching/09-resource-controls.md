@@ -11,7 +11,7 @@ var hits = searcher.Search(query, topN: 10, new SearchOptions
 });
 ```
 
-If the timeout fires before the search completes, partial results are returned and `TopDocs.IsPartial` is set to `true`. The search is cancelled cooperatively between segments — a segment that has already started scoring will finish, but subsequent segments are skipped.
+If the timeout fires before the search completes, partial results are returned and `TopDocs.IsPartial` is set to `true`. Materialised score and ordinary sorted searches check before precomputation and between segments. A segment query already in progress may finish; subsequent segments are skipped. Packed spatial nearest traversal also checks during its specialised BKD and missing-value scans.
 
 ## Memory budget
 
@@ -22,9 +22,9 @@ var hits = searcher.Search(query, topN: 100, new SearchOptions
 });
 ```
 
-For a regular top-N search, the requested heap must fit before execution begins. LeanCorpus estimates one retained `ScoreDoc` at roughly 12 bytes and throws `ArgumentException` when `topN * EstimatedBytes` exceeds the budget.
+For a regular top-N search, the requested candidate heap must fit before execution begins. LeanCorpus estimates one retained `ScoreDoc` at roughly 12 bytes and throws `ArgumentException` when `topN * EstimatedBytes` exceeds the budget. Single-field and multi-field sorted searches retain at most `topN` candidates and their sort values, instead of materialising every match first.
 
-Streaming searches apply the budget between segments and stop yielding when the next per-segment result heap would exceed it. The limit is approximate and does not include every query, scorer, or codec allocation.
+Streaming searches apply the budget between segments and stop yielding when the next per-segment result heap would exceed it. The limit is approximate: it does not include every query, scorer, filter bitmap, sort-value buffer, or codec allocation.
 
 ## Cancellation
 
@@ -36,7 +36,7 @@ var hits = searcher.Search(query, topN: 10, new SearchOptions
 });
 ```
 
-The cancellation token is checked between segments. If cancelled, partial results are returned with `TopDocs.IsPartial = true`. Combine with `Timeout` for a hard deadline plus external cancellation.
+When cancellation is supplied through `SearchOptions`, sorted searches return partial results with `TopDocs.IsPartial = true`, including an empty partial result when the token is already cancelled. The token is checked between segments. Combine with `Timeout` for a deadline plus external cancellation. Search overloads that accept a `CancellationToken` directly retain their throwing cancellation behaviour.
 
 ## Partial results
 
@@ -45,7 +45,9 @@ if (hits.IsPartial)
     Console.WriteLine($"Search timed out; {hits.TotalHits} hits so far");
 ```
 
-For materialised top-N search, `IsPartial` is set when timeout or cancellation stops execution between segments. An undersized result budget is rejected before searching rather than returned as partial.
+For materialised score and ordinary sorted top-N searches, `IsPartial` is set when timeout or cancellation stops execution before precomputation or between segments. `TotalHits` counts matches established by work completed before stopping. Index-sort early termination also reports partial results on normal completion because it observes only the bounded candidates needed from each segment. An undersized result budget is rejected before searching rather than returned as partial.
+
+Cross-segment coordinators for `MoreLikeThisQuery`, `RrfQuery`, and `BlockJoinQuery` keep their existing execution and candidate-materialisation behaviour; their query coordination is not bounded by the sorted top-N collector.
 
 ## Streaming results
 
