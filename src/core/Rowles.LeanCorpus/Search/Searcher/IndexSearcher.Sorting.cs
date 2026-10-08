@@ -735,7 +735,7 @@ public sealed partial class IndexSearcher
         int localDocId = globalDocId - _docBases[readerOrdinal];
         if (sort.Type == SortFieldType.GeoDistance)
         {
-            SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, sort.FieldName);
+            SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader, sort.FieldName);
             if (resolution is not (SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo))
                 return false;
 
@@ -776,7 +776,7 @@ public sealed partial class IndexSearcher
 
         if (sort.Type == SortFieldType.XYDistance)
         {
-            if (SpatialPointFieldCompatibility.Resolve(reader.Info, sort.FieldName)
+            if (SpatialPointFieldCompatibility.Resolve(reader, sort.FieldName)
                 != SpatialPointFieldResolution.XYPoint)
                 return false;
 

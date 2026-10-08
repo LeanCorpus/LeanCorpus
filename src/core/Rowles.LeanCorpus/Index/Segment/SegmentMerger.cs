@@ -349,7 +349,7 @@ public sealed class SegmentMerger
             {
                 segment.Validate();
                 SegmentReader reader = readers[segment.SegmentId];
-                SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, fieldName);
+                SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader, fieldName);
                 if (resolution == SpatialPointFieldResolution.None)
                 {
                     if (reader.TryGetPackedBkdFieldMetadata(fieldName, out PackedBkdFieldMetadata packedMetadata)
@@ -437,29 +437,16 @@ public sealed class SegmentMerger
         var parsed = new SortField[common.Count];
         for (int i = 0; i < common.Count; i++)
         {
-            string[] parts = common[i].Split(':');
-            if (parts.Length is < 3 or > 4
-                || !Enum.TryParse(parts[0], ignoreCase: false, out SortFieldType type)
-                || !Enum.IsDefined(type)
-                || type is not (SortFieldType.DocId or SortFieldType.Numeric or SortFieldType.Int64 or SortFieldType.String)
-                || !bool.TryParse(parts[2], out bool descending))
+            if (!IndexSort.TryParseSerialisedField(common[i], out SortField sortField)
+                || sortField.Type is not (SortFieldType.DocId or SortFieldType.Numeric or SortFieldType.Int64 or SortFieldType.String))
                 return false;
 
             // Legacy segments may persist DocId sort metadata, but the pre-flush key is not
             // retained after physical reordering. Keep it readable in SegmentInfo while
             // refusing to reuse it as a merge key.
-            if (type == SortFieldType.DocId)
+            if (sortField.Type == SortFieldType.DocId)
                 return false;
-            if (string.IsNullOrWhiteSpace(parts[1]))
-                return false;
-
-            SortValueSelector selector = SortValueSelector.Min;
-            if (parts.Length == 4
-                && (!Enum.TryParse(parts[3], ignoreCase: false, out selector)
-                    || !Enum.IsDefined(selector)))
-                return false;
-
-            parsed[i] = new SortField(type, parts[1], descending, selector);
+            parsed[i] = sortField;
         }
 
         sortFields = parsed;

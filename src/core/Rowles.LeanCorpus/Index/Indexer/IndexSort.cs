@@ -14,7 +14,7 @@ public sealed class IndexSort : IEquatable<IndexSort>
 
     /// <summary>
     /// Gets a pre-computed serialised representation of the sort fields used for
-    /// segment metadata persistence. Each entry encodes <c>Type:FieldName:Descending</c>.
+    /// segment metadata persistence. Each entry encodes <c>Type:FieldName:Descending[:Selector]</c>.
     /// </summary>
     internal List<string> SerialisedFields { get; }
 
@@ -58,15 +58,32 @@ public sealed class IndexSort : IEquatable<IndexSort>
         if (string.IsNullOrEmpty(metadata))
             return false;
 
-        var parts = metadata.Split(':');
-        if (parts.Length is < 3 or > 4
-            || !Enum.TryParse(parts[0], out SortFieldType type)
+        int typeSeparator = metadata.IndexOf(':');
+        int lastSeparator = metadata.LastIndexOf(':');
+        if (typeSeparator <= 0
+            || lastSeparator <= typeSeparator
+            || !Enum.TryParse(metadata.AsSpan(0, typeSeparator), out SortFieldType type)
             || !Enum.IsDefined(type)
-            || type is SortFieldType.Score or SortFieldType.GeoDistance or SortFieldType.XYDistance
-            || !bool.TryParse(parts[2], out bool descending))
+            || type is SortFieldType.Score or SortFieldType.GeoDistance or SortFieldType.XYDistance)
             return false;
 
-        string fieldName = parts[1];
+        int descendingSeparator = lastSeparator;
+        SortValueSelector selector = SortValueSelector.Min;
+        if (!bool.TryParse(metadata.AsSpan(lastSeparator + 1), out bool descending))
+        {
+            if (!Enum.TryParse(metadata.AsSpan(lastSeparator + 1), out selector)
+                || !Enum.IsDefined(selector))
+                return false;
+
+            descendingSeparator = metadata.LastIndexOf(':', lastSeparator - 1);
+            if (descendingSeparator <= typeSeparator
+                || !bool.TryParse(
+                    metadata.AsSpan(descendingSeparator + 1, lastSeparator - descendingSeparator - 1),
+                    out descending))
+                return false;
+        }
+
+        string fieldName = metadata[(typeSeparator + 1)..descendingSeparator];
         if (type == SortFieldType.DocId)
         {
             if (fieldName.Length != 0)
@@ -83,11 +100,6 @@ public sealed class IndexSort : IEquatable<IndexSort>
                 return false;
             }
         }
-
-        var selector = SortValueSelector.Min;
-        if (parts.Length == 4
-            && (!Enum.TryParse(parts[3], out selector) || !Enum.IsDefined(selector)))
-            return false;
 
         sortField = new SortField(type, fieldName, descending, selector);
         return true;

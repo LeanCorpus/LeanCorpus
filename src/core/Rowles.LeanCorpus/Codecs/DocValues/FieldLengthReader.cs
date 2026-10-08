@@ -35,7 +35,7 @@ internal static class FieldLengthReader
             RequireBytes(body, sizeof(int));
             int fieldCount = body.ReadInt32();
             long valueBytes = checked((long)expectedDocumentCount * sizeof(int));
-            long minimumValueBytes = frame.FormatVersion >= 3 ? valueBytes : expectedDocumentCount;
+            long minimumValueBytes = expectedDocumentCount;
             long minimumRecordBytes = checked(2L * sizeof(int) + 1 + minimumValueBytes);
             if (fieldCount < 0 || fieldCount > (body.Length - body.Position) / minimumRecordBytes)
                 throw new InvalidDataException("Field count cannot fit in the field-length body.");
@@ -54,17 +54,18 @@ internal static class FieldLengthReader
                     throw new InvalidDataException("Duplicate field name in field-length body.");
                 RequireBytes(body, sizeof(int));
                 int documentCount = body.ReadInt32();
-                if (documentCount < expectedDocumentCount ||
-                    (frame.FormatVersion >= 3 && documentCount != expectedDocumentCount))
+                if (documentCount < expectedDocumentCount)
                     throw new InvalidDataException("Field-length document count differs from its owning segment.");
-                long encodedMinimum = frame.FormatVersion >= 3 ? valueBytes : documentCount;
+                // Historical pooled-buffer writers could include a zero-only tail. Validate
+                // every encoded entry below, then return only the owning segment's values.
+                long encodedMinimum = documentCount;
                 long followingRecords = checked((fieldCount - field - 1L) * minimumRecordBytes);
                 RequireBytes(body, checked(encodedMinimum + followingRecords));
                 // Validate legacy VarInts before allocating their decoded Int32 array.
                 long valuesStart = body.Position;
                 for (int document = 0; document < documentCount; document++)
                 {
-                    int value = ReadValue(body, frame.FormatVersion);
+                    int value = ReadValue(body);
                     if (value < 0)
                         throw new InvalidDataException("Field lengths must be non-negative.");
                     if (document >= expectedDocumentCount && value != 0)
@@ -79,7 +80,7 @@ internal static class FieldLengthReader
                     lengths = new int[expectedDocumentCount];
                     body.Seek(valuesStart);
                     for (int document = 0; document < expectedDocumentCount; document++)
-                        lengths[document] = ReadValue(body, frame.FormatVersion);
+                        lengths[document] = ReadValue(body);
                     body.Seek(valuesEnd);
                 }
                 result.Add(name, lengths);
@@ -95,8 +96,23 @@ internal static class FieldLengthReader
         }
     }
 
-    private static int ReadValue(IndexInput body, int version)
-        => version >= 3 ? body.ReadInt32() : body.ReadVarInt();
+    private static int ReadValue(IndexInput body)
+    {
+        long start = body.Position;
+        int value = body.ReadVarInt();
+        long encodedLength = body.Position - start;
+        int canonicalLength = value switch
+        {
+            < 1 << 7 => 1,
+            < 1 << 14 => 2,
+            < 1 << 21 => 3,
+            < 1 << 28 => 4,
+            _ => 5,
+        };
+        if (encodedLength != canonicalLength)
+            throw new InvalidDataException("Field length contains an overlong VarInt.");
+        return value;
+    }
 
     private static void RequireBytes(IndexInput body, long count)
     {

@@ -17,13 +17,27 @@ internal static class SpatialPointFieldCompatibility
     internal static SpatialPointFieldResolution Resolve(SegmentInfo info, string fieldName)
     {
         ArgumentNullException.ThrowIfNull(info);
-        return Resolve(info.SpatialFields, info.FieldNames, fieldName);
+        return ResolveExplicit(info.SpatialFields, fieldName);
     }
 
     internal static SpatialPointFieldResolution Resolve(SegmentDescriptor info, string fieldName)
     {
         ArgumentNullException.ThrowIfNull(info);
-        return Resolve(info.SpatialFields, info.FieldNames, fieldName);
+        return ResolveExplicit(info.SpatialFields, fieldName);
+    }
+
+    internal static SpatialPointFieldResolution Resolve(SegmentReader reader, string fieldName)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(fieldName);
+
+        SpatialPointFieldResolution explicitResolution = ResolveExplicit(reader.Info.SpatialFields, fieldName);
+        if (explicitResolution != SpatialPointFieldResolution.None)
+            return explicitResolution;
+
+        return reader.HasNumericField(fieldName + "_lat") && reader.HasNumericField(fieldName + "_lon")
+            ? SpatialPointFieldResolution.LegacyGeo
+            : SpatialPointFieldResolution.None;
     }
 
     internal static bool TryGetCompatiblePackedField(
@@ -40,7 +54,7 @@ internal static class SpatialPointFieldCompatibility
         SpatialPointFieldResolution expectedResolution = expectedKind == SpatialFieldKind.GeoPoint
             ? SpatialPointFieldResolution.GeoPoint
             : SpatialPointFieldResolution.XYPoint;
-        if (Resolve(reader.Info, fieldName) != expectedResolution
+        if (Resolve(reader, fieldName) != expectedResolution
             || !reader.TryGetPackedBkdFieldMetadata(fieldName, out metadata)
             || !HasCompatiblePointLayout(metadata))
         {
@@ -56,9 +70,8 @@ internal static class SpatialPointFieldCompatibility
             && metadata.Config.IndexedDimensions == 2
             && metadata.Config.BytesPerDimension == PackedBkdConfig.FixedBytesPerDimension;
 
-    private static SpatialPointFieldResolution Resolve(
+    private static SpatialPointFieldResolution ResolveExplicit(
         IReadOnlyList<SpatialFieldInfo> spatialFields,
-        IReadOnlyList<string> fieldNames,
         string fieldName)
     {
         ArgumentNullException.ThrowIfNull(fieldName);
@@ -75,18 +88,6 @@ internal static class SpatialPointFieldCompatibility
             };
         }
 
-        bool hasLatitude = ContainsOrdinal(fieldNames, fieldName + "_lat");
-        bool hasLongitude = ContainsOrdinal(fieldNames, fieldName + "_lon");
-        return hasLatitude && hasLongitude
-            ? SpatialPointFieldResolution.LegacyGeo
-            : SpatialPointFieldResolution.None;
-    }
-
-    private static bool ContainsOrdinal(IReadOnlyList<string> values, string value)
-    {
-        foreach (string candidate in values)
-            if (string.Equals(candidate, value, StringComparison.Ordinal))
-                return true;
-        return false;
+        return SpatialPointFieldResolution.None;
     }
 }

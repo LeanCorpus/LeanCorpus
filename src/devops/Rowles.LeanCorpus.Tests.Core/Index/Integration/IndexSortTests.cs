@@ -148,11 +148,36 @@ public sealed class IndexSortTests : IClassFixture<TestDirectoryFixture>
         Assert.Equal("Numeric:price:False", segInfo.IndexSortFields[0]);
     }
 
-    [Fact(DisplayName = "Index Sort: Rejects Fields That Cannot Be Persisted")]
-    public void IndexSort_RejectsFieldsThatCannotBePersisted()
+    [Theory(DisplayName = "Index Sort: Round Trips Colon-Containing Field Names")]
+    [InlineData("price:net")]
+    [InlineData("price:True")]
+    [InlineData("price:False")]
+    [InlineData("price:Min")]
+    [InlineData("price:Max")]
+    [InlineData(":leading")]
+    [InlineData("trailing:")]
+    [InlineData("double::colon")]
+    [InlineData(":")]
+    public void IndexSort_RoundTripsColonContainingFieldNames(string fieldName)
     {
-        Assert.Throws<ArgumentException>(
-            () => new IndexSort(SortField.Numeric("price:retail")));
+        foreach (bool descending in new[] { false, true })
+        foreach (SortValueSelector selector in Enum.GetValues<SortValueSelector>())
+        {
+            var expected = new SortField(SortFieldType.Numeric, fieldName, descending, selector);
+            var indexSort = new IndexSort(expected);
+            string serialised = Assert.Single(indexSort.SerialisedFields);
+
+            Assert.True(IndexSort.TryParseSerialisedField(serialised, out SortField parsed));
+            Assert.Equal(expected.Type, parsed.Type);
+            Assert.Equal(expected.FieldName, parsed.FieldName);
+            Assert.Equal(expected.Descending, parsed.Descending);
+            Assert.Equal(expected.Selector, parsed.Selector);
+        }
+    }
+
+    [Fact(DisplayName = "Index Sort: Rejects Unsupported Fields")]
+    public void IndexSort_RejectsUnsupportedFields()
+    {
         Assert.Throws<ArgumentException>(
             () => new IndexSort(new SortField((SortFieldType)127, "price")));
     }

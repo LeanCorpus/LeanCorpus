@@ -1456,7 +1456,7 @@ public sealed partial class IndexSearcher
         if (!TryCreateGeoBounds(query.MinLat, query.MaxLat, query.MinLon, query.MaxLon, out GeoQueryBounds bounds))
             return;
 
-        SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, query.Field);
+        SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader, query.Field);
         if (resolution is not (SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo))
             return;
 
@@ -1489,7 +1489,7 @@ public sealed partial class IndexSearcher
         if (!TryCreateGeoDistanceBounds(query, out GeoQueryBounds bounds))
             return;
 
-        SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, query.Field);
+        SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader, query.Field);
         if (resolution is not (SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo))
             return;
 

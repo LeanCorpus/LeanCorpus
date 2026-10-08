@@ -7,8 +7,8 @@ namespace Rowles.LeanCorpus.Codecs.DocValues;
 
 /// <summary>
 /// Writes exact per-field per-doc token counts to a <c>.fln</c> file.
-/// Layout v3: [Header][FieldCount:int32]([FieldNameLen:int32][FieldNameUTF8][DocCount:int32][Int32 * DocCount])*
-/// Values use fixed-width little-endian Int32 encoding.
+/// Layout v2: [Header][FieldCount:int32]([FieldNameLen:int32][FieldNameUTF8][DocCount:int32][VarInt * DocCount])*
+/// Values use non-negative 7-bit encoded integers.
 /// </summary>
 internal static class FieldLengthWriter
 {
@@ -31,7 +31,7 @@ internal static class FieldLengthWriter
         bw.WriteInt32(count);
 
         for (int i = 0; i < count; i++)
-            bw.WriteInt32(lengths[i]);
+            bw.Write7BitEncodedInt(lengths[i]);
     }
 
     internal static void Write(string filePath, IReadOnlyDictionary<string, int[]> fieldTokenCounts, int docCount = -1, bool durable = false)

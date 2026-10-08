@@ -19,6 +19,9 @@ public enum HistoricalIndexFixture
 
     /// <summary>Loose-file index written by the 3.0 canonical writer.</summary>
     Version300CurrentLoose,
+
+    /// <summary>Package-generated 3.1.1 sparse float32 and Int8 vector indexes with HNSW, loose and compound.</summary>
+    Version311SparseHnsw,
 }
 
 /// <summary>
@@ -65,6 +68,9 @@ public static class HistoricalIndexFixtures
             HistoricalIndexFixture.Version300CurrentLoose => new(
                 prefix + "3.0.0-current-loose.fixture.b64",
                 "7ee9c07289caef25fcc2fce0cba08db00918a3ea2b3e3a16fdaa83f05088b33f"),
+            HistoricalIndexFixture.Version311SparseHnsw => new(
+                prefix + "3.1.1-sparse-hnsw.fixture.b64",
+                "ebaec3b42819af4c35049e589d75fc682dd4b6169ad85fbf2e7b7197e066a961"),
             _ => throw new ArgumentOutOfRangeException(nameof(fixture), fixture, "Unknown historical index fixture."),
         };
     }

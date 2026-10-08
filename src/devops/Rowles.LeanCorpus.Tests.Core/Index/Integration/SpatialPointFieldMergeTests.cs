@@ -100,7 +100,11 @@ public sealed class SpatialPointFieldMergeTests : IDisposable
         using (var writer = new IndexWriter(directory, CreateConfig()))
         {
             AddGeo(writer, 0, 0);
-            AddXY(writer, 0, 0);
+            var xyDocument = new LeanDocument();
+            xyDocument.Add(new XYPointField("location", 0, 0));
+            xyDocument.Add(new StringField("location_lat", "not-a-number"));
+            xyDocument.Add(new StringField("location_lon", "not-a-number"));
+            writer.AddDocument(xyDocument);
             writer.Commit();
         }
 

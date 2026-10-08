@@ -145,6 +145,14 @@ public sealed class SpatialPointFieldKindTests : IDisposable
 
         using var searchDirectory = new MMapDirectory(_path);
         using var searcher = new IndexSearcher(searchDirectory);
+        SegmentReader[] readers = searcher.GetSegmentReaders().ToArray();
+        Assert.Equal(2, readers.Length);
+        Assert.Equal(
+            SpatialPointFieldResolution.LegacyGeo,
+            SpatialPointFieldCompatibility.Resolve(Assert.Single(readers, static reader => reader.DocBase == 0), "location"));
+        Assert.Equal(
+            SpatialPointFieldResolution.None,
+            SpatialPointFieldCompatibility.Resolve(Assert.Single(readers, static reader => reader.DocBase == 1), "location"));
         Assert.Equal(1, searcher.Search(new GeoBoundingBoxQuery("location", -1, 1, -1, 1), 10,
             TestContext.Current.CancellationToken).TotalHits);
         Assert.Equal(1, searcher.Search(new GeoDistanceQuery("location", 0, 0, 1), 10,
@@ -164,6 +172,50 @@ public sealed class SpatialPointFieldKindTests : IDisposable
             new MatchAllDocsQuery(), 10, SortField.XYDistance("location", new XYPoint(0, 0))).ScoreDocs,
             hit => Assert.True(searcher.CaptureSortValues(
                 hit, [SortField.XYDistance("location", new XYPoint(0, 0))])[0].IsMissing));
+    }
+
+    [Fact]
+    public void LegacyGeoRequiresBothCoordinateFieldsToBeNumeric()
+    {
+        string textFieldsPath = Path.Combine(_path, "text-coordinate-fields");
+        using (var directory = new MMapDirectory(textFieldsPath))
+        using (var writer = new IndexWriter(directory, CreateConfig()))
+        {
+            var document = new LeanDocument();
+            document.Add(new StringField("location_lat", "51.5"));
+            document.Add(new StringField("location_lon", "-0.1"));
+            writer.AddDocument(document);
+            writer.Commit();
+        }
+
+        using (var directory = new MMapDirectory(textFieldsPath))
+        using (var searcher = new IndexSearcher(directory))
+        {
+            SegmentReader reader = Assert.Single(searcher.GetSegmentReaders());
+            Assert.Equal(SpatialPointFieldResolution.None, SpatialPointFieldCompatibility.Resolve(reader, "location"));
+            Assert.Equal(0, searcher.Search(
+                new GeoBoundingBoxQuery("location", -90, 90, -180, 180), 10,
+                TestContext.Current.CancellationToken).TotalHits);
+        }
+
+        string mixedFieldsPath = Path.Combine(_path, "mixed-coordinate-fields");
+        using (var directory = new MMapDirectory(mixedFieldsPath))
+        using (var writer = new IndexWriter(directory, CreateConfig()))
+        {
+            var document = new LeanDocument();
+            document.Add(new NumericField("location_lat", 51.5, stored: false));
+            document.Add(new StringField("location_lon", "-0.1"));
+            writer.AddDocument(document);
+            writer.Commit();
+        }
+
+        using var mixedDirectory = new MMapDirectory(mixedFieldsPath);
+        using var mixedSearcher = new IndexSearcher(mixedDirectory);
+        SegmentReader mixedReader = Assert.Single(mixedSearcher.GetSegmentReaders());
+        Assert.Equal(SpatialPointFieldResolution.None, SpatialPointFieldCompatibility.Resolve(mixedReader, "location"));
+        Assert.Equal(0, mixedSearcher.Search(
+            new GeoDistanceQuery("location", 51.5, -0.1, 10), 10,
+            TestContext.Current.CancellationToken).TotalHits);
     }
 
     [Fact]
@@ -211,6 +263,9 @@ public sealed class SpatialPointFieldKindTests : IDisposable
 
         using var explicitDirectory = new MMapDirectory(explicitPath);
         using var explicitSearcher = new IndexSearcher(explicitDirectory);
+        Assert.Equal(
+            SpatialPointFieldResolution.XYPoint,
+            SpatialPointFieldCompatibility.Resolve(Assert.Single(explicitSearcher.GetSegmentReaders()), "location"));
         Assert.Equal(0, explicitSearcher.Search(new GeoBoundingBoxQuery("location", -1, 1, -1, 1), 10).TotalHits);
         Assert.Equal(0, explicitSearcher.Search(new GeoDistanceQuery("location", 0, 0, 1), 10).TotalHits);
         Assert.Equal(1, explicitSearcher.Search(
