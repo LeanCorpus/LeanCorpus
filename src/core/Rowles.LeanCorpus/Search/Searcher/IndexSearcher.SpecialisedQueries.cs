@@ -591,7 +591,7 @@ public sealed partial class IndexSearcher
     {
         if (TryGetSimpleTrailingWildcardPrefix(query.Pattern, out var prefix))
         {
-            var prefixQuery = new PrefixQuery(query.Field, prefix) { Boost = query.Boost };
+            var prefixQuery = new PrefixQuery(query.Field, prefix, query.MaximumExpansions) { Boost = query.Boost };
             ExecutePrefixQuery(prefixQuery, reader, globalDFs, ref collector);
             return;
         }

@@ -73,7 +73,9 @@ metadata, and required logical file presence. Direct `SegmentReader`
 construction and explicit segment-list searchers use the same structural check
 as committed-index recovery, including metadata-declared vector and HNSW files
 for both loose and compound segments. Individual codec headers and corruption
-checks occur when their component is first loaded. Writer compatibility checks
+checks occur when their component is first loaded, except exact field-length
+sidecars. [ADR040](ADR040-bounded-field-length-bodies.md) requires bounded `.fln`
+validation before returning a facade, without retaining decoded value arrays. Writer compatibility checks
 remain eager so a writer cannot append to an index that needs migration.
 Persisted `IndexStats` load normally. When they are absent, the segment scan is
 deferred until `Stats` or scoring first needs it.

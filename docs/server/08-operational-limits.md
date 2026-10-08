@@ -18,3 +18,29 @@ Health is degraded after a commit or installation failure while the last committ
 Successful writes return a versioned local write token. A search can request ReadYourWrites with that token, which waits for the token's local commit and refreshes the readable generation. Primary maps to Community's sole local copy. Refresh remains an independent visibility choice.
 
 The reference host enables .NET 11 request decompression and response compression, including zstd where negotiated. Compression does not bypass body, bulk or document limits.
+
+## Wildcard and regular-expression admission
+
+| Setting | Default | Meaning |
+| --- | ---: | --- |
+| `MaximumWildcardPatternChars` | 4,096 | UTF-16 characters admitted in a wildcard pattern |
+| `MaximumRegexpPatternChars` | 4,096 | UTF-16 characters admitted in a regular-expression pattern |
+| `MaximumRegexpComplexity` | 4,096 | Existing regular-expression parser/complexity admission limit |
+| `MaximumWildcardExpansions` | 1,024 | Distinct matching dictionary terms admitted for one wildcard clause |
+| `MaximumRegexpExpansions` | 1,024 | Distinct matching dictionary terms admitted for one regular-expression clause |
+
+All pattern and expansion settings must be positive. Both structured queries and
+query strings retain the configured expansion limit in their compiled Core query.
+Wildcard prefix optimisations, nested Boolean/constant-score queries and span
+wrappers preserve that limit. Core admission counts distinct matching terms
+across the searcher's immutable segment dictionaries, aborting at the first
+excess admission without scanning the remaining matches. The check happens
+before scoring or streaming any result. A failure returns `query_too_complex`
+with no partial response. Cancellation and search deadlines remain independent.
+
+Successful bounded queries perform an admission traversal before the existing
+scoring traversal. Direct Core constructors without an explicit limit keep
+trusted unbounded execution. Explicit limits are available on `WildcardQuery`,
+`PrefixQuery` and `RegexpQuery`; Core reports `QueryExpansionLimitException`.
+The reference host reads these settings under the `LeanCorpus:` configuration
+prefix.

@@ -386,6 +386,10 @@ public sealed class LocalServerCore : IIndexService, IHealthService, IDocumentSe
         {
             return Failure<SearchResponse>(start.Context, exception.Failure);
         }
+        catch (Rowles.LeanCorpus.Search.QueryExpansionLimitException exception)
+        {
+            return Failure<SearchResponse>(start.Context, new ApiFailure("query_too_complex", exception.Message));
+        }
         catch (NotSupportedException exception)
         {
             return Failure<SearchResponse>(start.Context, new ApiFailure("unsupported_search", exception.Message));

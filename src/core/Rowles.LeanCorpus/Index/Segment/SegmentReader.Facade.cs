@@ -301,6 +301,8 @@ public sealed partial class SegmentReader : IDisposable
     {
         using var fileAccess = SegmentFileAccess.Open(directory, info);
         SegmentStructureValidator.ValidateRequiredFiles(info, fileAccess.LogicalFiles);
+        if (fileAccess.Exists(".fln"))
+            FieldLengthReader.Validate(fileAccess.OpenInput(".fln"), info.DocCount);
     }
 
     public bool IsLive(int docId) { if (TryGetFastState(out var state)) return state.IsLive(docId); using var lease = AcquireReadLease(); return lease.State.IsLive(docId); }
@@ -420,6 +422,7 @@ public sealed partial class SegmentReader : IDisposable
     internal int GetTermFrequency(string qualifiedTerm, int docId) { using var lease = AcquireReadLease(); return lease.State.GetTermFrequency(qualifiedTerm, docId); }
 
     public List<(string Term, long Offset)> IntersectAutomaton(string fieldPrefix, IAutomaton automaton) { using var lease = AcquireReadLease(); return lease.State.IntersectAutomaton(fieldPrefix, automaton); }
+    internal void VisitMatchingTerms(string field, string? prefix, string? wildcardPattern, Regex? regex, Action<string> admit, Action? checkResources) { using var lease = AcquireReadLease(); lease.State.VisitMatchingTerms(field, prefix, wildcardPattern, regex, admit, checkResources); }
     public List<(string Term, long Offset)> GetTermsWithPrefix(string qualifiedPrefix) { using var lease = AcquireReadLease(); return lease.State.GetTermsWithPrefix(qualifiedPrefix); }
     internal List<long> GetTermOffsetsWithPrefix(string qualifiedPrefix) { using var lease = AcquireReadLease(); return lease.State.GetTermOffsetsWithPrefix(qualifiedPrefix); }
     public List<(string Term, long Offset)> GetTermsMatching(string fieldPrefix, ReadOnlySpan<char> pattern) { using var lease = AcquireReadLease(); return lease.State.GetTermsMatching(fieldPrefix, pattern); }

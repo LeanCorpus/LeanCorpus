@@ -33,10 +33,19 @@ public sealed class ServerCoreOptions
     /// <summary>Gets or sets the maximum number of Boolean clauses accepted in one query.</summary>
     public int MaximumBooleanClauses { get; set; } = 1_024;
 
-    /// <summary>Gets or sets the maximum wildcard expansions allowed for one query.</summary>
+    /// <summary>Gets or sets the maximum distinct matching dictionary terms allowed for one wildcard clause.</summary>
     public int MaximumWildcardExpansions { get; set; } = 1_024;
 
-    /// <summary>Gets or sets the maximum regular-expression complexity estimate.</summary>
+    /// <summary>Gets or sets the maximum UTF-16 character count in a wildcard pattern.</summary>
+    public int MaximumWildcardPatternChars { get; set; } = 4_096;
+
+    /// <summary>Gets or sets the maximum UTF-16 character count in a regular-expression pattern.</summary>
+    public int MaximumRegexpPatternChars { get; set; } = 4_096;
+
+    /// <summary>Gets or sets the maximum distinct matching dictionary terms allowed for one regular-expression clause.</summary>
+    public int MaximumRegexpExpansions { get; set; } = 1_024;
+
+    /// <summary>Gets or sets the existing regular-expression parser complexity admission limit.</summary>
     public int MaximumRegexpComplexity { get; set; } = 4_096;
 
     /// <summary>Gets or sets the maximum analysed phrase tokens accepted in one query.</summary>
@@ -103,6 +112,9 @@ public sealed class ServerCoreOptions
         ValidatePositive(MaximumQuerySyntaxNodes, nameof(MaximumQuerySyntaxNodes));
         ValidatePositive(MaximumBooleanClauses, nameof(MaximumBooleanClauses));
         ValidatePositive(MaximumWildcardExpansions, nameof(MaximumWildcardExpansions));
+        ValidatePositive(MaximumWildcardPatternChars, nameof(MaximumWildcardPatternChars));
+        ValidatePositive(MaximumRegexpPatternChars, nameof(MaximumRegexpPatternChars));
+        ValidatePositive(MaximumRegexpExpansions, nameof(MaximumRegexpExpansions));
         ValidatePositive(MaximumRegexpComplexity, nameof(MaximumRegexpComplexity));
         ValidatePositive(MaximumPhraseTokens, nameof(MaximumPhraseTokens));
         ValidatePositive(MaximumPhraseGraphEdges, nameof(MaximumPhraseGraphEdges));

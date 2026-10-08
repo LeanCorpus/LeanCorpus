@@ -21,19 +21,35 @@ public sealed class RegexpQuery : Query
     /// <param name="pattern">The regular expression pattern to match against term text.</param>
     /// <param name="options">Additional <see cref="RegexOptions"/> flags. <see cref="RegexOptions.Compiled"/> is ignored for Native AOT compatibility.</param>
     public RegexpQuery(string field, string pattern, RegexOptions options = RegexOptions.None)
+        : this(field, pattern, options, null)
     {
+    }
+
+    /// <summary>Initialises a regular expression with an optional distinct matched-term expansion limit.</summary>
+    /// <param name="field">The field to search.</param>
+    /// <param name="pattern">The regular expression pattern.</param>
+    /// <param name="maximumExpansions">A positive per-clause limit, or null for trusted unbounded execution.</param>
+    /// <param name="options">Regular expression flags, excluding compiled execution for Native AOT.</param>
+    public RegexpQuery(string field, string pattern, RegexOptions options, int? maximumExpansions)
+    {
+        if (maximumExpansions is <= 0) throw new ArgumentOutOfRangeException(nameof(maximumExpansions));
+        MaximumExpansions = maximumExpansions;
         Field = field;
         Pattern = pattern;
         CompiledRegex = new Regex(pattern, options & ~RegexOptions.Compiled, TimeSpan.FromSeconds(1));
     }
+
+    /// <summary>Gets the distinct matched-term limit, or null for trusted unbounded execution.</summary>
+    public int? MaximumExpansions { get; }
 
     /// <inheritdoc/>
     public override bool Equals(object? obj) =>
         obj is RegexpQuery other &&
         string.Equals(Field, other.Field, StringComparison.Ordinal) &&
         string.Equals(Pattern, other.Pattern, StringComparison.Ordinal) &&
+        MaximumExpansions == other.MaximumExpansions &&
         Boost == other.Boost;
 
     /// <inheritdoc/>
-    public override int GetHashCode() => CombineBoost(HashCode.Combine(nameof(RegexpQuery), Field, Pattern));
+    public override int GetHashCode() => CombineBoost(HashCode.Combine(nameof(RegexpQuery), Field, Pattern, MaximumExpansions));
 }

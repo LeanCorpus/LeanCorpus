@@ -643,8 +643,8 @@ internal sealed class QueryCompiler
                 $"The analysed wildcard pattern exceeds the configured character limit of {_options.MaxWildcardPatternChars}.");
         }
         if (TryGetPrefixLiteral(term.AsSpan(), out string prefix))
-            return new PrefixQuery(syntax.Field, prefix);
-        return new WildcardQuery(syntax.Field, term);
+            return new PrefixQuery(syntax.Field, prefix, _options.MaxWildcardExpansions);
+        return new WildcardQuery(syntax.Field, term, _options.MaxWildcardExpansions);
     }
 
     private static bool TryGetPrefixLiteral(ReadOnlySpan<char> pattern, out string prefix)
@@ -697,7 +697,7 @@ internal sealed class QueryCompiler
     private Query CompileRegexp(RegexpQuerySyntax syntax)
     {
         QueryFieldCompilationContext context = ResolveFieldContext(syntax.Field);
-        return new RegexpQuery(context.Field, syntax.Pattern);
+        return new RegexpQuery(context.Field, syntax.Pattern, System.Text.RegularExpressions.RegexOptions.None, _options.MaxRegexpExpansions);
     }
 
     private Query? CompileBoost(BoostQuerySyntax syntax)

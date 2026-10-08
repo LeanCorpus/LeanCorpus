@@ -873,7 +873,7 @@ public sealed partial class IndexSearcher : IDisposable
         if (query is BooleanQuery bq && IsAllTermQueryBoolean(bq))
             return SearchBooleanTermQueryFast(bq, topN);
 
-        var globalDFs = PrecomputeGlobalDocFreqsForSearch(query);
+        var globalDFs = PrecomputeGlobalDocFreqsForSearch(query, cancellationToken.ThrowIfCancellationRequested);
         var collector = new TopNCollector(topN);
 
         foreach (var reader in _readers)
@@ -953,7 +953,8 @@ public sealed partial class IndexSearcher : IDisposable
         if (query is BlockJoinQuery bjq)
             return ExecuteBlockJoinQuery(bjq, topN);
 
-        var globalDFs = PrecomputeGlobalDocFreqsForSearch(query);
+        var globalDFs = PrecomputeWithResourceChecks(query, options, sw, deadlineTicks);
+        if (globalDFs is null) return TopDocs.Empty.AsPartial();
         var collector = new TopNCollector(topN);
         bool partial = false;
         long topNBytes = (long)topN * Scoring.ScoreDoc.EstimatedBytes;
@@ -1003,7 +1004,8 @@ public sealed partial class IndexSearcher : IDisposable
             ? (long)(options.Timeout.Value.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
             : null;
 
-        var globalDFs = PrecomputeGlobalDocFreqsForSearch(query);
+        var globalDFs = PrecomputeWithResourceChecks(query, options, sw, deadlineTicks);
+        if (globalDFs is null) yield break;
         long perSegmentBytes = (long)perSegmentTopN * Scoring.ScoreDoc.EstimatedBytes;
         long emittedBytes = 0;
 
@@ -1085,7 +1087,8 @@ public sealed partial class IndexSearcher : IDisposable
             ? (long)(options.Timeout.Value.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
             : null;
 
-        var globalDFs = PrecomputeGlobalDocFreqsForSearch(query);
+        var globalDFs = PrecomputeWithResourceChecks(query, options, sw, deadlineTicks, ct);
+        if (globalDFs is null) yield break;
         long perSegmentBytes = (long)perSegment * Scoring.ScoreDoc.EstimatedBytes;
         long emittedBytes = 0;
 
@@ -1135,8 +1138,9 @@ public sealed partial class IndexSearcher : IDisposable
             or FieldExistsQuery or TermInSetQuery or TermsQuery or PointInSetQuery
             or MultiPhraseQuery or IntervalsQuery or CombinedFieldsQuery;
 
-    private Dictionary<(string Field, string Term), int> PrecomputeGlobalDocFreqsForSearch(Query query)
+    private Dictionary<(string Field, string Term), int> PrecomputeGlobalDocFreqsForSearch(Query query, Action? checkResources = null)
     {
+        ValidateExpansionLimits(query, checkResources);
         if (query is CombinedFieldsQuery combined)
             return PrecomputeCombinedFieldUnionDocFreqs(combined);
 

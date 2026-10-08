@@ -37,7 +37,7 @@ public static class IndexCodecMigrator
             ["leancorpus.term-dictionary.data"] = static context => RewriteTermDictionary(context.SourcePath, context.TargetPath),
             ["leancorpus.postings.data"] = static context => RewritePostings(context.TargetDirectory, context.Action, context.SegmentIdMap, context.Catalog),
             ["leancorpus.norms.data"] = static context => RewriteNorms(context.SourcePath, context.TargetPath),
-            ["leancorpus.field-lengths.data"] = static context => RewriteFieldLengths(context.SourcePath, context.TargetPath),
+            ["leancorpus.field-lengths.data"] = static context => RewriteFieldLengths(context.SourcePath, context.TargetPath, ExpectedSegmentDocumentCount(context) ?? throw new InvalidDataException("Field-length migration requires owning segment metadata.")),
             ["leancorpus.doc-values.numeric"] = static context => RewriteNumericDocValues(context.SourcePath, context.TargetPath, ExpectedSegmentDocumentCount(context)),
             ["leancorpus.doc-values.sorted"] = static context => RewriteSortedDocValues(context.SourcePath, context.TargetPath, ExpectedSegmentDocumentCount(context)),
             ["leancorpus.doc-values.sorted-set"] = static context => RewriteSortedSetDocValues(context.SourcePath, context.TargetPath, ExpectedSegmentDocumentCount(context)),
@@ -1571,15 +1571,12 @@ public static class IndexCodecMigrator
         CodecLegacyFraming framing)
         => descriptor.SupportedVersions.Any(version => (version.LegacyFraming & framing) != 0);
 
-    private static void RewriteFieldLengths(string sourcePath, string targetPath)
+    private static void RewriteFieldLengths(string sourcePath, string targetPath, int expectedDocumentCount)
     {
         if (!FileOpenRetry.FileExists(sourcePath))
             return;
 
-        var allFields = FieldLengthReader.EnumerateFields(sourcePath);
-        if (allFields.Count == 0)
-            return;
-
+        var allFields = FieldLengthReader.EnumerateFields(sourcePath, expectedDocumentCount);
         var fields = new Dictionary<string, int[]>(allFields.Count, StringComparer.Ordinal);
         foreach (var (fieldName, lengths) in allFields)
             fields.Add(fieldName, lengths);

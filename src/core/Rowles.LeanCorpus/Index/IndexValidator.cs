@@ -734,6 +734,7 @@ public static class IndexValidator
 
     private static void ValidateDocValuesDeep(string basePath, SegmentInfo info, IndexCheckResult result)
     {
+        TryReadDocValues(basePath + ".fln", info, result, path => FieldLengthReader.TryRead(path, info.DocCount)!.Values.Select(static values => values.Length));
         TryReadDocValues(basePath + ".dvn", info, result, path => NumericDocValuesReader.Read(path, info.DocCount).Values.Values.Select(static values => values.Length));
         TryReadDocValues(basePath + ".dvs", info, result, path => SortedDocValuesReader.Read(path, info.DocCount).Values.Values.Select(static values => values.Length));
         TryReadDocValues(basePath + ".dss", info, result, path => SortedSetDocValuesReader.Read(path, info.DocCount).Values.Select(static values => values.Length));

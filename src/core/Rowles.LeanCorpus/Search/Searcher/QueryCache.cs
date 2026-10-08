@@ -300,10 +300,12 @@ public sealed class QueryCache
                 case PrefixQuery pq:
                     AppendPart(builder, pq.Field);
                     AppendPart(builder, pq.Prefix);
+                    builder.Append("|exp=").Append(pq.MaximumExpansions);
                     break;
                 case WildcardQuery wq:
                     AppendPart(builder, wq.Field);
                     AppendPart(builder, wq.Pattern);
+                    builder.Append("|exp=").Append(wq.MaximumExpansions);
                     break;
                 case FuzzyQuery fq:
                     AppendPart(builder, fq.Field);

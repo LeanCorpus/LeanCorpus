@@ -8,6 +8,9 @@ namespace Rowles.LeanCorpus.Index.Segment;
 /// </summary>
 internal sealed partial class SegmentReaderState
 {
+    internal void VisitMatchingTerms(string field, string? prefix, string? wildcardPattern, Regex? regex, Action<string> admit, Action? checkResources)
+        => DictionaryReader.VisitMatchingTerms(field, prefix, wildcardPattern, regex, admit, checkResources);
+
     /// <summary>Intersects the term dictionary with an automaton, returning matching terms.</summary>
     public List<(string Term, long Offset)> IntersectAutomaton(string fieldPrefix, IAutomaton automaton)
     {

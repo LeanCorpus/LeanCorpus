@@ -39,7 +39,7 @@ public class FieldLengthTests : IDisposable
         };
 
         FieldLengthWriter.Write(path, data);
-        var loaded = FieldLengthReader.TryRead(path);
+        var loaded = FieldLengthReader.TryRead(path, 5);
 
         Assert.NotNull(loaded);
         Assert.Single(loaded);
@@ -60,7 +60,7 @@ public class FieldLengthTests : IDisposable
         };
 
         FieldLengthWriter.Write(path, data);
-        var loaded = FieldLengthReader.TryRead(path);
+        var loaded = FieldLengthReader.TryRead(path, 3);
 
         Assert.NotNull(loaded);
         Assert.Equal(2, loaded.Count);
@@ -78,7 +78,7 @@ public class FieldLengthTests : IDisposable
         };
 
         FieldLengthWriter.Write(path, data, docCount: 3);
-        var loaded = FieldLengthReader.TryRead(path);
+        var loaded = FieldLengthReader.TryRead(path, 3);
 
         Assert.NotNull(loaded);
         Assert.Equal([17, 23, 42], loaded["body"]);
@@ -96,7 +96,7 @@ public class FieldLengthTests : IDisposable
         };
 
         FieldLengthWriter.Write(path, data, docCount: 3);
-        var loaded = FieldLengthReader.TryRead(path);
+        var loaded = FieldLengthReader.TryRead(path, 3);
 
         Assert.NotNull(loaded);
         Assert.Equal([17, 23, 42], loaded["body"]);
@@ -122,7 +122,7 @@ public class FieldLengthTests : IDisposable
     [Fact(DisplayName = "Try Read: Missing File Returns Null")]
     public void TryRead_MissingFile_ReturnsNull()
     {
-        var result = FieldLengthReader.TryRead(Path.Combine(_dir, "nonexistent.fln"));
+        var result = FieldLengthReader.TryRead(Path.Combine(_dir, "nonexistent.fln"), 0);
         Assert.Null(result);
     }
 
@@ -139,7 +139,7 @@ public class FieldLengthTests : IDisposable
         };
 
         FieldLengthWriter.Write(path, data);
-        var loaded = FieldLengthReader.TryRead(path);
+        var loaded = FieldLengthReader.TryRead(path, 4);
 
         Assert.NotNull(loaded);
         Assert.Equal(data["field"], loaded["field"]);
@@ -243,7 +243,7 @@ public class FieldLengthTests : IDisposable
         };
 
         FieldLengthWriter.Write(flnPath, data);
-        var loaded = FieldLengthReader.TryRead(flnPath);
+        var loaded = FieldLengthReader.TryRead(flnPath, 1);
 
         Assert.NotNull(loaded);
         Assert.Equal(500, loaded["body"][0]); // Exact, not 254

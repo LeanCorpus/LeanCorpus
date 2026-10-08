@@ -80,6 +80,33 @@ internal sealed class TermDictionaryReader : IDisposable
 
     // -- Prefix scans ------------------------------------------------------
 
+    internal void VisitMatchingTerms(
+        string field, string? literalPrefix, string? wildcardPattern, Regex? regex,
+        Action<string> admit,
+        Action? checkResources = null)
+    {
+        string fieldPrefix = string.Concat(field, "\0");
+        if (wildcardPattern is not null)
+        {
+            var automaton = GetOrAddWildcardAutomaton(wildcardPattern);
+            foreach (var (key, _, _) in _fst.IntersectAutomaton(automaton, Encoding.UTF8.GetBytes(fieldPrefix)))
+            {
+                checkResources?.Invoke();
+                admit(Encoding.UTF8.GetString(key));
+            }
+            return;
+        }
+
+        string prefix = string.Concat(fieldPrefix, literalPrefix);
+        foreach (var (key, _) in _fst.EnumerateWithPrefix(Encoding.UTF8.GetBytes(prefix)))
+        {
+            checkResources?.Invoke();
+            string term = Encoding.UTF8.GetString(key);
+            if (regex is null || regex.IsMatch(term.AsSpan(fieldPrefix.Length)))
+                admit(term);
+        }
+    }
+
     public List<(string Term, long Offset)> GetTermsWithPrefix(ReadOnlySpan<char> qualifiedPrefix)
     {
         Span<byte> stackBuf = stackalloc byte[256];

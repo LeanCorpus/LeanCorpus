@@ -949,7 +949,7 @@ public sealed class SegmentMerger
             var segParentBitSet = reader.GetParentBitSet();
 
             var segFieldLengths = reader.FileExists(".fln")
-                ? FieldLengthReader.TryRead(reader.OpenInput(".fln"))
+                ? FieldLengthReader.TryRead(reader.OpenInput(".fln"), segInfo.DocCount)
                     ?? new Dictionary<string, int[]>(StringComparer.Ordinal)
                 : new Dictionary<string, int[]>(StringComparer.Ordinal);
 

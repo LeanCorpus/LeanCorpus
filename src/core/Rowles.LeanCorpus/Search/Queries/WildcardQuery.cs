@@ -15,21 +15,35 @@ public sealed class WildcardQuery : Query
     /// <summary>Initialises a new <see cref="WildcardQuery"/> for the given field and pattern.</summary>
     /// <param name="field">The field to search.</param>
     /// <param name="pattern">The wildcard pattern (<c>*</c> = any chars, <c>?</c> = single char, backslash escapes the next character).</param>
-    public WildcardQuery(string field, string pattern)
+    public WildcardQuery(string field, string pattern) : this(field, pattern, null)
     {
+    }
+
+    /// <summary>Initialises a query with an optional distinct matched-term expansion limit.</summary>
+    /// <param name="field">The field to search.</param>
+    /// <param name="pattern">The matching pattern.</param>
+    /// <param name="maximumExpansions">A positive per-clause limit, or null for trusted unbounded execution.</param>
+    public WildcardQuery(string field, string pattern, int? maximumExpansions)
+    {
+        if (maximumExpansions is <= 0) throw new ArgumentOutOfRangeException(nameof(maximumExpansions));
+        MaximumExpansions = maximumExpansions;
         Field = field;
         Pattern = pattern;
     }
+
+    /// <summary>Gets the distinct matched-term limit, or null for trusted unbounded execution.</summary>
+    public int? MaximumExpansions { get; }
 
     /// <inheritdoc/>
     public override bool Equals(object? obj) =>
         obj is WildcardQuery other &&
         string.Equals(Field, other.Field, StringComparison.Ordinal) &&
         string.Equals(Pattern, other.Pattern, StringComparison.Ordinal) &&
+        MaximumExpansions == other.MaximumExpansions &&
         Boost == other.Boost;
 
     /// <inheritdoc/>
-    public override int GetHashCode() => CombineBoost(HashCode.Combine(nameof(WildcardQuery), Field, Pattern));
+    public override int GetHashCode() => CombineBoost(HashCode.Combine(nameof(WildcardQuery), Field, Pattern, MaximumExpansions));
 
     /// <summary>Tests whether a term matches the wildcard pattern.</summary>
     public static bool Matches(ReadOnlySpan<char> term, ReadOnlySpan<char> pattern)

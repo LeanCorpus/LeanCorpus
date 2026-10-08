@@ -112,3 +112,16 @@ manifest records vector-bearing IDs; acceptance checks executable v1 to v2
 planning, exact presence after reopen and force merge, and interrupted publication.
 Focused issue 26 tests additionally cover Int8 and BBQ rewrites. Vector v2 is a
 one-way persisted-format boundary: LeanCorpus 3.1.1 cannot read rewritten files.
+
+## Field-length body v3
+
+Field-length `.fln` v1/v2 bodies are rewritten from VarInt values to fixed-width
+Int32 values by the catalogue migration path. Migration validates every field's
+document count against the owning segment metadata and rejects malformed names,
+counts, duplicates, truncated values and trailing bytes. Legacy zero padding
+beyond the segment document count is validated and discarded during migration;
+non-zero padding and missing logical values are rejected. New v3 bodies store
+exactly the segment document count. Canonical framing and
+checksums remain governed by Frame v1. Compound logical members are staged and
+repacked through the existing migration lifecycle. Small token counts occupy
+four bytes per value in v3, so disk size may increase.

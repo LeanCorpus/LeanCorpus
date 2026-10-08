@@ -67,6 +67,9 @@ public sealed record QueryParserOptions
     /// <summary>Gets the maximum number of characters in a regular-expression pattern.</summary>
     public int MaxRegexpPatternChars { get; init; } = 4_096;
 
+    internal int? MaxWildcardExpansions { get; init; }
+    internal int? MaxRegexpExpansions { get; init; }
+
     internal static QueryParserOptions Trusted { get; } = new()
     {
         MaxInputChars = int.MaxValue,

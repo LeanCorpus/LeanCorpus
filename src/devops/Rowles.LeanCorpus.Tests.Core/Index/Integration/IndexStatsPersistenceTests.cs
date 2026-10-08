@@ -156,12 +156,12 @@ public sealed class IndexStatsPersistenceTests : IDisposable
         corruptBytes[^1] ^= 0x01;
         File.WriteAllBytes(path, corruptBytes);
 
-        using var reader = new SegmentReader(dir, segmentInfo);
-        var exception = Assert.Throws<CodecFileException>(
-            () => reader.TryGetFieldLengths("body", out _));
-        Assert.Equal(CodecFileErrorCode.ChecksumMismatch, exception.ErrorCode);
+        var exception = Assert.Throws<InvalidDataException>(
+            () => new SegmentReader(dir, segmentInfo));
+        Assert.Equal(CodecFileErrorCode.ChecksumMismatch, Assert.IsType<CodecFileException>(exception.InnerException).ErrorCode);
 
         File.WriteAllBytes(path, validBytes);
+        using var reader = new SegmentReader(dir, segmentInfo);
         Assert.True(reader.TryGetFieldLengths("body", out var lengths));
         Assert.Equal([2], lengths);
     }

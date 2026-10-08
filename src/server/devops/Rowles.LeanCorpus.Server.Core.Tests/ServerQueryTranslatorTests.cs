@@ -22,7 +22,7 @@ public sealed class ServerQueryTranslatorTests
         {
             MaximumQueryDepth = 1,
             MaximumBooleanClauses = 2,
-            MaximumWildcardExpansions = 2,
+            MaximumWildcardPatternChars = 2,
             MaximumRegexpComplexity = 2
         };
 
@@ -295,6 +295,58 @@ public sealed class ServerQueryTranslatorTests
         Assert.True(translated, failure?.Message);
         Assert.Null(failure);
         return Assert.IsAssignableFrom<Rowles.LeanCorpus.Search.Query>(query);
+    }
+
+    [Theory]
+    [InlineData("wildcard", false)]
+    [InlineData("wildcard", true)]
+    [InlineData("regexp", false)]
+    [InlineData("regexp", true)]
+    public void PatternAdmissionIsSeparateFromExecutionLimits(string kind, bool queryString)
+    {
+        var options = new ServerCoreOptions
+        {
+            MaximumWildcardPatternChars = 4,
+            MaximumRegexpPatternChars = 4,
+            MaximumWildcardExpansions = 8,
+            MaximumRegexpExpansions = 8
+        };
+        foreach (string pattern in new[] { "*", "aaaaa*" })
+        {
+            string actual = kind == "regexp" ? pattern.Replace('*', '.') : pattern;
+            QueryDefinition definition = queryString
+                ? new QueryStringDefinition(kind == "regexp" ? $"/{actual}/" : actual)
+                : kind == "regexp" ? new RegexpQueryDefinition("title", actual) : new WildcardQueryDefinition("title", actual);
+            bool translated = ServerQueryTranslator.TryTranslate(definition, CreateSchema(), options, "title", null, out var query, out var failure);
+            Assert.Equal(actual.Length <= 4, translated);
+            if (!translated) Assert.Equal("query_too_complex", failure?.Code);
+            else
+            {
+                int? limit = query switch
+                {
+                    Rowles.LeanCorpus.Search.Queries.WildcardQuery wildcard => wildcard.MaximumExpansions,
+                    Rowles.LeanCorpus.Search.Queries.PrefixQuery prefix => prefix.MaximumExpansions,
+                    Rowles.LeanCorpus.Search.Queries.RegexpQuery regexp => regexp.MaximumExpansions,
+                    _ => null
+                };
+                Assert.Equal(8, limit);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("MaximumWildcardPatternChars")]
+    [InlineData("MaximumRegexpPatternChars")]
+    [InlineData("MaximumWildcardExpansions")]
+    [InlineData("MaximumRegexpExpansions")]
+    public void AllPatternAndExpansionLimitsMustBePositive(string property)
+    {
+        foreach (int value in new[] { 0, -1 })
+        {
+            var options = new ServerCoreOptions { DataRoot = "unused" };
+            typeof(ServerCoreOptions).GetProperty(property)!.SetValue(options, value);
+            Assert.Throws<ArgumentOutOfRangeException>(options.Validate);
+        }
     }
 
     private static CompiledIndexSchema CreateSchema() => CompiledIndexSchema.Create(

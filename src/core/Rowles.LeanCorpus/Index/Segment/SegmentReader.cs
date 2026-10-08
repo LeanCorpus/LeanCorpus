@@ -114,6 +114,17 @@ internal sealed partial class SegmentReaderState : IDisposable
         _basePath = Path.Combine(directory.DirectoryPath, info.SegmentId);
         _files = SegmentFileAccess.Open(directory, info);
 
+        try
+        {
+            if (_files.Exists(".fln"))
+                FieldLengthReader.Validate(_files.OpenInput(".fln"), info.DocCount);
+        }
+        catch
+        {
+            _files.Dispose();
+            throw;
+        }
+
         // Vector fields: record paths only. Opening the mmap-backed readers is deferred
         // until a VectorQuery or explicit vector read actually needs them.
         if (info.VectorFields.Count > 0)
@@ -242,7 +253,7 @@ internal sealed partial class SegmentReaderState : IDisposable
                 var norms = normsData.Norms.ToFrozenDictionary(StringComparer.Ordinal);
                 var boosts = normsData.Boosts.ToFrozenDictionary(StringComparer.Ordinal);
                 var exactLengths = _files.Exists(".fln")
-                    ? FieldLengthReader.TryRead(_files.OpenInput(".fln"))
+                    ? FieldLengthReader.TryRead(_files.OpenInput(".fln"), _info.DocCount)
                     : null;
                 FrozenDictionary<string, int[]> lengths;
                 if (exactLengths is not null)

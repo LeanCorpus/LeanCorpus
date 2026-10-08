@@ -204,6 +204,11 @@ public static class IndexRecovery
     private static void ValidateCodecFile(IndexInput input, CodecFileDescriptor descriptor, int maxDoc)
     {
         using var inputLifetime = input;
+        if (descriptor.FormatId == "leancorpus.field-lengths.data")
+        {
+            Codecs.DocValues.FieldLengthReader.Validate(input, maxDoc);
+            return;
+        }
         if (HasCanonicalFrameMagic(input))
         {
             using var canonical = CodecFileReader.Open(input, descriptor);

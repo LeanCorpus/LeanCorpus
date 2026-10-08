@@ -586,6 +586,48 @@ public sealed class LocalServerCoreTests
         }
     }
 
+    [Fact]
+    public async Task MultiTermExecutionLimitsRejectStructuredAndTextQueriesWithoutPartialResults()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"server-expansions-{Guid.NewGuid():N}");
+        try
+        {
+            var options = new ServerCoreOptions { DataRoot = root, MaximumWildcardExpansions = 8, MaximumRegexpExpansions = 8 };
+            await using var scope = await LocalServerCoreScope.OpenAsync(options);
+            Assert.True((await scope.Server.CreateAsync(CreateRequest("books"))).IsSuccess);
+            await WriteDocument(scope.Server, "one", string.Join(' ', Enumerable.Range(0, 2048).Select(i => $"word{i:D4}")), true);
+            QueryDefinition[] definitions =
+            [
+                new WildcardQueryDefinition("content", "*"),
+                new WildcardQueryDefinition("content", "word*"),
+                new RegexpQueryDefinition("content", ".*"),
+                new RegexpQueryDefinition("content", "word.*"),
+                new RegexpQueryDefinition("content", ".*word.*"),
+                new QueryStringDefinition("w*"),
+                new QueryStringDefinition("w?rd*"),
+                new QueryStringDefinition("/.*/"),
+                new QueryStringDefinition("word*^=2")
+            ];
+            foreach (QueryDefinition definition in definitions)
+            {
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    var result = await scope.Server.SearchAsync("books", new SearchRequest(definition));
+                    Assert.False(result.IsSuccess);
+                    Assert.Null(result.Value);
+                    Assert.Equal("query_too_complex", result.Failure?.Code);
+                }
+                var success = await scope.Server.SearchAsync("books", new SearchRequest(new TermQueryDefinition("content", "word0000")));
+                Assert.True(success.IsSuccess, success.Failure?.Code);
+                Assert.Equal(1, success.Value!.TotalHits);
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private static CreateIndexRequest CreateRequest(string name) => new(
         name,
         new IndexSchema([new IndexFieldDefinition("content", IndexFieldType.Text, true, true)], new Dictionary<string, AnalysisDefinition>()),

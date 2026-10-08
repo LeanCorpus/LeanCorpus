@@ -35,6 +35,9 @@ builder.Services
         options.MaximumQuerySyntaxNodes = builder.Configuration.GetValue("LeanCorpus:MaximumQuerySyntaxNodes", options.MaximumQuerySyntaxNodes);
         options.MaximumBooleanClauses = builder.Configuration.GetValue("LeanCorpus:MaximumBooleanClauses", options.MaximumBooleanClauses);
         options.MaximumWildcardExpansions = builder.Configuration.GetValue("LeanCorpus:MaximumWildcardExpansions", options.MaximumWildcardExpansions);
+        options.MaximumWildcardPatternChars = builder.Configuration.GetValue("LeanCorpus:MaximumWildcardPatternChars", options.MaximumWildcardPatternChars);
+        options.MaximumRegexpPatternChars = builder.Configuration.GetValue("LeanCorpus:MaximumRegexpPatternChars", options.MaximumRegexpPatternChars);
+        options.MaximumRegexpExpansions = builder.Configuration.GetValue("LeanCorpus:MaximumRegexpExpansions", options.MaximumRegexpExpansions);
         options.MaximumRegexpComplexity = builder.Configuration.GetValue("LeanCorpus:MaximumRegexpComplexity", options.MaximumRegexpComplexity);
         options.MaximumPhraseTokens = builder.Configuration.GetValue("LeanCorpus:MaximumPhraseTokens", options.MaximumPhraseTokens);
         options.MaximumPhraseGraphEdges = builder.Configuration.GetValue("LeanCorpus:MaximumPhraseGraphEdges", options.MaximumPhraseGraphEdges);

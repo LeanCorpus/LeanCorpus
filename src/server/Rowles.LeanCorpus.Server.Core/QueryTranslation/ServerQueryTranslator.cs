@@ -95,13 +95,13 @@ internal static class ServerQueryTranslator
 
                 case WildcardQueryDefinition wildcard:
                     ValidateField(wildcard.Field, schema, allowText: true);
-                    if (string.IsNullOrEmpty(wildcard.Pattern) || wildcard.Pattern.Length > options.MaximumWildcardExpansions)
+                    if (string.IsNullOrEmpty(wildcard.Pattern) || wildcard.Pattern.Length > options.MaximumWildcardPatternChars)
                         throw new QueryTranslationException("query_too_complex", "The wildcard pattern exceeds the configured limit.");
                     break;
 
                 case RegexpQueryDefinition regexp:
                     ValidateField(regexp.Field, schema, allowText: true);
-                    if (string.IsNullOrEmpty(regexp.Pattern) || regexp.Pattern.Length > options.MaximumRegexpComplexity)
+                    if (string.IsNullOrEmpty(regexp.Pattern) || regexp.Pattern.Length > options.MaximumRegexpPatternChars || regexp.Pattern.Length > options.MaximumRegexpComplexity)
                         throw new QueryTranslationException("query_too_complex", "The regular expression exceeds the configured complexity limit.");
                     break;
 
@@ -128,8 +128,8 @@ internal static class ServerQueryTranslator
             TermQueryDefinition term => new TermQuery(term.Field, term.Value),
             PhraseQueryDefinition phrase => new PhraseQuery(phrase.Field, phrase.Slop, phrase.Terms.ToArray()),
             PrefixQueryDefinition prefix => new PrefixQuery(prefix.Field, prefix.Prefix),
-            WildcardQueryDefinition wildcard => new WildcardQuery(wildcard.Field, wildcard.Pattern),
-            RegexpQueryDefinition regexp => new RegexpQuery(regexp.Field, regexp.Pattern),
+            WildcardQueryDefinition wildcard => new WildcardQuery(wildcard.Field, wildcard.Pattern, options.MaximumWildcardExpansions),
+            RegexpQueryDefinition regexp => new RegexpQuery(regexp.Field, regexp.Pattern, System.Text.RegularExpressions.RegexOptions.None, options.MaximumRegexpExpansions),
             BooleanQueryDefinition boolean => CompileBoolean(boolean),
             SpanNearQueryDefinition span => CompileSpan(span),
             VectorQueryDefinition vector => CompileVector(vector),
@@ -164,8 +164,10 @@ internal static class ServerQueryTranslator
                     MaxCompiledPhraseClauses = Math.Min(options.MaximumCompiledPhraseClauses, clauseLimit),
                     MaxFuzzyEdits = options.MaximumFuzzyEdits,
                     MaxPhraseSlop = options.MaximumPhraseSlop,
-                    MaxWildcardPatternChars = options.MaximumWildcardExpansions,
-                    MaxRegexpPatternChars = options.MaximumRegexpComplexity
+                    MaxWildcardPatternChars = options.MaximumWildcardPatternChars,
+                    MaxRegexpPatternChars = options.MaximumRegexpPatternChars,
+                    MaxWildcardExpansions = options.MaximumWildcardExpansions,
+                    MaxRegexpExpansions = options.MaximumRegexpExpansions
                 };
                 QueryParser parser = new(
                     field,
@@ -245,7 +247,7 @@ internal static class ServerQueryTranslator
                 case MultiTermQuerySyntax multiTerm:
                     _budget.CountClause(depth);
                     ValidateField(multiTerm.Field, schema, allowText: true);
-                    if (multiTerm.Term.Length > options.MaximumWildcardExpansions)
+                    if (multiTerm.Term.Length > options.MaximumWildcardPatternChars)
                         throw new QueryTranslationException("query_too_complex", "The wildcard pattern exceeds the configured limit.");
                     return;
 
@@ -257,7 +259,7 @@ internal static class ServerQueryTranslator
                 case RegexpQuerySyntax regexp:
                     _budget.CountClause(depth);
                     ValidateField(regexp.Field, schema, allowText: true);
-                    if (regexp.Pattern.Length == 0 || regexp.Pattern.Length > options.MaximumRegexpComplexity)
+                    if (regexp.Pattern.Length == 0 || regexp.Pattern.Length > options.MaximumRegexpPatternChars || regexp.Pattern.Length > options.MaximumRegexpComplexity)
                         throw new QueryTranslationException("query_too_complex", "The regular expression exceeds the configured complexity limit.");
                     return;
 

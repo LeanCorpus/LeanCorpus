@@ -117,3 +117,18 @@ A 3.0-written canonical index cannot be opened by 2.x. Retain a verified backup 
 - [Adding persistent formats](codeckit/02-adding-formats.md)
 - [Codec migrations](codeckit/03-migrations.md)
 - [Validation and recovery](../index-management/03-validation-recovery.md)
+
+## Exact field lengths
+
+`.fln` body v3 stores an Int32 field count, then each field's Int32 UTF-8 name
+length, name bytes, Int32 document count and little-endian Int32 token counts.
+Every field has exactly the owning segment's document count. The shared decoder
+checks names, uniqueness, byte containment, non-negative values, exact body
+consumption and the canonical checksum before returning a result.
+
+Legacy v1/v2 VarInt values remain readable through the same structural checks;
+encoded values are validated before allocating decoded arrays. Historical zero
+padding beyond the segment document count is accepted and discarded; fewer
+values or non-zero padding are rejected. Returned arrays use the segment count.
+Current writes,
+flushes and merges use v3. See [ADR040](../articles/ADRs/ADR040-bounded-field-length-bodies.md).

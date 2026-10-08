@@ -20,6 +20,10 @@
 
 ### Changed
 
+- Separate Server wildcard/regexp pattern admission from per-clause distinct-term expansion limits, reject excess execution as `query_too_complex`, and preserve trusted unbounded Core constructors.
+
+- Advance field-length bodies to v3 fixed-width Int32 values, retain bounded v1/v2 reads with checked zero padding, and discard legacy padding during migration using the owning segment document count.
+
 - Synchronise the concurrent indexing commit regression at publication so fast producers cannot bypass its overlap check.
 
 - Separate stress and diagnostics test modes, bound full execution telemetry, retain individual evidence only for failures and anomalies, and keep TRX as the canonical result format.

@@ -43,7 +43,7 @@ public sealed class CanonicalAuxiliaryFrameTests : IDisposable
         FieldLengthWriter.Write(path, new Dictionary<string, int[]> { ["body"] = [1, 2, 3] });
 
         AssertCurrentFrame(path, "leancorpus.field-lengths.data");
-        var restored = FieldLengthReader.TryRead(path);
+        var restored = FieldLengthReader.TryRead(path, 3);
         Assert.Equal(new[] { 1, 2, 3 }, restored!["body"]);
     }
 
@@ -56,9 +56,9 @@ public sealed class CanonicalAuxiliaryFrameTests : IDisposable
         bytes[^1] ^= 0x01;
         File.WriteAllBytes(path, bytes);
 
-        var exception = Assert.Throws<CodecFileException>(() => FieldLengthReader.TryRead(path));
+        var exception = Assert.Throws<InvalidDataException>(() => FieldLengthReader.TryRead(path, 3));
 
-        Assert.Equal(CodecFileErrorCode.ChecksumMismatch, exception.ErrorCode);
+        Assert.Equal(CodecFileErrorCode.ChecksumMismatch, Assert.IsType<CodecFileException>(exception.InnerException).ErrorCode);
     }
 
     [Fact]
