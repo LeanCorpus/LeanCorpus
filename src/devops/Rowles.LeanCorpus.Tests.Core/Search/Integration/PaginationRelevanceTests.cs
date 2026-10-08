@@ -206,11 +206,15 @@ public sealed class PaginationRelevanceTests : IClassFixture<TestDirectoryFixtur
     public void ComplexPhraseQueryParser_RejectsConstantScoreClauseInsteadOfDroppingItsScore()
     {
         var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
+        const string queryText = "\"foo^=2 bar\"";
 
         var exception = Assert.Throws<QueryParseException>(
-            () => parser.Parse("\"foo^=2 bar*\""));
+            () => parser.Parse(queryText));
 
-        Assert.Contains("position-preserving grammar", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "Complex phrase syntax supports flat alternatives only; other embedded operators remain unsupported until a position-preserving grammar is available.",
+            exception.Message);
+        Assert.Equal(queryText.IndexOf('^'), exception.Offset);
     }
 
     [Fact]

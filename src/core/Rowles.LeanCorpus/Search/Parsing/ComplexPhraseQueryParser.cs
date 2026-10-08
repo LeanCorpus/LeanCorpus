@@ -248,12 +248,22 @@ public sealed class ComplexPhraseQueryParser : QueryParser
         if (term.ValueSpan.Length == 0)
             throw InvalidAlternative("a term was expected", term.SourceSpan.Start);
         if (term.WasEscaped)
-            throw UnsupportedEmbeddedSyntax(term.SourceSpan.Start);
-
-        foreach (char current in term.ValueSpan)
         {
-            if (current is '*' or '?' or '~' or '/' or '^' or '=' or ':' or '[' or ']' or '{' or '}' or '|')
-                throw UnsupportedEmbeddedSyntax(term.SourceSpan.Start);
+            int escapeOffset = term.SourceText.AsSpan(term.Start, term.Length).IndexOf('\\');
+            throw UnsupportedEmbeddedSyntax(term.SourceSpan.Start + escapeOffset);
+        }
+
+        ReadOnlySpan<char> value = term.ValueSpan;
+        for (int index = 0; index < value.Length; index++)
+        {
+            char current = value[index];
+            OperatorClassification classification = ClassifyOperator(current);
+            if (classification == OperatorClassification.AlwaysUnsupported ||
+                classification == OperatorClassification.UnsupportedAtTokenStart && index == 0 ||
+                current == '/')
+            {
+                throw UnsupportedEmbeddedSyntax(term.SourceSpan.Start + index);
+            }
         }
     }
 
@@ -288,8 +298,8 @@ public sealed class ComplexPhraseQueryParser : QueryParser
             char current = rawPhraseText[index];
             if (current == '\\' && index + 1 < rawPhraseText.Length)
             {
-                index++;
-                atTokenStart = false;
+                char escaped = rawPhraseText[++index];
+                atTokenStart = char.IsWhiteSpace(escaped);
                 continue;
             }
 
@@ -299,9 +309,9 @@ public sealed class ComplexPhraseQueryParser : QueryParser
                 continue;
             }
 
-            // A slash is syntax only at a token boundary, where it can start a
-            // regexp clause. Ordinary slashes remain analyser input.
-            if (current is '*' or '?' or '~' || (current == '/' && atTokenStart))
+            OperatorClassification classification = ClassifyOperator(current);
+            if (classification == OperatorClassification.AlwaysUnsupported ||
+                classification == OperatorClassification.UnsupportedAtTokenStart && atTokenStart)
                 return index;
 
             atTokenStart = false;
@@ -309,6 +319,14 @@ public sealed class ComplexPhraseQueryParser : QueryParser
 
         return null;
     }
+
+    private static OperatorClassification ClassifyOperator(char value) => value switch
+    {
+        '*' or '?' or '~' or '^' or '=' or '|' or ':' or '[' or ']' or '{' or '}' =>
+            OperatorClassification.AlwaysUnsupported,
+        '+' or '-' or '/' => OperatorClassification.UnsupportedAtTokenStart,
+        _ => OperatorClassification.OrdinaryLiteral,
+    };
 
     private static QueryParseException InvalidAlternative(string reason, int offset) =>
         new($"Invalid complex phrase alternative group: {reason}.", offset);
@@ -332,4 +350,11 @@ public sealed class ComplexPhraseQueryParser : QueryParser
     }
 
     private sealed record PhraseSlot(IReadOnlyList<PhraseTerm> Terms, bool IsAlternative);
+
+    private enum OperatorClassification
+    {
+        OrdinaryLiteral,
+        AlwaysUnsupported,
+        UnsupportedAtTokenStart,
+    }
 }

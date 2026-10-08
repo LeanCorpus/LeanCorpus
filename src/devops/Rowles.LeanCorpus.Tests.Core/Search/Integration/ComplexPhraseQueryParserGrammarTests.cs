@@ -14,6 +14,8 @@ namespace Rowles.LeanCorpus.Tests.Core.Search;
 [Area(TestArea.Search)]
 public sealed class ComplexPhraseQueryParserGrammarTests : IClassFixture<TestDirectoryFixture>
 {
+    private const string UnsupportedSyntaxMessage = "Complex phrase syntax supports flat alternatives only; other embedded operators remain unsupported until a position-preserving grammar is available.";
+
     private readonly TestDirectoryFixture _fixture;
 
     public ComplexPhraseQueryParserGrammarTests(TestDirectoryFixture fixture) => _fixture = fixture;
@@ -56,6 +58,91 @@ public sealed class ComplexPhraseQueryParserGrammarTests : IClassFixture<TestDir
         var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
 
         Assert.Throws<QueryParseException>(() => parser.Parse(queryText));
+    }
+
+    [Theory]
+    [InlineData("\"foo^2 bar\"", "^")]
+    [InlineData("\"foo|bar baz\"", "|")]
+    [InlineData("\"field:foo bar\"", ":")]
+    [InlineData("\"foo~2 bar\"", "~")]
+    [InlineData("\"foo* bar\"", "*")]
+    [InlineData("\"foo? bar\"", "?")]
+    [InlineData("\"[alpha TO omega]\"", "[")]
+    [InlineData("\"{alpha TO omega}\"", "{")]
+    [InlineData("\"+foo bar\"", "+")]
+    [InlineData("\"-foo bar\"", "-")]
+    [InlineData("\"/foo.*/ bar\"", "/")]
+    public void Parse_RejectsUnsupportedOrdinaryPhraseOperatorsAtExactSourceOffset(
+        string queryText,
+        string offendingText)
+    {
+        var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
+
+        QueryParseException exception = Assert.Throws<QueryParseException>(() => parser.Parse(queryText));
+
+        Assert.Equal(UnsupportedSyntaxMessage, exception.Message);
+        Assert.Equal(queryText.IndexOf(offendingText, StringComparison.Ordinal), exception.Offset);
+    }
+
+    [Theory]
+    [InlineData("\"foo-bar baz\"")]
+    [InlineData("\"c++ baz\"")]
+    [InlineData("\"a+b baz\"")]
+    [InlineData("\"foo/bar baz\"")]
+    [InlineData("\"AND OR NOT TO\"")]
+    public void Parse_OrdinaryPhraseTextUsesTheStandardPhrasePath(string queryText)
+    {
+        var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
+
+        Query query = parser.Parse(queryText);
+
+        Assert.False(query is SpanQuery);
+    }
+
+    [Theory]
+    [InlineData("\"foo\\^bar baz\"")]
+    [InlineData("\"foo\\|bar baz\"")]
+    [InlineData("\"\\+foo bar\"")]
+    [InlineData("\"\\-foo bar\"")]
+    [InlineData("\"\\/foo bar\"")]
+    [InlineData("\"foo\\*bar baz\"")]
+    public void Parse_EscapedOrdinaryPhraseOperatorsRemainAnalyserInput(string queryText)
+    {
+        var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
+
+        Query query = parser.Parse(queryText);
+
+        Assert.False(query is SpanQuery);
+    }
+
+    [Theory]
+    [InlineData("\"quick (fast^2 OR swift) brown\"", "^")]
+    [InlineData("\"quick (fast|swift OR rapid) brown\"", "|")]
+    [InlineData("\"quick (+fast OR swift) brown\"", "+")]
+    [InlineData("\"quick (-fast OR swift) brown\"", "-")]
+    [InlineData("\"quick (/fast/ OR swift) brown\"", "/")]
+    [InlineData("\"quick (fast\\/mode OR swift) brown\"", "\\")]
+    public void Parse_RejectsUnsupportedAlternativeOperatorsAtExactSourceOffset(
+        string queryText,
+        string offendingText)
+    {
+        var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
+
+        QueryParseException exception = Assert.Throws<QueryParseException>(() => parser.Parse(queryText));
+
+        Assert.Equal(UnsupportedSyntaxMessage, exception.Message);
+        Assert.Equal(queryText.IndexOf(offendingText, StringComparison.Ordinal), exception.Offset);
+    }
+
+    [Fact]
+    public void Parse_ParserCanBeReusedAfterUnsupportedSyntax()
+    {
+        var parser = new ComplexPhraseQueryParser("body", new StandardAnalyser());
+
+        Assert.Throws<QueryParseException>(() => parser.Parse("\"foo^2 bar\""));
+
+        Assert.False(parser.Parse("\"quick brown\"") is SpanQuery);
+        Assert.IsType<SpanNearQuery>(parser.Parse("\"quick (fast OR swift) brown\""));
     }
 
     private IndexSearcher CreateSearcher(string name, params (string Id, string Body)[] documents)

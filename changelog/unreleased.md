@@ -106,7 +106,7 @@
 - Parse `~`, `^` and `^=` modifiers atomically, reject non-finite scores, and cap phrase slop at 256. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Treat quoted phrases with no analysed tokens as no-clause results instead of reconstructing raw terms, returning `MatchNoDocsQuery` when no query clauses remain. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Recognise query syntax before analyser lowering and normalise stopword-empty Boolean clauses after analysis. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Restrict `ComplexPhraseQueryParser` to graph-aware quoted phrases and reject embedded operators until a position-preserving grammar is available. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Reject unsupported embedded operators in complex phrases with precise source offsets, while preserving ordinary in-token punctuation and escaped literals.
 - Preserve query-token escape metadata through wildcard, range, and phrase parsing so escaped metacharacters remain literal. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Preserve position lengths through legacy filter routing and cached graph replay, with independent cache clones. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Compile phrase token graphs iteratively within explicit traversal and output limits. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
