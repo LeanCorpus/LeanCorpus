@@ -1,4 +1,4 @@
-
+﻿
 using System.Numerics;
 using Rowles.LeanCorpus.Codecs.DocValues;
 using Rowles.LeanCorpus.Codecs.PackedBkd;
@@ -1456,7 +1456,12 @@ public sealed partial class IndexSearcher
         if (!TryCreateGeoBounds(query.MinLat, query.MaxLat, query.MinLon, query.MaxLon, out GeoQueryBounds bounds))
             return;
 
-        bool hasPackedField = HasCompatiblePackedPointField(reader, query.Field);
+        SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, query.Field);
+        if (resolution is not (SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo))
+            return;
+
+        bool hasPackedField = SpatialPointFieldCompatibility.TryGetCompatiblePackedField(
+            reader, query.Field, SpatialFieldKind.GeoPoint, out _);
         var matched = new RoaringBitmap();
         var documentIds = new List<int>();
 
@@ -1465,15 +1470,27 @@ public sealed partial class IndexSearcher
 
         // A merge may place pre-packed and packed documents in one segment. Scan the
         // legacy fields only when the exact point DocValues do not cover every document.
-        if (!hasPackedField
+        if (resolution == SpatialPointFieldResolution.LegacyGeo
+            || !hasPackedField
             || !reader.HasBinaryDocValuesForEveryDocument(GeoPointDocValues.GetFieldName(query.Field)))
             CollectLegacyGeoBounds(reader, query.Field, bounds, matched, documentIds, hasPackedField);
-        CollectGeoMatches(reader, query.Field, bounds, documentIds, query.Boost, ref collector);
+        CollectGeoMatches(
+            reader,
+            query.Field,
+            bounds,
+            documentIds,
+            query.Boost,
+            useExactGeoDocValues: resolution == SpatialPointFieldResolution.GeoPoint,
+            ref collector);
     }
 
     private void ExecuteGeoDistanceQuery(GeoDistanceQuery query, SegmentReader reader, ref TopNCollector collector)
     {
         if (!TryCreateGeoDistanceBounds(query, out GeoQueryBounds bounds))
+            return;
+
+        SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, query.Field);
+        if (resolution is not (SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo))
             return;
 
         string latField = query.Field + "_lat";
@@ -1502,14 +1519,16 @@ public sealed partial class IndexSearcher
             return;
         }
 
-        bool hasPackedField = HasCompatiblePackedPointField(reader, query.Field);
+        bool hasPackedField = SpatialPointFieldCompatibility.TryGetCompatiblePackedField(
+            reader, query.Field, SpatialFieldKind.GeoPoint, out _);
         var matched = new RoaringBitmap();
         var documentIds = new List<int>();
 
         if (hasPackedField)
             CollectPackedGeoBounds(reader, query.Field, bounds, matched, documentIds);
 
-        bool hasLegacyGeoDocuments = !hasPackedField
+        bool hasLegacyGeoDocuments = resolution == SpatialPointFieldResolution.LegacyGeo
+            || !hasPackedField
             || !reader.HasBinaryDocValuesForEveryDocument(GeoPointDocValues.GetFieldName(query.Field));
         if (hasLegacyGeoDocuments)
             CollectLegacyGeoBounds(reader, query.Field, bounds, matched, documentIds, hasPackedField);
@@ -1527,14 +1546,23 @@ public sealed partial class IndexSearcher
                 continue;
 
             double minimumDistance = double.PositiveInfinity;
-            if (useNumericDocValues
+            if (resolution == SpatialPointFieldResolution.LegacyGeo
+                && reader.TryGetNumericValue(latField, docId, out double legacyLatitude)
+                && reader.TryGetNumericValue(lonField, docId, out double legacyLongitude))
+            {
+                minimumDistance = GeoEncodingUtils.HaversineDistance(
+                    query.CentreLat, query.CentreLon, legacyLatitude, legacyLongitude);
+            }
+            else if (resolution == SpatialPointFieldResolution.GeoPoint
+                && useNumericDocValues
                 && reader.TryGetNumericValue(latField, docId, out double numericLatitude)
                 && reader.TryGetNumericValue(lonField, docId, out double numericLongitude))
             {
                 minimumDistance = GeoEncodingUtils.HaversineDistance(
                     query.CentreLat, query.CentreLon, numericLatitude, numericLongitude);
             }
-            else if (reader.TryGetBinaryDocValues(exactField, docId, out var exactValues))
+            else if (resolution == SpatialPointFieldResolution.GeoPoint
+                && reader.TryGetBinaryDocValues(exactField, docId, out var exactValues))
             {
                 foreach (byte[] value in exactValues)
                 {
@@ -1561,7 +1589,8 @@ public sealed partial class IndexSearcher
 
     private void ExecuteXYBoundingBoxQuery(XYBoundingBoxQuery query, SegmentReader reader, ref TopNCollector collector)
     {
-        if (!HasCompatiblePackedPointField(reader, query.Field))
+        if (!SpatialPointFieldCompatibility.TryGetCompatiblePackedField(
+                reader, query.Field, SpatialFieldKind.XYPoint, out _))
             return;
 
         XYRectangle bounds = query.Bounds;
@@ -1583,7 +1612,8 @@ public sealed partial class IndexSearcher
 
     private void ExecuteXYDistanceQuery(XYDistanceQuery query, SegmentReader reader, ref TopNCollector collector)
     {
-        if (!HasCompatiblePackedPointField(reader, query.Field))
+        if (!SpatialPointFieldCompatibility.TryGetCompatiblePackedField(
+                reader, query.Field, SpatialFieldKind.XYPoint, out _))
             return;
 
         double rawMinimumX = (double)query.Centre.X - query.Radius;
@@ -1677,15 +1707,9 @@ public sealed partial class IndexSearcher
         return rounded < value ? MathF.BitIncrement(rounded) : rounded;
     }
 
-    private static bool HasCompatiblePackedPointField(SegmentReader reader, string field)
-        => reader.TryGetPackedBkdFieldMetadata(field, out PackedBkdFieldMetadata metadata)
-            && metadata.Config.Dimensions == 2
-            && metadata.Config.IndexedDimensions == 2
-            && metadata.Config.BytesPerDimension == PackedBkdConfig.FixedBytesPerDimension;
-
     private static bool HasSingleValuedPackedGeoField(SegmentReader reader, string field)
-        => HasCompatiblePackedPointField(reader, field)
-            && reader.TryGetPackedBkdFieldMetadata(field, out PackedBkdFieldMetadata metadata)
+        => SpatialPointFieldCompatibility.TryGetCompatiblePackedField(
+                reader, field, SpatialFieldKind.GeoPoint, out PackedBkdFieldMetadata metadata)
             && metadata.PointCount == metadata.DocumentCount
             && reader.HasBinaryDocValuesForEveryDocument(GeoPointDocValues.GetFieldName(field));
 
@@ -1748,6 +1772,7 @@ public sealed partial class IndexSearcher
         GeoQueryBounds bounds,
         List<int> documentIds,
         float boost,
+        bool useExactGeoDocValues,
         ref TopNCollector collector)
     {
         int docBase = reader.DocBase;
@@ -1758,7 +1783,7 @@ public sealed partial class IndexSearcher
                 continue;
 
             bool matches = false;
-            if (reader.TryGetBinaryDocValues(exactField, docId, out var exactValues))
+            if (useExactGeoDocValues && reader.TryGetBinaryDocValues(exactField, docId, out var exactValues))
             {
                 foreach (byte[] value in exactValues)
                 {

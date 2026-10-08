@@ -1,4 +1,4 @@
-using Rowles.LeanCorpus.Codecs;
+﻿using Rowles.LeanCorpus.Codecs;
 using Rowles.LeanCorpus.Codecs.DocValues;
 using Rowles.LeanCorpus.Codecs.Hnsw;
 using Rowles.LeanCorpus.Codecs.Bkd;
@@ -185,10 +185,6 @@ public sealed class SegmentMerger
 
     private SegmentInfo? MergeSegments(List<SegmentInfo> segments, ref int nextSegmentOrdinal, int commitGeneration)
     {
-        List<SpatialFieldInfo> spatialFields = MergeSpatialFieldMetadata(segments);
-        var newSegId = $"seg_{nextSegmentOrdinal++}";
-        var basePath = Path.Combine(_directory.DirectoryPath, newSegId);
-
         // Open one SegmentReader per source segment up front and keep it open for the
         // whole merge. The merge has three passes (doc-id remap, field copy, norm copy)
         // and previously each opened its own SegmentReader, tripling mmap creation and
@@ -199,6 +195,9 @@ public sealed class SegmentMerger
             foreach (var segInfo in segments)
                 readers[segInfo.SegmentId] = new SegmentReader(_directory, segInfo, FileCatalog);
 
+            List<SpatialFieldInfo> spatialFields = MergeSpatialFieldMetadata(segments, readers);
+            var newSegId = $"seg_{nextSegmentOrdinal++}";
+            var basePath = Path.Combine(_directory.DirectoryPath, newSegId);
             return MergeSegmentsCore(segments, readers, newSegId, basePath, commitGeneration, spatialFields,
                 _destinationVectorQuantisation);
         }
@@ -330,21 +329,56 @@ public sealed class SegmentMerger
         return mergedInfo;
     }
 
-    private static List<SpatialFieldInfo> MergeSpatialFieldMetadata(List<SegmentInfo> segments)
+    private static List<SpatialFieldInfo> MergeSpatialFieldMetadata(
+        List<SegmentInfo> segments,
+        IReadOnlyDictionary<string, SegmentReader> readers)
     {
         var fields = new Dictionary<string, SpatialFieldKind>(StringComparer.Ordinal);
-        foreach (SegmentInfo segment in segments)
-        {
-            segment.Validate();
-            foreach (SpatialFieldInfo spatialField in segment.SpatialFields)
-            {
-                if (fields.TryGetValue(spatialField.FieldName, out SpatialFieldKind existing)
-                    && existing != spatialField.Kind)
-                    throw new InvalidDataException(
-                        $"Spatial field '{spatialField.FieldName}' has incompatible kinds '{existing}' and '{spatialField.Kind}' during merge.");
+        string[] fieldNames = segments
+            .SelectMany(static segment => segment.SpatialFields)
+            .Select(static spatialField => spatialField.FieldName)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(static fieldName => fieldName, StringComparer.Ordinal)
+            .ToArray();
 
-                fields[spatialField.FieldName] = spatialField.Kind;
+        foreach (string fieldName in fieldNames)
+        {
+            SpatialFieldKind? mergedKind = null;
+            string? firstSegmentId = null;
+            foreach (SegmentInfo segment in segments)
+            {
+                segment.Validate();
+                SegmentReader reader = readers[segment.SegmentId];
+                SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, fieldName);
+                if (resolution == SpatialPointFieldResolution.None)
+                {
+                    if (reader.TryGetPackedBkdFieldMetadata(fieldName, out PackedBkdFieldMetadata packedMetadata)
+                        && SpatialPointFieldCompatibility.HasCompatiblePointLayout(packedMetadata))
+                        throw new InvalidDataException(
+                            $"Spatial field '{fieldName}' in segment '{segment.SegmentId}' has an unclassifiable metadata-less packed point field during merge.");
+
+                    continue;
+                }
+
+                SpatialFieldKind sourceKind = resolution switch
+                {
+                    SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo => SpatialFieldKind.GeoPoint,
+                    SpatialPointFieldResolution.XYPoint => SpatialFieldKind.XYPoint,
+                    SpatialPointFieldResolution.OtherSpatial => segment.SpatialFields
+                        .First(spatialField => string.Equals(spatialField.FieldName, fieldName, StringComparison.Ordinal)).Kind,
+                    _ => throw new InvalidOperationException($"Unexpected spatial field resolution '{resolution}'.")
+                };
+
+                if (mergedKind.HasValue && mergedKind.Value != sourceKind)
+                    throw new InvalidDataException(
+                        $"Spatial field '{fieldName}' has incompatible kinds '{mergedKind.Value}' in segment '{firstSegmentId}' and '{sourceKind}' in segment '{segment.SegmentId}' during merge.");
+
+                mergedKind ??= sourceKind;
+                firstSegmentId ??= segment.SegmentId;
             }
+
+            if (mergedKind.HasValue)
+                fields.Add(fieldName, mergedKind.Value);
         }
 
         return fields
@@ -1891,16 +1925,15 @@ public sealed class SegmentMerger
         IndexWriterConfig config,
         int commitGeneration = 0)
     {
-        List<SpatialFieldInfo> spatialFields = MergeSpatialFieldMetadata(sourceSegments);
-        var newSegId = $"seg_{nextSegmentOrdinal++}";
-        var basePath = Path.Combine(_directory.DirectoryPath, newSegId);
-
         var readers = new Dictionary<string, SegmentReader>(StringComparer.Ordinal);
         try
         {
             foreach (var segInfo in sourceSegments)
                 readers[segInfo.SegmentId] = new SegmentReader(sourceDirectory, segInfo, config.CodecCatalog);
 
+            List<SpatialFieldInfo> spatialFields = MergeSpatialFieldMetadata(sourceSegments, readers);
+            var newSegId = $"seg_{nextSegmentOrdinal++}";
+            var basePath = Path.Combine(_directory.DirectoryPath, newSegId);
             return MergeSegmentsCore(sourceSegments, readers, newSegId, basePath, commitGeneration, spatialFields,
                 config.VectorQuantisation);
         }

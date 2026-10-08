@@ -69,13 +69,33 @@ var nextPage = searcher.SearchAfter(firstPage.ScoreDocs[^1], query, topN: 20, ne
 Eligible ascending single-field Geo and XY sorts use a best-first Packed BKD
 Top-N traversal. Other sort directions and compound sorts use exact DocValues
 sorting. Missing point fields sort after documents with points, and equal
-distances use global document ID order.
+distances use global document ID order. A document with the other point kind
+remains a query hit and receives a missing distance value for this sort.
+
+## Geo and XY point kinds
+
+Geo and XY points have different coordinate encodings even though both use the
+same two-dimensional, four-byte Packed BKD layout. Segment metadata identifies
+the kind. Geo and XY point queries check that kind before reading packed data,
+so indexes may contain historical segments that use the same field name for
+different point kinds: each query matches only compatible segments.
+
+Legacy segments without spatial-kind metadata remain supported for Geo when
+both `<field>_lat` and `<field>_lon` numeric fields are present. Packed layout
+alone does not identify a coordinate system, and there is no legacy XY
+fallback. Shape fields are distinct from point fields.
+
+Distance sorting follows the same per-segment kind rule. Documents with the
+other point kind keep their query membership and `TotalHits`, but their sort
+distance is missing and they follow documents with a distance. A merge rejects
+different spatial kinds for the same field before it writes a destination
+segment; legacy Geo and modern Geo can still merge together.
 
 ## XY points
 
 `XYPointField` indexes finite Cartesian coordinates and writes the point values
-needed for exact filtering, sorting and legacy fallback execution. Repeated
-fields support multiple points per document.
+needed for exact filtering and sorting. Repeated fields support multiple points
+per document.
 
 ```csharp
 var document = new LeanDocument();
@@ -179,9 +199,10 @@ remain analytic query shapes using the existing Haversine Earth radius;
 crossing rectangles, lines and polygons handle the International Date Line.
 Query circles may cross the Date Line and include polar locations.
 
-Shape field names have a persisted Geo/XY and point/shape kind. Reusing one
-field name with a conflicting spatial kind is rejected, including across
-segments during merge.
+Shape field names have a persisted Geo/XY and point/shape kind. One DWPT rejects
+registering a field name with conflicting spatial kinds. Different historical
+segments may retain different kinds under that name, but a merge cannot put
+those kinds into one segment.
 
 ## WKT and simplification
 

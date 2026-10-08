@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using Rowles.LeanCorpus.Codecs.PackedBkd;
 using Rowles.LeanCorpus.Document.Fields;
 using Rowles.LeanCorpus.Index.Indexer;
@@ -302,10 +302,11 @@ public sealed partial class IndexSearcher
                 options.CancellationToken,
                 stopwatch,
                 deadlineTicks);
-            bool compatiblePackedField = reader.TryGetPackedBkdFieldMetadata(sort.FieldName, out PackedBkdFieldMetadata metadata)
-                && metadata.Config.Dimensions == 2
-                && metadata.Config.IndexedDimensions == 2
-                && metadata.Config.BytesPerDimension == sizeof(uint);
+            SpatialFieldKind expectedKind = sort.Type == SortFieldType.GeoDistance
+                ? SpatialFieldKind.GeoPoint
+                : SpatialFieldKind.XYPoint;
+            bool compatiblePackedField = SpatialPointFieldCompatibility.TryGetCompatiblePackedField(
+                reader, sort.FieldName, expectedKind, out PackedBkdFieldMetadata metadata);
 
             if (compatiblePackedField)
             {
@@ -695,10 +696,15 @@ public sealed partial class IndexSearcher
         int localDocId = globalDocId - _docBases[readerOrdinal];
         if (sort.Type == SortFieldType.GeoDistance)
         {
+            SpatialPointFieldResolution resolution = SpatialPointFieldCompatibility.Resolve(reader.Info, sort.FieldName);
+            if (resolution is not (SpatialPointFieldResolution.GeoPoint or SpatialPointFieldResolution.LegacyGeo))
+                return false;
+
             Rowles.LeanCorpus.Search.Geo.GeoPoint origin = sort.GeoOrigin
                 ?? throw new InvalidOperationException("A geographic distance sort has no origin.");
             string pointValuesField = GeoPointDocValues.GetFieldName(sort.FieldName);
-            if (reader.TryGetBinaryDocValues(pointValuesField, localDocId, out var values))
+            if (resolution == SpatialPointFieldResolution.GeoPoint
+                && reader.TryGetBinaryDocValues(pointValuesField, localDocId, out var values))
             {
                 double minimumDistance = double.PositiveInfinity;
                 foreach (byte[] value in values)
@@ -731,6 +737,10 @@ public sealed partial class IndexSearcher
 
         if (sort.Type == SortFieldType.XYDistance)
         {
+            if (SpatialPointFieldCompatibility.Resolve(reader.Info, sort.FieldName)
+                != SpatialPointFieldResolution.XYPoint)
+                return false;
+
             Rowles.LeanCorpus.Search.XY.XYPoint origin = sort.XYOrigin
                 ?? throw new InvalidOperationException("A Cartesian distance sort has no origin.");
             if (!reader.TryGetBinaryDocValues(sort.FieldName, localDocId, out var values))
