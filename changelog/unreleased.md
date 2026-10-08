@@ -20,6 +20,8 @@
 
 ### Changed
 
+- Synchronise the concurrent indexing commit regression at publication so fast producers cannot bypass its overlap check.
+
 - Separate stress and diagnostics test modes, bound full execution telemetry, retain individual evidence only for failures and anomalies, and keep TRX as the canonical result format.
 - Map storage, codec-migration and sparse-vector ADR documentation to their Core affected-test areas.
 

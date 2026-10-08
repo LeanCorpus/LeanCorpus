@@ -333,13 +333,16 @@ public sealed class ConcurrentIndexingTests : IDisposable
         const int ProducerCount = 4;
         const int DocumentsPerProducer = 250;
         var directory = new MMapDirectory(_dir);
-        using var writer = new IndexWriter(directory, new IndexWriterConfig
+        var config = new IndexWriterConfig
         {
             MaxBufferedDocs = 64,
             DurableCommits = false,
             MergePolicy = NoMergePolicy.Instance,
-        });
-        using var started = new CountdownEvent(ProducerCount);
+        };
+        using var writer = new IndexWriter(directory, config);
+        using var ready = new CountdownEvent(ProducerCount);
+        using var resume = new ManualResetEventSlim();
+        using var resumed = new CountdownEvent(ProducerCount);
         var errors = new ConcurrentBag<Exception>();
         int successfulAdds = 0;
 
@@ -349,13 +352,17 @@ public sealed class ConcurrentIndexingTests : IDisposable
                 {
                     try
                     {
-                        started.Signal();
                         for (int item = 0; item < DocumentsPerProducer; item++)
                         {
                             int id = producer * DocumentsPerProducer + item;
                             writer.AddDocument(BuildDoc(id, "overlap commit"));
                             Interlocked.Increment(ref successfulAdds);
-                            if ((item & 7) == 0) Thread.Yield();
+                            if (item == 7)
+                            {
+                                ready.Signal();
+                                resume.Wait(TestContext.Current.CancellationToken);
+                                resumed.Signal();
+                            }
                         }
                     }
                     catch (Exception exception) { errors.Add(exception); }
@@ -365,21 +372,28 @@ public sealed class ConcurrentIndexingTests : IDisposable
                 TaskScheduler.Default))
             .ToArray();
 
-        Assert.True(started.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken), "Producers did not start.");
-        Assert.True(SpinWait.SpinUntil(
-            () => Volatile.Read(ref successfulAdds) >= 32 && producers.Any(static task => !task.IsCompleted),
-            TimeSpan.FromSeconds(5)), "Producers did not remain active long enough to overlap Commit.");
-
         int overlappingCommits = 0;
-        while (overlappingCommits < 3 && producers.Any(static task => !task.IsCompleted))
+        try
         {
+            Assert.True(ready.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken), "Producers did not reach the commit boundary.");
+            config.CommitBeforePublication = _ =>
+            {
+                // Resume producers from inside Commit so they cannot finish before it starts.
+                Assert.All(producers, producer => Assert.False(producer.IsCompleted));
+                resume.Set();
+                Assert.True(resumed.Wait(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken), "Producers did not resume during Commit.");
+                overlappingCommits++;
+            };
             writer.Commit();
-            overlappingCommits++;
         }
-
-        await Task.WhenAll(producers).WaitAsync(TestContext.Current.CancellationToken);
+        finally
+        {
+            config.CommitBeforePublication = null;
+            resume.Set();
+            await Task.WhenAll(producers).WaitAsync(TestContext.Current.CancellationToken);
+        }
         writer.Commit();
-        Assert.True(overlappingCommits > 0, "No Commit overlapped active producers.");
+        Assert.Equal(1, overlappingCommits);
         Assert.Empty(errors);
         Assert.Equal(ProducerCount * DocumentsPerProducer, successfulAdds);
 
