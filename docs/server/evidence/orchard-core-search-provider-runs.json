@@ -1,0 +1,629 @@
+{
+  "status": "passed",
+  "outputPath": "/home/jordan/leancorpus/server-orchard/docs/server/evidence/orchard-core-search-provider-runs.json",
+  "startedUtc": "2026-10-08T23:27:12.1115237+00:00",
+  "completedUtc": "2026-10-08T23:28:18.1338743+00:00",
+  "targetDocumentCount": 2000,
+  "measurementNotes": [
+    "Cold search is the first provider query after the final measured rebuild; operating-system caches are not flushed.",
+    "Search timings measure ISearchService.SearchAsync inside the test host and exclude loopback transport time.",
+    "Update-to-index timings sum server-side content read, draft update and publish, Orchard task processing for all enabled providers, and a target-provider visibility query; task processing runs in a separate request after the content transaction commits.",
+    "Each Orchard content task is consumed by both enabled provider profiles, so update-to-index timings include both providers processing the task.",
+    "The explicit corpus consists of fully populated published Orchard ContentItems persisted through YesSQL without per-item lifecycle handlers or task creation, isolating provider build timings from corpus setup cost.",
+    "The performance corpus uses the required Title and Body fields; broader Orchard field types are covered by provider integration tests.",
+    "Full-build and rebuild timings include physical index replacement, Orchard content-item retrieval, provider-neutral document construction through Orchard content-part and field handlers, one provider batch write, and cursor advancement.",
+    "Full-build and rebuild timings bypass per-record Orchard task-log replay and the provider-specific ContentItemDocumentIndex refresh path so both providers receive the same handler-built 2,000-document batch. LeanCorpus appends the batch to its newly rebuilt empty index; task-log replay, content refresh and cursor recovery are covered by the functional test suite."
+  ],
+  "environment": {
+    "osDescription": "Debian GNU/Linux 13 (trixie)",
+    "osArchitecture": "X64",
+    "processArchitecture": "X64",
+    "runtime": ".NET 11.0.0-preview.7.26381.103",
+    "targetFramework": ".NETCoreApp,Version=v11.0",
+    "sdkVersion": "11.0.100-preview.7.26381.103",
+    "cpuModel": "Intel(R) Xeon(R) CPU E3-1220 V2 @ 3.10GHz",
+    "processorCount": 4,
+    "availableMemoryBytes": 25174188032,
+    "managedHeapBytesAtCapture": 3365968,
+    "stopwatchFrequency": 1000000000,
+    "serverGc": false,
+    "repositoryRoot": "/home/jordan/leancorpus/server-orchard",
+    "branch": "alpha/sever-orchard",
+    "commit": "36f3a3535404545591cf3de1a82eb24fefcf8f9d",
+    "dirty": true,
+    "gitStatus": [
+      "M Directory.Packages.props",
+      "M Rowles.LeanCorpus.slnx",
+      "M scripts/devops/config/code-areas.psd1",
+      "M scripts/devops/config/test-suites.psd1",
+      "?? docs/server/evidence/",
+      "?? src/server/Rowles.LeanCorpus.OrchardCore.Search/",
+      "?? src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/",
+      "?? src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestHost/",
+      "?? src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestModule/",
+      "?? src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.Tests/"
+    ]
+  },
+  "initialBuilds": [
+    {
+      "provider": "Lucene",
+      "elapsedMilliseconds": 1484.9927,
+      "lastTaskId": 0
+    },
+    {
+      "provider": "LeanCorpus",
+      "elapsedMilliseconds": 1573.7839,
+      "lastTaskId": 0
+    }
+  ],
+  "rebuilds": [
+    {
+      "provider": "Lucene",
+      "iteration": 1,
+      "elapsedMilliseconds": 927.803,
+      "lastTaskId": 0
+    },
+    {
+      "provider": "Lucene",
+      "iteration": 2,
+      "elapsedMilliseconds": 816.6524,
+      "lastTaskId": 0
+    },
+    {
+      "provider": "Lucene",
+      "iteration": 3,
+      "elapsedMilliseconds": 579.4303,
+      "lastTaskId": 0
+    },
+    {
+      "provider": "LeanCorpus",
+      "iteration": 1,
+      "elapsedMilliseconds": 640.4564,
+      "lastTaskId": 0
+    },
+    {
+      "provider": "LeanCorpus",
+      "iteration": 2,
+      "elapsedMilliseconds": 623.719,
+      "lastTaskId": 0
+    },
+    {
+      "provider": "LeanCorpus",
+      "iteration": 3,
+      "elapsedMilliseconds": 511.0884,
+      "lastTaskId": 0
+    }
+  ],
+  "searchSamples": [
+    {
+      "provider": "Lucene",
+      "phase": "cold",
+      "iteration": 0,
+      "elapsedMilliseconds": 92.5375,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "warmup",
+      "iteration": 1,
+      "elapsedMilliseconds": 1.7632,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "warmup",
+      "iteration": 2,
+      "elapsedMilliseconds": 0.7805,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "warmup",
+      "iteration": 3,
+      "elapsedMilliseconds": 0.6931,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 1,
+      "elapsedMilliseconds": 10.2162,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 2,
+      "elapsedMilliseconds": 0.7553,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 3,
+      "elapsedMilliseconds": 1.1423,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 4,
+      "elapsedMilliseconds": 1.3252,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 5,
+      "elapsedMilliseconds": 1.1642,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 6,
+      "elapsedMilliseconds": 0.6719,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 7,
+      "elapsedMilliseconds": 1.1104,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 8,
+      "elapsedMilliseconds": 1.2402,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 9,
+      "elapsedMilliseconds": 1.1276,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 10,
+      "elapsedMilliseconds": 0.6544,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 0
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "cold",
+      "iteration": 0,
+      "elapsedMilliseconds": 158.195,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "warmup",
+      "iteration": 1,
+      "elapsedMilliseconds": 27.9282,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "warmup",
+      "iteration": 2,
+      "elapsedMilliseconds": 29.423,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "warmup",
+      "iteration": 3,
+      "elapsedMilliseconds": 54.665,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 1,
+      "elapsedMilliseconds": 76.3857,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 2,
+      "elapsedMilliseconds": 48.6841,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 3,
+      "elapsedMilliseconds": 36.4021,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 4,
+      "elapsedMilliseconds": 30.673,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 5,
+      "elapsedMilliseconds": 26.7468,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 6,
+      "elapsedMilliseconds": 26.8947,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 7,
+      "elapsedMilliseconds": 25.0391,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 8,
+      "elapsedMilliseconds": 24.847,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 9,
+      "elapsedMilliseconds": 25.507,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 10,
+      "elapsedMilliseconds": 23.4367,
+      "success": true,
+      "resultCount": 10,
+      "reportedTotalCount": 2000
+    }
+  ],
+  "updateSamples": [
+    {
+      "provider": "Lucene",
+      "phase": "cold",
+      "iteration": 0,
+      "elapsedMilliseconds": 126.91199999999999,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "warmup",
+      "iteration": 1,
+      "elapsedMilliseconds": 46.1446,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "warmup",
+      "iteration": 2,
+      "elapsedMilliseconds": 47.3862,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "warmup",
+      "iteration": 3,
+      "elapsedMilliseconds": 57.651199999999996,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 1,
+      "elapsedMilliseconds": 65.9686,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 2,
+      "elapsedMilliseconds": 78.12230000000001,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 3,
+      "elapsedMilliseconds": 108.2472,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 4,
+      "elapsedMilliseconds": 95.2651,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 5,
+      "elapsedMilliseconds": 107.113,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 6,
+      "elapsedMilliseconds": 116.58919999999999,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 7,
+      "elapsedMilliseconds": 128.0353,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 8,
+      "elapsedMilliseconds": 141.0556,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 9,
+      "elapsedMilliseconds": 386.6702,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "Lucene",
+      "phase": "measured",
+      "iteration": 10,
+      "elapsedMilliseconds": 164.66359999999997,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "cold",
+      "iteration": 0,
+      "elapsedMilliseconds": 209.8588,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "warmup",
+      "iteration": 1,
+      "elapsedMilliseconds": 204.35960000000003,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "warmup",
+      "iteration": 2,
+      "elapsedMilliseconds": 212.9862,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "warmup",
+      "iteration": 3,
+      "elapsedMilliseconds": 239.4216,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 1,
+      "elapsedMilliseconds": 245.2785,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 2,
+      "elapsedMilliseconds": 254.24009999999998,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 3,
+      "elapsedMilliseconds": 274.2797,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 4,
+      "elapsedMilliseconds": 312.52889999999996,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 5,
+      "elapsedMilliseconds": 336.28819999999996,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 6,
+      "elapsedMilliseconds": 325.65419999999995,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 7,
+      "elapsedMilliseconds": 370.0802,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 8,
+      "elapsedMilliseconds": 386.8283,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 9,
+      "elapsedMilliseconds": 425.1374,
+      "success": true,
+      "resultCount": 1
+    },
+    {
+      "provider": "LeanCorpus",
+      "phase": "measured",
+      "iteration": 10,
+      "elapsedMilliseconds": 465.9619,
+      "success": true,
+      "resultCount": 1
+    }
+  ],
+  "searchSummaries": {
+    "Lucene": {
+      "coldSamples": 1,
+      "warmupSamples": 3,
+      "measuredSamples": 10,
+      "measured": {
+        "minMilliseconds": 0.6544,
+        "medianMilliseconds": 1.13495,
+        "p95Milliseconds": 10.2162,
+        "maxMilliseconds": 10.2162,
+        "sampleCount": 10
+      }
+    },
+    "LeanCorpus": {
+      "coldSamples": 1,
+      "warmupSamples": 3,
+      "measuredSamples": 10,
+      "measured": {
+        "minMilliseconds": 23.4367,
+        "medianMilliseconds": 26.82075,
+        "p95Milliseconds": 76.3857,
+        "maxMilliseconds": 76.3857,
+        "sampleCount": 10
+      }
+    }
+  },
+  "updateSummaries": {
+    "Lucene": {
+      "coldSamples": 1,
+      "warmupSamples": 3,
+      "measuredSamples": 10,
+      "measured": {
+        "minMilliseconds": 65.9686,
+        "medianMilliseconds": 112.4182,
+        "p95Milliseconds": 386.6702,
+        "maxMilliseconds": 386.6702,
+        "sampleCount": 10
+      }
+    },
+    "LeanCorpus": {
+      "coldSamples": 1,
+      "warmupSamples": 3,
+      "measuredSamples": 10,
+      "measured": {
+        "minMilliseconds": 245.2785,
+        "medianMilliseconds": 330.97119999999995,
+        "p95Milliseconds": 465.9619,
+        "maxMilliseconds": 465.9619,
+        "sampleCount": 10
+      }
+    }
+  }
+}

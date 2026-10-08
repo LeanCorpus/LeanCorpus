@@ -112,6 +112,9 @@
         "files": [ "assets/**" ]
       },
       {
+        "files": [ "server/evidence/*.json" ]
+      },
+      {
         "files": [ "*.json", "benchmark-charts.js" ],
         "src": "../artifacts/docs/generated/benchmarks",
         "dest": "benchmarks"

@@ -24,3 +24,4 @@ Topics:
 - [Studio](06-studio.md)
 - [Persistence and security](07-persistence-and-security.md)
 - [Operational limits and alpha limitations](08-operational-limits.md)
+- [Orchard Core search provider](orchard-core-search-provider.md)

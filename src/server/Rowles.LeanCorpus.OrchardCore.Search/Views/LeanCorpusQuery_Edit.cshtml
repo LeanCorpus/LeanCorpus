@@ -1,0 +1,10 @@
+@model Rowles.LeanCorpus.OrchardCore.Search.Drivers.LeanCorpusQueryViewModel
+<fieldset class="mb-3">
+    <label asp-for="IndexName">LeanCorpus index profile</label>
+    <select asp-for="IndexName" asp-items="Model.IndexOptions" class="form-select"></select>
+</fieldset>
+<fieldset class="mb-3">
+    <label asp-for="Json">Native query JSON</label>
+    <textarea asp-for="Json" class="form-control" rows="18" spellcheck="false"></textarea>
+    <span class="hint">Supported operators: match, term, range, exists, isNull, and, or, not, vectorKnn.</span>
+</fieldset>

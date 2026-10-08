@@ -73,5 +73,12 @@
     'server-core' = @{ Globs = @('src/server/Rowles.LeanCorpus.Server.Core/**'); Targets = @('server-core:Server', 'server-integration:Server') }
     'server-transport' = @{ Globs = @('src/server/Rowles.LeanCorpus.Server.AspNetCore/**', 'src/server/Rowles.LeanCorpus.Server.Grpc/**', 'src/server/Rowles.LeanCorpus.Server.Local/**', 'src/server/Rowles.LeanCorpus.Studio/**'); Targets = @('server-integration:Server') }
     'server-tests' = @{ Globs = @('src/server/**/*.Tests/**'); Targets = @('server-abstractions:Server', 'server-core:Server', 'server-integration:Server') }
+    'server-orchard-provider' = @{ Globs = @('src/server/Rowles.LeanCorpus.OrchardCore.Search/**'); Targets = @('server-orchard:Orchard', 'server-orchard-functional:Functional', 'server-orchard-performance:Performance') }
+    'server-orchard-tests' = @{ Globs = @('src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.Tests/**'); Targets = @('server-orchard:Orchard') }
+    'server-orchard-test-module' = @{ Globs = @('src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestModule/**'); Targets = @('server-orchard:Orchard', 'server-orchard-functional:Functional') }
+    'server-orchard-functional-tests' = @{ Globs = @('src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/**', 'src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestHost/**'); Targets = @('server-orchard-functional:Functional', 'server-orchard-performance:Performance') }
+    'server-orchard-performance-tests' = @{ Globs = @('src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/ProviderPerformanceTests.cs'); Targets = @('server-orchard-performance:Performance') }
+    'server-orchard-build-config' = @{ Globs = @('Directory.Packages.props', 'Rowles.LeanCorpus.slnx', 'scripts/devops/config/test-suites.psd1'); Targets = @('server-orchard:Orchard', 'server-orchard-functional:Functional', 'server-orchard-performance:Performance') }
+    'server-orchard-docs' = @{ Globs = @('docs/docfx.json', 'docs/server/index.md', 'docs/server/orchard-core-search-provider.md', 'docs/server/evidence/**'); Targets = @() }
     'server-core-docs' = @{ Globs = @('docs/server/08-operational-limits.md'); Targets = @('server-core:Server') }
 }

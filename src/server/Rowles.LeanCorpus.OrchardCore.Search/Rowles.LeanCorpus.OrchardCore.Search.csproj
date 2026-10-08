@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
+    <PackageId>Rowles.LeanCorpus.OrchardCore.Search</PackageId>
+    <Version>0.1.0-alpha.1</Version>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <FileVersion>0.1.0.0</FileVersion>
+    <Authors>Jordan Rowles</Authors>
+    <Description>Embedded LeanCorpus indexing and search provider for Orchard Core.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <AddRazorSupportForMvc>true</AddRazorSupportForMvc>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.Tests" />
+    <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests" />
+    <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.TestHost" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OrchardCore.Indexing" />
+    <PackageReference Include="OrchardCore.Module.Targets" />
+    <PackageReference Include="OrchardCore.Queries" />
+    <PackageReference Include="OrchardCore.Search" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../core/Rowles.LeanCorpus/Rowles.LeanCorpus.csproj" />
+  </ItemGroup>
+</Project>
