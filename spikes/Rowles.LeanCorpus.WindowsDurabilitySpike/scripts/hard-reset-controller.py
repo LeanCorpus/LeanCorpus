@@ -14,6 +14,7 @@ import re
 import stat
 import subprocess
 import sys
+import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from typing import Any
 import paramiko
 
 
+DEFAULT_GUEST_COMMAND_TIMEOUT_SECONDS = 60.0
 CANDIDATES = ("P0", "P1", "P2")
 REPRESENTATIONS = ("loose", "compound")
 COMMON_FAILPOINTS = (
@@ -183,11 +185,14 @@ class Guest:
         self.password = password
         self.host_key = host_key
 
-    def connect(self) -> paramiko.SSHClient:
+    def connect(self, *, timeout_seconds: float = 15.0) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(PinnedHostKey(self.host_key))
+        connection_timeout = max(0.1, min(10.0, timeout_seconds))
+        handshake_timeout = max(0.1, min(15.0, timeout_seconds))
         client.connect(self.host, port=self.port, username=self.username, password=self.password,
-                       timeout=10, banner_timeout=15, auth_timeout=15,
+                       timeout=connection_timeout, banner_timeout=handshake_timeout,
+                       auth_timeout=handshake_timeout,
                        allow_agent=False, look_for_keys=False)
         return client
 
@@ -197,8 +202,9 @@ class Guest:
         return f"pwsh.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}"
 
     @staticmethod
-    def run_ps(client: paramiko.SSHClient, script: str, *, check: bool = True) -> tuple[int, str, str]:
-        _, stdout, stderr = client.exec_command(Guest.ps_command(script), timeout=60)
+    def run_ps(client: paramiko.SSHClient, script: str, *, check: bool = True,
+               timeout_seconds: float = DEFAULT_GUEST_COMMAND_TIMEOUT_SECONDS) -> tuple[int, str, str]:
+        _, stdout, stderr = client.exec_command(Guest.ps_command(script), timeout=timeout_seconds)
         out = stdout.read().decode("utf-8", errors="replace")
         err = stderr.read().decode("utf-8", errors="replace")
         status = stdout.channel.recv_exit_status()
@@ -239,47 +245,88 @@ def put_text(client: paramiko.SSHClient, path: str, content: str) -> None:
             output.write(content.encode("utf-8"))
 
 
-def get_text(client: paramiko.SSHClient, path: str) -> str:
+def get_text(client: paramiko.SSHClient, path: str, *, timeout_seconds: float | None = None) -> str:
     with Guest.sftp(client) as sftp:
+        if timeout_seconds is not None:
+            sftp.get_channel().settimeout(timeout_seconds)
         with sftp.file(remote_path(path), "r") as source:
             return source.read().decode("utf-8", errors="replace")
 
 
-def get_text_if_exists(client: paramiko.SSHClient, path: str) -> str | None:
+def get_text_if_exists(client: paramiko.SSHClient, path: str, *,
+                       timeout_seconds: float | None = None) -> str | None:
     try:
-        return get_text(client, path)
+        return get_text(client, path, timeout_seconds=timeout_seconds)
     except OSError:
         return None
 
 
-def get_tree(client: paramiko.SSHClient, remote_root: str, local_root: Path) -> None:
-    with Guest.sftp(client) as sftp:
-        try:
-            root_attributes = sftp.stat(remote_path(remote_root))
-        except OSError:
-            return
-        if not stat.S_ISDIR(root_attributes.st_mode):
-            return
-        for entry in sftp.listdir_attr(remote_path(remote_root)):
-            source = remote_path(str(PureWindowsPath(remote_root) / entry.filename))
-            destination = local_root / entry.filename
-            if stat.S_ISDIR(entry.st_mode):
-                destination.mkdir(parents=True, exist_ok=False)
-                _get_tree_children(sftp, source, destination)
-            else:
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                sftp.get(source, str(destination))
+def _set_sftp_timeout(sftp: paramiko.SFTPClient, deadline: float,
+                      maximum_seconds: float | None = None) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("The hard-reset inspection deadline expired during SFTP collection.")
+    timeout = min(remaining, maximum_seconds) if maximum_seconds is not None else remaining
+    sftp.get_channel().settimeout(timeout)
+    return timeout
 
 
-def _get_tree_children(sftp: paramiko.SFTPClient, remote_root: str, local_root: Path) -> None:
+def _read_sftp_text_if_exists(sftp: paramiko.SFTPClient, path: str, deadline: float,
+                              *, maximum_operation_seconds: float | None = None) -> str | None:
+    _set_sftp_timeout(sftp, deadline, maximum_operation_seconds)
+    try:
+        with sftp.file(remote_path(path), "r") as source:
+            chunks: list[bytes] = []
+            while True:
+                _set_sftp_timeout(sftp, deadline, maximum_operation_seconds)
+                chunk = source.read(64 * 1024)
+                if not chunk:
+                    return b"".join(chunks).decode("utf-8", errors="replace")
+                chunks.append(chunk)
+    except FileNotFoundError:
+        return None
+
+
+def get_tree(sftp: paramiko.SFTPClient, remote_root: str, local_root: Path, *, deadline: float) -> None:
+    _set_sftp_timeout(sftp, deadline)
+    try:
+        root_attributes = sftp.stat(remote_path(remote_root))
+    except FileNotFoundError as error:
+        raise FileNotFoundError(error.errno, error.strerror or "Recovered index root is missing", remote_root) from error
+    if not stat.S_ISDIR(root_attributes.st_mode):
+        raise NotADirectoryError(f"Recovered index root is not a directory: {remote_root}")
+    local_root.mkdir(parents=True, exist_ok=False)
+    _get_tree_children(sftp, remote_path(remote_root), local_root, deadline=deadline)
+
+
+def capture_tree_or_record_error(sftp: paramiko.SFTPClient, remote_root: str,
+                                local_root: Path, evidence_root: Path, *, deadline: float) -> str | None:
+    try:
+        get_tree(sftp, remote_root, local_root, deadline=deadline)
+        return None
+    except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+        message = f"{type(error).__name__}: {error}"
+        (evidence_root / "index-tree-collection-error.txt").write_text(message + "\n", encoding="utf-8")
+        return message
+
+
+def _get_tree_children(sftp: paramiko.SFTPClient, remote_root: str, local_root: Path, *, deadline: float) -> None:
+    _set_sftp_timeout(sftp, deadline)
     for entry in sftp.listdir_attr(remote_root):
         source = str(PureWindowsPath(remote_root) / entry.filename).replace("\\", "/")
         destination = local_root / entry.filename
         if stat.S_ISDIR(entry.st_mode):
             destination.mkdir(parents=True, exist_ok=False)
-            _get_tree_children(sftp, source, destination)
+            _get_tree_children(sftp, source, destination, deadline=deadline)
         else:
-            sftp.get(source, str(destination))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with sftp.file(source, "r") as remote_file, destination.open("wb") as local_file:
+                while True:
+                    _set_sftp_timeout(sftp, deadline)
+                    chunk = remote_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    local_file.write(chunk)
 
 
 def plan_trials() -> list[dict[str, Any]]:
@@ -307,37 +354,230 @@ def write_csv(path: Path, header: tuple[str, ...], rows: list[tuple[Any, ...]]) 
         writer.writerows(rows)
 
 
-def wait_for_guest(guest: Guest, timeout_seconds: int, interval_seconds: float = 2.0) -> paramiko.SSHClient:
-    deadline = time.monotonic() + timeout_seconds
+def wait_for_guest(guest: Guest, timeout_seconds: int, interval_seconds: float = 2.0, *,
+                   deadline: float | None = None) -> paramiko.SSHClient:
+    if deadline is None:
+        deadline = time.monotonic() + timeout_seconds
     last_error: Exception | None = None
     while time.monotonic() < deadline:
+        client: paramiko.SSHClient | None = None
         try:
-            return guest.connect()
+            remaining = deadline - time.monotonic()
+            client = guest.connect(timeout_seconds=remaining)
+            return client
         except Exception as error:  # Connection refusal is expected during guest boot.
             last_error = error
-            time.sleep(interval_seconds)
+            if client is not None:
+                client.close()
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(interval_seconds, remaining))
     raise TimeoutError(f"Guest SSH did not return within {timeout_seconds}s: {last_error}")
 
 
+def _channel_request_before_deadline(channel: Any, request: Any, *, deadline: float, description: str) -> Any:
+    completed = threading.Event()
+    result: dict[str, Any] = {}
+
+    def invoke() -> None:
+        try:
+            result["value"] = request()
+        except BaseException as error:
+            result["error"] = error
+        finally:
+            completed.set()
+
+    worker = threading.Thread(target=invoke, name=f"spike2-{description}", daemon=True)
+    worker.start()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not completed.wait(remaining):
+        channel.close()
+        raise TimeoutError(f"SSH {description} did not complete before the inspection deadline.")
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def _open_session_with_retry(client: paramiko.SSHClient, *, deadline: float,
+                             description: str) -> Any:
+    transport = client.get_transport()
+    if transport is None or not transport.is_active():
+        raise paramiko.SSHException("The guest SSH transport is not active.")
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        try:
+            return transport.open_session(timeout=min(10.0, remaining))
+        except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+            last_error = error
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.25, remaining))
+    raise TimeoutError(f"Could not open the SSH {description} channel before the inspection deadline: {last_error}")
+
+
+def _open_inspection_channel(client: paramiko.SSHClient, command: str, *, deadline: float) -> tuple[Any, Any, Any]:
+    channel = _open_session_with_retry(client, deadline=deadline, description="inspection command")
+    try:
+        channel.settimeout(max(0.1, deadline - time.monotonic()))
+        _channel_request_before_deadline(
+            channel, lambda: channel.exec_command(command), deadline=deadline,
+            description="inspection command request")
+        channel.shutdown_write()
+        return channel, channel.makefile("rb"), channel.makefile_stderr("rb")
+    except BaseException:
+        channel.close()
+        raise
+
+
+def _open_sftp_with_deadline(client: paramiko.SSHClient, *, deadline: float) -> paramiko.SFTPClient:
+    channel = _open_session_with_retry(client, deadline=deadline, description="SFTP")
+    try:
+        channel.settimeout(max(0.1, deadline - time.monotonic()))
+
+        def start_sftp() -> paramiko.SFTPClient:
+            channel.invoke_subsystem("sftp")
+            channel.settimeout(max(0.1, deadline - time.monotonic()))
+            return paramiko.SFTPClient(channel)
+
+        return _channel_request_before_deadline(
+            channel, start_sftp, deadline=deadline, description="SFTP subsystem")
+    except BaseException:
+        channel.close()
+        raise
+
+
+def _read_inspection_output(channel: Any, stdout: Any, stderr: Any, *, deadline: float) -> tuple[int, str, str]:
+    status = channel.recv_exit_status()
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("The hard-reset inspection deadline expired while collecting command output.")
+    channel.settimeout(remaining)
+    output = stdout.read().decode("utf-8", errors="replace")
+    error = stderr.read().decode("utf-8", errors="replace")
+    return status, output, error
+
+
 def recover_and_capture(guest: Guest, client: paramiko.SSHClient, config: dict[str, Any],
-                        output_root: Path) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    status, _, error = guest.run_ps(client,
+                        output_root: Path, *, deadline: float) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("The hard-reset recovery deadline expired before inspection started.")
+    inspect_command = (
         f"$ErrorActionPreference='Stop'; & {powershell_quote(config['inspect_script'])} "
-        f"-ConfigFile {powershell_quote(config['config_file'])}", check=False)
-    inspection_text = get_text_if_exists(client, config["inspection_path"])
-    control_text = get_text_if_exists(client, config["control_path"])
+        f"-ConfigFile {powershell_quote(config['config_file'])}"
+    )
+    stdout: Any | None = None
+    stderr: Any | None = None
+    channel: Any | None = None
+    sftp: paramiko.SFTPClient | None = None
+    inspection_text: str | None = None
+    remote_exit: int | None = None
+    remote_error = ""
+    remote_output = ""
+    last_error: Exception | None = None
+    sftp_reconnects = 0
+    sftp_retry_pending = False
+    try:
+        channel, stdout, stderr = _open_inspection_channel(
+            client, Guest.ps_command(inspect_command), deadline=deadline)
+    except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+        last_error = error
+
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            if sftp is None:
+                sftp = _open_sftp_with_deadline(client, deadline=deadline)
+            candidate = _read_sftp_text_if_exists(
+                sftp, config["inspection_path"], deadline, maximum_operation_seconds=5.0)
+        except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+            last_error = error
+            if sftp is not None:
+                sftp.close()
+                sftp = None
+            if sftp_reconnects >= 1:
+                break
+            sftp_reconnects += 1
+            sftp_retry_pending = True
+        else:
+            sftp_retry_pending = False
+            if candidate:
+                try:
+                    json.loads(candidate)
+                except json.JSONDecodeError as error:
+                    last_error = error
+                else:
+                    inspection_text = candidate
+                    break
+
+        if remote_exit is None and channel is not None and channel.exit_status_ready():
+            try:
+                remote_exit, remote_output, remote_error = _read_inspection_output(
+                    channel, stdout, stderr, deadline=deadline)
+            except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+                last_error = last_error or error
+            if inspection_text is None and not sftp_retry_pending:
+                break
+
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.25, remaining))
+
     output_root.mkdir(parents=True, exist_ok=False)
+    control_text: str | None = None
+    control_error: str | None = None
+    if sftp is not None and time.monotonic() < deadline:
+        try:
+            control_text = _read_sftp_text_if_exists(
+                sftp, config["control_path"], deadline, maximum_operation_seconds=5.0)
+        except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+            control_error = f"{type(error).__name__}: {error}"
+            last_error = last_error or error
     if inspection_text is not None:
         (output_root / "recovery-inspection.json").write_text(inspection_text, encoding="utf-8")
     if control_text is not None:
         (output_root / "reset-control.json").write_text(control_text, encoding="utf-8")
-    get_tree(client, config["index_path"], output_root / "index")
+    if sftp is None:
+        tree_error = "SFTP session unavailable before index-tree collection."
+        (output_root / "index-tree-collection-error.txt").write_text(tree_error + "\n", encoding="utf-8")
+    else:
+        tree_error = capture_tree_or_record_error(
+            sftp, config["index_path"], output_root / "index", output_root, deadline=deadline)
+    if channel is not None and channel.exit_status_ready() and remote_exit is None:
+        try:
+            remote_exit, remote_output, remote_error = _read_inspection_output(
+                channel, stdout, stderr, deadline=deadline)
+        except (OSError, paramiko.SSHException, EOFError, TimeoutError) as error:
+            last_error = last_error or error
+    if channel is not None:
+        channel.close()
+    if sftp is not None:
+        sftp.close()
+    if remote_output:
+        (output_root / "inspection-command.stdout.txt").write_text(remote_output, encoding="utf-8")
+    if remote_error:
+        (output_root / "inspection-command.stderr.txt").write_text(remote_error, encoding="utf-8")
     if inspection_text is None:
-        return None, control_text, f"recovery_inspection_missing; remote_exit={status}; {error.strip()}"
-    try:
-        return json.loads(inspection_text), control_text, None if status == 0 else f"recovery_inspect_exit_{status}: {error.strip()}"
-    except json.JSONDecodeError as parse_error:
-        return None, control_text, f"invalid_recovery_json: {parse_error}; {error.strip()}"
+        if last_error is None:
+            last_error = TimeoutError("Recovery inspection JSON did not appear before the 60-second command deadline.")
+        error_parts = ["recovery_inspection_missing", f"remote_exit={remote_exit}", str(last_error)]
+        if remote_error.strip():
+            error_parts.append(remote_error.strip())
+        if tree_error:
+            error_parts.append(f"index_tree_collection_failed: {tree_error}")
+        if control_error:
+            error_parts.append(f"control_record_collection_failed: {control_error}")
+        return None, control_text, "; ".join(error_parts)
+    if tree_error:
+        return json.loads(inspection_text), control_text, f"index_tree_collection_failed: {tree_error}"
+    if control_error:
+        return json.loads(inspection_text), control_text, f"control_record_collection_failed: {control_error}"
+    if remote_exit not in (None, 0):
+        return json.loads(inspection_text), control_text, f"recovery_inspect_exit_{remote_exit}: {remote_error.strip()}"
+    return json.loads(inspection_text), control_text, None
 
 
 def main() -> int:
@@ -646,17 +886,24 @@ def main() -> int:
             if vm_before != "running":
                 raise RuntimeError(f"The clone was not running when hard reset was requested: {vm_before}.")
 
-            recovered = wait_for_guest(guest, args.ssh_timeout)
+            recovery_started = time.monotonic()
+            recovery_deadline = recovery_started + args.ssh_timeout
+            recovered = wait_for_guest(guest, args.ssh_timeout, deadline=recovery_deadline)
+            log_event({"trial_id": trial_id, "event": "recovery_ssh_ready",
+                       "elapsed_seconds": round(time.monotonic() - recovery_started, 3),
+                       "deadline_seconds": args.ssh_timeout})
             try:
                 inspect_status, inspection, control_after, inspect_error = None, None, None, None
+                inspection_started = time.monotonic()
+                inspection_deadline = inspection_started + DEFAULT_GUEST_COMMAND_TIMEOUT_SECONDS
                 inspection_data, control_data, inspect_error = recover_and_capture(
-                    guest, recovered, config, trial_root / "recovered")
+                    guest, recovered, config, trial_root / "recovered", deadline=inspection_deadline)
                 control_after = control_data
                 inspect_status = 0 if inspection_data and inspection_data.get("ContractPassed") else 1
                 inspection = inspection_data
                 vm_after = domain_state(args.libvirt_uri, args.domain)
-                control_ok = bool(control_after)
-                failpoint_reached = control_ok and acknowledged.get("Failpoint") == failpoint
+                failpoint_reached = (acknowledged.get("TrialId") == trial_id and
+                                     acknowledged.get("Failpoint") == failpoint)
                 passed = bool(failpoint_reached and inspection and inspection.get("ContractPassed") and not inspect_error)
                 error_parts = [item for item in (inspect_error,) if item]
                 error = "; ".join(error_parts)
@@ -664,6 +911,8 @@ def main() -> int:
                     error = (error + "; " if error else "") + "recovery_contract_failed"
                 log_event({"trial_id": trial_id, "event": "recovery_inspected",
                            "vm_state_after_recovery": vm_after, "inspection_exit_status": inspect_status,
+                           "elapsed_seconds_after_reset": round(time.monotonic() - recovery_started, 3),
+                           "inspection_elapsed_seconds": round(time.monotonic() - inspection_started, 3),
                            "contract_passed": passed, "error": error})
 
                 inspection = inspection or {}

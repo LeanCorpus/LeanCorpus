@@ -63,7 +63,7 @@ switch ($Stage) {
     }
     'traces' {
         $traceScript = Join-Path $PSScriptRoot 'capture-publication-trace.ps1'
-        $neutralityPath = Join-Path $root 'instrumentation-audit.md'
+        $neutralityPath = Join-Path $root 'instrumentation-audit.json'
         $candidateValidation = Join-Path $root 'candidate-validation.json'
         $semantics = Join-Path $root 'publication-semantics.md'
         $cells = @(
