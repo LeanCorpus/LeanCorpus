@@ -6,7 +6,10 @@ namespace Rowles.LeanCorpus.Search.Parsing;
 /// <summary>Parses analysed quoted phrases with flat <c>(a OR b)</c> alternative slots.</summary>
 public sealed class ComplexPhraseQueryParser : QueryParser
 {
-    /// <summary>Gets or sets whether phrase slots must match in query order.</summary>
+    /// <summary>
+    /// Gets or sets whether slots in a span-based complex phrase must match in
+    /// query order. Ordinary analysed phrases are unaffected.
+    /// </summary>
     public bool InOrder { get; set; } = true;
 
     /// <summary>Initialises a complex-phrase query parser.</summary>

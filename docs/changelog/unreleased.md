@@ -24,6 +24,7 @@
 
 ## Changed
 
+- Define `ComplexPhraseQueryParser.InOrder` as controlling ordering only for multi-slot flat-alternative phrases; ordinary analysed phrases remain graph-aware and ordered.
 - Close Geo and XY geometry collections to built-in types and clarify the Packed BKD namespace boundary. ([ed255b3d4](https://github.com/jordansrowles/LeanCorpus/commit/ed255b3d4875e5ee67b69a8a2f6b2dd50b6a7800))
 - Stream vector segment merges through mapped destination files and bounded quantisation passes, avoiding a second managed float corpus during HNSW rebuilds. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Reduce retained Packed BKD build metadata to one contiguous leaf-data stream and stack-based recursive validation scratch. ([d61a418e4](https://github.com/jordansrowles/LeanCorpus/commit/d61a418e48614d04458d21df3aa929a75cfb1652))
