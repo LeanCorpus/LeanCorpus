@@ -1,4 +1,4 @@
-using System.Xml.Linq;
+﻿using System.Xml.Linq;
 using Rowles.LeanCorpus.Tests.Architecture.Infrastructure;
 
 namespace Rowles.LeanCorpus.Tests.Architecture;
@@ -168,6 +168,26 @@ public sealed class PackageBoundaryTests
                 .ToArray();
             Assert.Equal([implementation], packageReferences);
         }
+    }
+
+    [Fact]
+    public void Compression_release_metadata_must_match_the_supported_Core_major()
+    {
+        foreach (string codec in new[] { "LZ4", "Snappy", "Zstandard" })
+        {
+            XDocument project = LoadProject($"src/core/Rowles.LeanCorpus.Compression.{codec}/Rowles.LeanCorpus.Compression.{codec}.csproj");
+            Assert.Equal("2.0.0", GetProperty(project, "Version"));
+            Assert.Equal("2.0.0.0", GetProperty(project, "AssemblyVersion"));
+            Assert.Equal("2.0.0.0", GetProperty(project, "FileVersion"));
+            Assert.Equal("true", GetProperty(project, "IncludeSymbols"));
+            Assert.Equal("snupkg", GetProperty(project, "SymbolPackageFormat"));
+            Assert.Contains(project.Descendants("Import"), import =>
+                ((string?)import.Attribute("Project"))?.Replace('\\', '/') == "../OptionalCompression.Pack.targets");
+        }
+        XDocument target = XDocument.Load(Path.Combine(RepositoryPaths.Root, "src/core/OptionalCompression.Pack.targets"));
+        Assert.Equal("[4.0.0,5.0.0)", Assert.Single(target.Descendants("ProjectVersion")).Value);
+        Assert.Equal("4.0.0", GetProperty(LoadProject("src/core/Rowles.LeanCorpus/Rowles.LeanCorpus.csproj"), "Version"));
+        Assert.Equal("3.0.0", GetProperty(LoadProject("src/core/Rowles.Text/Rowles.Text.csproj"), "Version"));
     }
 
     [Fact]

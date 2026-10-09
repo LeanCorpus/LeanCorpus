@@ -13,18 +13,28 @@ function Invoke-DevOpsPack {
         }
         [void][System.IO.Directory]::CreateDirectory($outputDirectory)
 
-        $arguments = @('pack', (Join-Path $repoRoot 'Rowles.LeanCorpus.slnx'), '-c', $configuration, '--output', $outputDirectory)
-        if ($parsed.Has('NoBuild')) { $arguments += '--no-build' }
+        $projects = if ($parsed.Has('CompressionOnly')) {
+            @('Rowles.LeanCorpus', 'Rowles.LeanCorpus.Compression.LZ4', 'Rowles.LeanCorpus.Compression.Snappy', 'Rowles.LeanCorpus.Compression.Zstandard') | ForEach-Object {
+                Join-Path $repoRoot "src/core/$_/$_.csproj"
+            }
+        } else { @(Join-Path $repoRoot 'Rowles.LeanCorpus.slnx') }
         Write-Heading 'Packing LeanCorpus packages'
-        Invoke-DotNet $arguments
+        foreach ($project in $projects) {
+            $packArguments = @('pack', $project, '-c', $configuration, '--output', $outputDirectory, '--disable-build-servers', '-m:1', '-p:UseSharedCompilation=false', '--tl:off')
+            if ($parsed.Has('NoBuild')) { $packArguments += '--no-build' }
+            Invoke-DotNet $packArguments | ForEach-Object { Write-Host $_ }
+        }
 
         $git = Get-ArtifactGitContext -RepoRoot $repoRoot
         $packages = @(Get-ChildItem $outputDirectory -File | Where-Object { $_.Extension -in @('.nupkg', '.snupkg') } | Sort-Object Name)
+        if ($parsed.Has('CompressionOnly')) {
+            $currentNames = @('LeanCorpus.4.0.0', 'LeanCorpus.Compression.LZ4.2.0.0', 'LeanCorpus.Compression.Snappy.2.0.0', 'LeanCorpus.Compression.Zstandard.2.0.0')
+            $packages = @($packages | Where-Object {
+                [IO.Path]::GetFileNameWithoutExtension($_.Name) -in $currentNames
+            })
+        }
         $entries = foreach ($package in $packages) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($package.Name)
-            if ($package.Name.EndsWith('.snupkg', [StringComparison]::OrdinalIgnoreCase)) {
-                $name = [System.IO.Path]::GetFileNameWithoutExtension($name)
-            }
             $match = [regex]::Match($name, '^(?<id>.+)\.(?<version>\d+\.\d+\.\d+(?:[-+].+)?)$')
             [ordered]@{
                 packageId = if ($match.Success) { $match.Groups['id'].Value } else { $name }
@@ -41,6 +51,10 @@ function Invoke-DevOpsPack {
             configuration = $configuration
             packages = @($entries)
         })
+        if ($parsed.Has('ValidateCompression')) {
+            . (Join-Path (Get-ScriptsPath) 'devops/packaging/validate-compression.ps1')
+            Test-CompressionPackages -PackageDirectory $outputDirectory -RepoRoot $repoRoot
+        }
         Write-Success "Packages written to: $outputDirectory"
         return 0
     } catch {

@@ -67,6 +67,8 @@ Found 1 document(s).
 | Use Snappy stored-field compression | `LeanCorpus.Compression.Snappy` | [Snappy README](src/core/Rowles.LeanCorpus.Compression.Snappy/README.md) |
 | Use Zstandard stored-field compression | `LeanCorpus.Compression.Zstandard` | [Zstandard README](src/core/Rowles.LeanCorpus.Compression.Zstandard/README.md) |
 
+LeanCorpus 4.0.0 uses optional LZ4, Snappy and Zstandard packages 2.0.0. Each supports Core `>= 4.0.0` and `< 5.0.0`; Rowles.Text remains 3.0.0.
+
 The core package already includes Deflate and Brotli. Add a compression package only when its speed or size trade-off fits your workload.
 
 ## Choose your next path

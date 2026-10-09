@@ -25,6 +25,8 @@
 
 ## Changed
 
+- Advance LZ4, Snappy and Zstandard optional packages to 2.0.0, require LeanCorpus `[4.0.0,5.0.0)`, publish matching symbol packages and add local-package consumer acceptance to DevOps packing.
+
 - Define `ComplexPhraseQueryParser.InOrder` as controlling ordering only for multi-slot flat-alternative phrases; ordinary analysed phrases remain graph-aware and ordered.
 - Close Geo and XY geometry collections to built-in types and clarify the Packed BKD namespace boundary. ([ed255b3d4](https://github.com/jordansrowles/LeanCorpus/commit/ed255b3d4875e5ee67b69a8a2f6b2dd50b6a7800))
 - Stream vector segment merges through mapped destination files and bounded quantisation passes, avoiding a second managed float corpus during HNSW rebuilds. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))

@@ -9,11 +9,13 @@ Use this package when stored-field write and retrieval speed matter more than ac
 Install the core and codec packages:
 
 ```bash
-dotnet add package LeanCorpus
-dotnet add package LeanCorpus.Compression.LZ4
+dotnet add package LeanCorpus --version 4.0.0
+dotnet add package LeanCorpus.Compression.LZ4 --version 2.0.0
 ```
 
-Register the codec and select its policy:
+Version 2.0.0 supports LeanCorpus `>= 4.0.0` and `< 5.0.0`.
+
+Register the codec before opening an index and select its policy:
 
 ```csharp
 using Rowles.LeanCorpus.Codecs.StoredFields;

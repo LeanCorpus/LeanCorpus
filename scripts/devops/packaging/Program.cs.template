@@ -1,0 +1,52 @@
+using System.Diagnostics;
+using Rowles.LeanCorpus.Codecs.CodecKit;
+using Rowles.LeanCorpus.Codecs.StoredFields;
+using Rowles.LeanCorpus.Compression.CODEC;
+using Rowles.LeanCorpus.Document;
+using Rowles.LeanCorpus.Document.Fields;
+using Rowles.LeanCorpus.Index.Indexer;
+using Rowles.LeanCorpus.Search.Queries;
+using Rowles.LeanCorpus.Search.Searcher;
+using Rowles.LeanCorpus.Store;
+
+// Each invocation is a fresh process. Registration must precede index access.
+REGISTRATION.Register();
+var core = typeof(IndexWriter).Assembly;
+var optional = typeof(REGISTRATION).Assembly;
+if (core.GetName().Version != new Version(4, 0, 0, 0) ||
+    optional.GetName().Version != new Version(2, 0, 0, 0) ||
+    FileVersionInfo.GetVersionInfo(optional.Location).FileVersion != "2.0.0.0")
+    throw new InvalidDataException("Unexpected packed assembly or file version.");
+
+string content = string.Concat(Enumerable.Repeat("café 東京 \U0001f600 stored content\n", 4096));
+using var directory = new MMapDirectory(args[1]);
+if (args[0] == "write")
+{
+    using var writer = new IndexWriter(directory, new IndexWriterConfig
+    {
+        CompressionPolicy = FieldCompressionPolicy.POLICY,
+        MergePolicy = NoMergePolicy.Instance,
+    });
+    var document = new LeanDocument();
+    document.Add(new StringField("id", "round-trip", stored: true));
+    document.Add(new StoredField("content", content));
+    document.Add(new StoredField("empty", ""));
+    writer.AddDocument(document);
+    writer.Commit();
+}
+else if (args[0] == "read")
+{
+    using var searcher = new IndexSearcher(directory);
+    var hits = searcher.Search(new TermQuery("id", "round-trip"), 10);
+    if (hits.ScoreDocs.Length != 1)
+        throw new InvalidDataException("Expected one committed document.");
+    var stored = searcher.GetStoredFields(hits.ScoreDocs[0].DocId);
+    if (stored["id"].Single() != "round-trip" || stored["content"].Single() != content || stored["empty"].Single() != "")
+        throw new InvalidDataException("Packed codec stored fields did not round-trip.");
+    using var input = new IndexInput(Directory.GetFiles(args[1], "*.fdt").Single());
+    using var frame = CodecFileReader.OpenSupported(input, CodecCatalog.Default.GetFile("leancorpus.stored-fields.data"));
+    if (frame.ReadBody()[sizeof(int)] != (byte)FieldCompressionPolicy.POLICY)
+        throw new InvalidDataException("The stored-field body did not record the requested codec policy.");
+}
+else throw new ArgumentException("Expected write or read mode.");
+Console.WriteLine($"CODEC {args[0]} passed with Core {core.GetName().Version} and optional {optional.GetName().Version}.");

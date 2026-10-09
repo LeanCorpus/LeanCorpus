@@ -150,3 +150,35 @@ Keep download and data-preparation logic in `scripts`, with `devops.ps1` acting 
 `.github/workflows/build.yml` is the required validation contract. The DevOps entry point and CI should use equivalent commands where practical, but local-only diagnostics and expensive repeated benchmarks should remain opt-in unless they are intentionally promoted to merge validation.
 
 When changing routing, inspect both local callers and workflow callers before removing an option or alias.
+
+## Validate optional compression packages for release
+
+The 4.0 release matrix is LeanCorpus 4.0.0, Rowles.Text 3.0.0 and
+LeanCorpus.Compression.LZ4, Snappy and Zstandard 2.0.0. The optional packages
+require Core `[4.0.0,5.0.0)` and do not directly depend on Rowles.Text.
+
+```bash
+./devops pack -CompressionOnly -ValidateCompression
+# After a full solution build, reuse those binaries:
+./devops pack -CompressionOnly -NoBuild -ValidateCompression
+```
+
+The gate inspects the generated `.nupkg` and `.snupkg` identities, both TFM
+dependency groups and an explicit asset allow-list. Symbol packages contain
+portable PDBs matching the normal assembly names; source files are not embedded
+as separate package content. No build or test artefacts belong in these packages.
+
+One isolated temporary consumer project installs each local optional package in
+turn on .NET 10 and .NET 11. Local source mapping supplies Core and the optional
+package, with normal configured feeds supplying third-party dependencies. Each
+codec registers before index access. Separate processes create/commit and reopen
+an index and verify stored fields, codec policy, resolved Core version and
+assembly/file versions. An exact Core 3.1.1 pairing must fail NuGet resolution.
+The negative probe may restore the historical package from a configured feed.
+
+Review `artifacts/package/release/manifest.json` and the acceptance evidence under
+`artifacts/temp/compression-consumer`; the standard test `run.json` records
+status and the consumer evidence path. The scoped pack manifest lists only the
+current Core and optional packages, preserving older local artefacts separately. Packing and validation do not publish any
+package. Run focused compression/registration tests, the architecture suite,
+the full build, docs build and `git diff --check` before release.

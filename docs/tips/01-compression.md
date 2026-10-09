@@ -25,7 +25,18 @@ The policy is recorded in the segment header; reads tolerate mixed segments.
 
 ## Optional codecs
 
-Install and register:
+Use LeanCorpus 4.0.0 with optional compression packages 2.0.0. Each optional
+package requires Core `>= 4.0.0` and `< 5.0.0`.
+
+```bash
+dotnet add package LeanCorpus --version 4.0.0
+# Install the codec you need:
+dotnet add package LeanCorpus.Compression.LZ4 --version 2.0.0
+dotnet add package LeanCorpus.Compression.Snappy --version 2.0.0
+dotnet add package LeanCorpus.Compression.Zstandard --version 2.0.0
+```
+
+Register before opening an index:
 
 ```csharp
 Lz4Compression.Register();

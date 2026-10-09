@@ -8,7 +8,7 @@
 @{
     'store'          = @{ Globs = @('src/core/Rowles.LeanCorpus/Store/**');                          Targets = @('core:Store', 'server-core:Server', 'server-integration:Server') }
     'codecs'         = @{ Globs = @('src/core/Rowles.LeanCorpus/Codecs/**');                         Targets = @('core:CodecKit') }
-    'compression-packages' = @{ Globs = @('src/core/Rowles.LeanCorpus.Compression.LZ4/**', 'src/core/Rowles.LeanCorpus.Compression.Snappy/**', 'src/core/Rowles.LeanCorpus.Compression.Zstandard/**'); Targets = @('core:CodecKit') }
+    'compression-packages' = @{ Globs = @('src/core/Rowles.LeanCorpus.Compression.LZ4/**', 'src/core/Rowles.LeanCorpus.Compression.Snappy/**', 'src/core/Rowles.LeanCorpus.Compression.Zstandard/**', 'src/core/OptionalCompression.Pack.targets'); Targets = @('core:CodecKit') }
     'diagnostics'    = @{ Globs = @('src/core/Rowles.LeanCorpus/Diagnostics/**');                    Targets = @('core:Diagnostics') }
     'document'       = @{ Globs = @('src/core/Rowles.LeanCorpus/Document/**');                       Targets = @('core:Document') }
     'index'          = @{ Globs = @('src/core/Rowles.LeanCorpus/Index/**');                          Targets = @('core:Index') }

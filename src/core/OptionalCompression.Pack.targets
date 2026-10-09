@@ -1,0 +1,11 @@
+<Project>
+  <!-- Preserve project references for builds; constrain the published Core dependency. -->
+  <Target Name="ConstrainOptionalCompressionCoreDependency" AfterTargets="_GetProjectReferenceVersions">
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Update="@(_ProjectReferencesWithVersions)"
+                                      Condition="'%(_ProjectReferencesWithVersions.Filename)' == 'Rowles.LeanCorpus'">
+        <ProjectVersion>[4.0.0,5.0.0)</ProjectVersion>
+      </_ProjectReferencesWithVersions>
+    </ItemGroup>
+  </Target>
+</Project>
