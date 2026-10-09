@@ -13,7 +13,13 @@ function Invoke-DevOpsData {
         exit 1
     }
 
-    $valid = @('gutenberg')
+    if ($dataset -eq 'migration-fixtures-311') {
+        $scriptPath = Join-Path $scriptsPath 'devops/data/generate-migration-fixtures-311.ps1'
+        & $scriptPath -PackageSource ([string]$parsed.Get('PackageSource', 'https://api.nuget.org/v3/index.json'))
+        return $LASTEXITCODE
+    }
+
+    $valid = @('gutenberg', 'migration-fixtures-311')
     if ($dataset -notin $valid) {
         Write-Error "Unknown dataset '$dataset'. Valid: $($valid -join ', ')"
         exit 1
