@@ -1,11 +1,11 @@
-namespace Rowles.LeanCorpus.Analysis.Tokenisers;
+﻿namespace Rowles.LeanCorpus.Analysis.Tokenisers;
 
 using Rowles.LeanCorpus.Analysis;
 
 /// <summary>
-/// Splits text into character substrings of length [<see cref="MinGram"/>, <see cref="MaxGram"/>]
+/// Splits text into Unicode scalar substrings of length [<see cref="MinGram"/>, <see cref="MaxGram"/>]
 /// anchored at the start of each whitespace-delimited token (edge n-grams), using
-/// <see cref="char.IsWhiteSpace(char)"/> for Unicode-aware whitespace detection.
+/// scalar whitespace classification for Unicode-aware whitespace detection.
 ///
 /// Thread-safety: the span path and enumerator are thread-safe for concurrent use on the same instance.
 /// No per-instance mutable state is retained across calls.
@@ -13,20 +13,20 @@ using Rowles.LeanCorpus.Analysis;
 public sealed class EdgeNGramTokeniser : IShareableSpanTokeniser
 {
     /// <summary>
-    /// Gets the minimum n-gram length (inclusive).
+    /// Gets the minimum n-gram length in Unicode scalars (inclusive).
     /// </summary>
     public int MinGram { get; }
 
     /// <summary>
-    /// Gets the maximum n-gram length (inclusive).
+    /// Gets the maximum n-gram length in Unicode scalars (inclusive).
     /// </summary>
     public int MaxGram { get; }
 
     /// <summary>
     /// Initialises a new <see cref="EdgeNGramTokeniser"/> with the specified gram size range.
     /// </summary>
-    /// <param name="minGram">The minimum gram length (must be ≥ 1).</param>
-    /// <param name="maxGram">The maximum gram length (must be ≥ <paramref name="minGram"/>).</param>
+    /// <param name="minGram">The minimum gram length in Unicode scalars (must be ≥ 1).</param>
+    /// <param name="maxGram">The maximum gram length in Unicode scalars (must be ≥ <paramref name="minGram"/>).</param>
     /// <exception cref="ArgumentOutOfRangeException">
     /// Thrown when <paramref name="minGram"/> is less than 1, or <paramref name="maxGram"/> is less than <paramref name="minGram"/>.
     /// </exception>
@@ -39,117 +39,124 @@ public sealed class EdgeNGramTokeniser : IShareableSpanTokeniser
     }
 
     /// <inheritdoc/>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Tokenise(ReadOnlySpan<char> input, ISpanTokenSink sink)
     {
         ArgumentNullException.ThrowIfNull(sink);
-        Emit(input, sink);
+        var enumerator = EnumerateTokens(input);
+        while (enumerator.AdvanceBoundaries())
+        {
+            enumerator.EmitCurrent(sink);
+        }
     }
 
-    /// <summary>
-    /// Returns a stack-only <see cref="Enumerator"/> that yields edge n-gram tokens
-    /// one at a time without materialising a <see cref="List{Token}"/> or token text strings.
-    /// Use in a <c>foreach</c> loop when early termination or zero-list-allocation
-    /// enumeration is desired.
-    /// </summary>
-    /// <param name="input">The text to tokenise.</param>
+    /// <summary>Enumerates scalar-sized grams without allocating, retaining UTF-16 source offsets.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public Enumerator EnumerateTokens(ReadOnlySpan<char> input) => new(this, input);
 
-    /// <summary>
-    /// Stack-only edge n-gram enumerator. Each call to <see cref="MoveNext"/> advances
-    /// to the next edge n-gram. <see cref="Current"/> exposes the yielded token.
-    /// </summary>
+    /// <summary>The single boundary generator for both the sink and enumeration APIs.</summary>
     public ref struct Enumerator
     {
-        private readonly EdgeNGramTokeniser _owner;
+        private readonly int _minGram;
+        private readonly int _maxGram;
         private readonly ReadOnlySpan<char> _input;
+        private readonly bool _singleUnitInput;
+        private readonly bool _asciiInput;
         private int _scanPos;
-        private int _wordStart;
         private int _wordEnd;
-        private int _gramLen;
-        private SpanToken _current;
+        private int _start;
+        private int _end;
+        private int _units;
+        private int _maximumPrefixUnits;
+        private int _currentStart;
+        private int _currentEnd;
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal Enumerator(EdgeNGramTokeniser owner, ReadOnlySpan<char> input)
         {
-            _owner = owner;
+            _minGram = owner.MinGram;
+            _maxGram = owner.MaxGram;
             _input = input;
+            _asciiInput = System.Text.Ascii.IsValid(input);
+            _singleUnitInput = _asciiInput || !input.ContainsAnyInRange('\ud800', '\udfff');
             _scanPos = 0;
-            _wordStart = 0;
             _wordEnd = 0;
-            _gramLen = 0;
-            _current = default;
+            _start = 0;
+            _end = 0;
+            _units = _singleUnitInput ? owner.MinGram - 1 : 0;
+            _maximumPrefixUnits = 0;
+            _currentStart = 0;
+            _currentEnd = 0;
         }
 
         /// <summary>Gets the current token.</summary>
-        public SpanToken Current => _current;
+        public SpanToken Current
+        {
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+            get => new(_input.Slice(_currentStart, _currentEnd - _currentStart), _currentStart, _currentEnd);
+        }
 
-        /// <summary>Advances to the next edge n-gram token.</summary>
+        // The generator stores boundaries only. The sink does not need to create
+        // or validate a SpanToken merely to forward the same default metadata.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal void EmitCurrent(ISpanTokenSink sink) =>
+            sink.Add(_input[_currentStart.._currentEnd], _currentStart, _currentEnd);
+
+        /// <summary>Advances to the next scalar-sized prefix.</summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool MoveNext()
+        {
+            return AdvanceBoundaries();
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool AdvanceBoundaries()
         {
             while (true)
             {
-                // Find next word if needed
-                if (_gramLen == 0)
+                if (NextPrefix()) return true;
+                if (!ReadWord()) return false;
+            }
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private bool NextPrefix()
+        {
+            if (_singleUnitInput)
+            {
+                if (_units >= _maximumPrefixUnits) return false;
+                _units++;
+                int end = _start + _units;
+                _currentStart = _start;
+                _currentEnd = end;
+                return true;
+            }
+            while (_end < _wordEnd && _units < _maxGram)
+            {
+                _end += UnicodeTokenisation.GetScalarUnitWidth(_input, _end);
+                _units++;
+                if (_units >= _minGram)
                 {
-                    while (_scanPos < _input.Length && char.IsWhiteSpace(_input[_scanPos]))
-                        _scanPos++;
-
-                    if (_scanPos >= _input.Length)
-                        return false;
-
-                    _wordStart = _scanPos;
-                    while (_scanPos < _input.Length && !char.IsWhiteSpace(_input[_scanPos]))
-                        _scanPos++;
-                    _wordEnd = _scanPos;
-                }
-
-                int tokenLen = _wordEnd - _wordStart;
-                if (tokenLen < _owner.MinGram)
-                {
-                    _gramLen = 0;
-                    continue;
-                }
-
-                int maxGramLen = Math.Min(_owner.MaxGram, tokenLen);
-
-                _gramLen++;
-                if (_gramLen >= _owner.MinGram && _gramLen <= maxGramLen)
-                {
-                    _current = new SpanToken(_input.Slice(_wordStart, _gramLen), _wordStart, _wordStart + _gramLen);
+                    _currentStart = _start;
+                    _currentEnd = _end;
                     return true;
                 }
-
-                // Only reset when we've exceeded maxGramLen; if still below MinGram, keep advancing
-                if (_gramLen > maxGramLen)
-                    _gramLen = 0;
             }
+            return false;
         }
 
-        /// <summary>Returns <c>this</c> for <c>foreach</c> support.</summary>
-        public Enumerator GetEnumerator() => this;
-    }
-
-    private void Emit(ReadOnlySpan<char> input, ISpanTokenSink sink)
-    {
-        int i = 0;
-        while (i < input.Length)
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private bool ReadWord()
         {
-            // Skip whitespace
-            while (i < input.Length && char.IsWhiteSpace(input[i]))
-                i++;
-
-            if (i >= input.Length)
-                break;
-
-            int wordStart = i;
-            while (i < input.Length && !char.IsWhiteSpace(input[i]))
-                i++;
-
-            int tokenLen = i - wordStart;
-            int maxGramLen = Math.Min(MaxGram, tokenLen);
-            for (int gramLen = MinGram; gramLen <= maxGramLen; gramLen++)
-            {
-                sink.Add(input.Slice(wordStart, gramLen), wordStart, wordStart + gramLen);
-            }
+            if (!UnicodeTokenisation.TryReadWhitespaceWord(_input, _asciiInput,
+                ref _scanPos, out _start, out _wordEnd)) return false;
+            _end = _start;
+            _units = _singleUnitInput ? _minGram - 1 : 0;
+            _maximumPrefixUnits = Math.Min(_maxGram, _wordEnd - _start);
+            return true;
         }
+
+        /// <summary>Returns this enumerator for foreach support.</summary>
+        public Enumerator GetEnumerator() => this;
     }
 }

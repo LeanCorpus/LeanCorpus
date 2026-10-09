@@ -1,4 +1,4 @@
-using Rowles.LeanCorpus.Analysis;
+﻿using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Analysers;
 using Rowles.LeanCorpus.Analysis.Tokenisers;
 
@@ -165,10 +165,10 @@ public class AnalysisParityTests
     }
 
     /// <summary>
-    /// Verifies the Truncate Token Filter: Truncates Text And End Offset scenario.
+    /// Verifies the Truncate Token Filter: Truncates Text And Preserves Source Offsets scenario.
     /// </summary>
-    [Fact(DisplayName = "Truncate Token Filter: Truncates Text And End Offset")]
-    public void TruncateTokenFilter_TruncatesTextAndEndOffset()
+    [Fact(DisplayName = "Truncate Token Filter: Truncates Text And Preserves Source Offsets")]
+    public void TruncateTokenFilter_TruncatesTextAndPreservesSourceOffsets()
     {
         var tokens = new List<Token> { new("abcdef", 10, 16), new("xy", 20, 22) };
         var filter = new TruncateTokenFilter(3);
@@ -180,7 +180,7 @@ public class AnalysisParityTests
 
         Assert.Equal("abc", tokens[0].Text);
         Assert.Equal(10, tokens[0].StartOffset);
-        Assert.Equal(13, tokens[0].EndOffset);
+        Assert.Equal(16, tokens[0].EndOffset);
         Assert.Equal("xy", tokens[1].Text);
         Assert.Equal(22, tokens[1].EndOffset);
     }

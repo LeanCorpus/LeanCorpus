@@ -76,3 +76,30 @@ Return to the [feature comparison overview](index.md) for status definitions and
 | Korean | ◐ | ✔ | ✔ | Uses CJK bigram tokenisation; the stemmer is a no-op adapter. |
 | Hindi | ❌ | ✔ | ✔ | Not currently available. |
 | Turkish | ❌ | ✔ | ✔ | Not currently available. |
+
+## Unicode scalars and source offsets
+
+Rowles.Text 3.0 and LeanCorpus 4.0 use Unicode scalar values for letter, digit,
+case and punctuation classification. NGram and EdgeNGram gram sizes, LengthFilter
+bounds and TruncateTokenFilter limits count scalars, not UTF-16 code units.
+Token offsets remain UTF-16 indices into the original source. Truncation preserves
+both incoming source offsets, even when preceding filters have changed text length.
+
+Malformed UTF-16 is processed deterministically: each isolated surrogate consumes
+one code unit, is not assigned a Unicode category, and is copied unchanged by text
+transformations. Valid surrogate pairs are never split. ReverseStringFilter reverses
+scalars, not grapheme clusters. Reversing valid text twice restores it exactly;
+reversing broken surrogate units can join them into a valid pair, so malformed text
+need not have that property.
+
+AccentFoldingFilter performs canonical decomposition, removes non-spacing-mark
+scalars, then performs canonical composition. It is not a general ASCII
+transliterator: for example, `ø` remains unchanged. Valid runs on either side of an
+isolated surrogate are normalised independently. These implementations use .NET
+10/11 span and Rune APIs, retaining allocation-free ASCII paths and pooled scratch
+buffers for longer transformations.
+
+Existing indexes are not automatically rewritten. An index built with an affected
+older analysis configuration may need reindexing to restore exact index/query
+analyser parity, particularly for supplementary text and the corrected truncation
+semantics. These changes introduce no codec format change or postings migration.

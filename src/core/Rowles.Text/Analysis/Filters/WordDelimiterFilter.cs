@@ -1,3 +1,6 @@
+﻿using System.Text;
+using Rowles.LeanCorpus.Analysis.Tokenisers;
+
 namespace Rowles.LeanCorpus.Analysis.Filters;
 
 /// <summary>
@@ -264,68 +267,47 @@ public sealed class WordDelimiterFilter : ISpanTokenFilter
         if (text.IsEmpty) return;
 
         int runStart = 0;
-        CharKind prevKind = Classify(text[0]);
-
-        for (int i = 1; i < text.Length; i++)
+        int previousStart = 0;
+        int uppercaseRun = 0;
+        CharKind previousKind = CharKind.Delimiter;
+        for (int index = 0; index < text.Length;)
         {
-            CharKind kind = Classify(text[i]);
-
+            CharKind kind = ClassifyAt(text, index, out int width);
             if (kind == CharKind.Delimiter)
             {
-                if (prevKind != CharKind.Delimiter)
-                    AddPart(parts, runStart, i, prevKind == CharKind.Digit);
-                runStart = i + 1;
-                prevKind = kind;
-                continue;
+                if (previousKind != CharKind.Delimiter)
+                    AddPart(parts, runStart, index, previousKind == CharKind.Digit);
+                runStart = index + width;
             }
-
-            if (prevKind == CharKind.Delimiter)
+            else if (previousKind == CharKind.Delimiter)
             {
-                runStart = i;
-                prevKind = kind;
-                continue;
+                runStart = index;
             }
-
-            bool shouldSplit = false;
-
-            if (kind != prevKind)
+            else if (kind != previousKind)
             {
-                if (SplitOnNumerics &&
-                    (prevKind == CharKind.Digit || kind == CharKind.Digit))
+                if (SplitOnNumerics && (previousKind == CharKind.Digit || kind == CharKind.Digit) ||
+                    SplitOnCaseChange && previousKind == CharKind.Lower && kind == CharKind.Upper)
                 {
-                    shouldSplit = true;
+                    AddPart(parts, runStart, index, previousKind == CharKind.Digit);
+                    runStart = index;
                 }
-                else if (SplitOnCaseChange &&
-                         prevKind == CharKind.Lower && kind == CharKind.Upper)
+                else if (SplitOnCaseChange && previousKind == CharKind.Upper &&
+                    kind == CharKind.Lower && uppercaseRun > 1)
                 {
-                    shouldSplit = true;
-                }
-                else if (SplitOnCaseChange &&
-                         prevKind == CharKind.Upper && kind == CharKind.Lower)
-                {
-                    // UPPER → lower: split before the last uppercase if the
-                    // uppercase run is longer than one character.
-                    // "POWERShot" → "POWER", "Shot"
-                    if (i - runStart > 1)
-                    {
-                        AddPart(parts, runStart, i - 1, false);
-                        runStart = i - 1;
-                    }
+                    AddPart(parts, runStart, previousStart, false);
+                    runStart = previousStart;
                 }
             }
 
-            if (shouldSplit)
-            {
-                AddPart(parts, runStart, i, prevKind == CharKind.Digit);
-                runStart = i;
-            }
-
-            prevKind = kind;
+            uppercaseRun = kind == CharKind.Upper
+                ? (previousKind == CharKind.Upper ? uppercaseRun + 1 : 1)
+                : 0;
+            previousStart = index;
+            previousKind = kind;
+            index += width;
         }
-
-        // Emit the final run.
-        if (prevKind != CharKind.Delimiter && runStart < text.Length)
-            AddPart(parts, runStart, text.Length, prevKind == CharKind.Digit);
+        if (previousKind != CharKind.Delimiter && runStart < text.Length)
+            AddPart(parts, runStart, text.Length, previousKind == CharKind.Digit);
     }
 
     private static void AddPart(
@@ -335,14 +317,31 @@ public sealed class WordDelimiterFilter : ISpanTokenFilter
             parts.Add((start, end, isNumber));
     }
 
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private CharKind ClassifyAt(ReadOnlySpan<char> text, int index, out int width)
+    {
+        char value = text[index];
+        if (value <= 0x7f)
+        {
+            width = 1;
+            if (IsDelimiter(value)) return CharKind.Delimiter;
+            if ((uint)(value - '0') <= 9) return CharKind.Digit;
+            if ((uint)(value - 'A') <= 'Z' - 'A') return CharKind.Upper;
+            return CharKind.Lower;
+        }
+        bool valid = UnicodeTokenisation.TryDecodeRuneAt(text, index, out Rune rune, out width);
+        return Classify(value, valid, rune, width);
+    }
+
     [System.Runtime.CompilerServices.MethodImpl(
         System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private CharKind Classify(char c)
+    private CharKind Classify(char first, bool valid, Rune rune, int width)
     {
-        if (IsDelimiter(c)) return CharKind.Delimiter;
-        if (char.IsDigit(c)) return CharKind.Digit;
-        if (char.IsLower(c)) return CharKind.Lower;
-        if (char.IsUpper(c)) return CharKind.Upper;
+        if (width == 1 && IsDelimiter(first)) return CharKind.Delimiter;
+        if (!valid) return CharKind.Lower;
+        if (Rune.IsDigit(rune)) return CharKind.Digit;
+        if (Rune.IsLower(rune)) return CharKind.Lower;
+        if (Rune.IsUpper(rune)) return CharKind.Upper;
         return CharKind.Lower;
     }
 

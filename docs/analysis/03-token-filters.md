@@ -24,12 +24,12 @@ The example normalises before checking stop words and stems only the surviving t
 | Filter | Behaviour and configuration |
 |---|---|
 | `LowercaseFilter` | Lowercases token text. Place before case-sensitive dictionaries. |
-| `AccentFoldingFilter` | Folds accented Latin characters to simpler forms. Decide whether the application needs originals as well. |
+| `AccentFoldingFilter` | Canonically decomposes text, removes non-spacing-mark scalars and recomposes it; not general ASCII transliteration. |
 | `DecimalDigitFilter` | Converts Unicode decimal digits to their ASCII equivalents. |
 | `ClassicFilter` | Removes English possessives and periods from uppercase acronyms such as `U.S.A.`. |
 | `PatternReplaceFilter` | Applies a regular expression replacement to each token. Accepts a pattern and replacement, or a compiled `Regex`. |
-| `ReverseStringFilter` | Reverses token text, useful for suffix-oriented indexing. Query analysis must mirror it. |
-| `TruncateTokenFilter` | Limits each token to `maxLength`. Truncation can create collisions. |
+| `ReverseStringFilter` | Reverses Unicode scalars, not grapheme clusters, for suffix-oriented indexing. Query analysis must mirror it. |
+| `TruncateTokenFilter` | Limits token text to `maxLength` Unicode scalars and preserves incoming UTF-16 source offsets. Truncation can create collisions. |
 | `HyphenatedWordsFilter` | Recombines words split across hyphenated line endings. Configure the separator and use `Finish` by completing the analyser normally. |
 | `WordDelimiterFilter` | Splits punctuation, case, and letter-digit transitions. Controls include generated word and number parts, concatenation, original preservation, case splitting, numeric splitting, and possessive stemming. |
 
@@ -54,7 +54,7 @@ For `WiFi4Schools_test`, this can emit component terms and same-position alterna
 | Filter | Behaviour and configuration |
 |---|---|
 | `StopWordFilter` | Removes the default or supplied stop-word set. |
-| `LengthFilter` | Keeps tokens between `minLength` and `maxLength`. |
+| `LengthFilter` | Keeps tokens between `minLength` and `maxLength` Unicode scalars. |
 | `KeepWordFilter` | Keeps only tokens in the supplied set. |
 | `TypeTokenFilter` | Keeps or rejects configured token types through `keepMatching`. |
 | `UniqueTokenFilter` | Removes duplicate token text from one analysed stream. |

@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using Xunit;
 using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Analysers;
@@ -16,6 +16,21 @@ namespace Rowles.LeanCorpus.Tests.AOTSmoke;
 
 public class AnalysisSmokeTests
 {
+    [Fact]
+    public void Supplementary_scalars_survive_tokenisation_and_filters()
+    {
+        var sink = new MaterialisingTokenSink();
+        new LetterTokeniser().Tokenise("A\U00010400B", sink);
+        Assert.Equal("A\U00010400B", Assert.Single(sink.Tokens).Text);
+        sink.Tokens.Clear();
+        new DecimalDigitFilter().Apply("\U000104A3", 0, 2, Token.DefaultType, 1, null, sink);
+        Assert.Equal("3", Assert.Single(sink.Tokens).Text);
+        Assert.Equal(2, sink.Tokens[0].EndOffset);
+        sink.Tokens.Clear();
+        new AccentFoldingFilter().Apply("é\U000101FD", 0, 4, Token.DefaultType, 1, null, sink);
+        Assert.Equal("e", Assert.Single(sink.Tokens).Text);
+    }
+
     // =========================================================================
     // Tokeniser smoke
     // =========================================================================

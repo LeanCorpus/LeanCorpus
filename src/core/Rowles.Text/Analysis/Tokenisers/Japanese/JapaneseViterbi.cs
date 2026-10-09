@@ -1,4 +1,6 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
+using System.Globalization;
+using System.Text;
 
 namespace Rowles.LeanCorpus.Analysis.Tokenisers.Japanese;
 
@@ -220,16 +222,18 @@ internal static class JapaneseViterbi
         return length;
     }
 
-    private static bool IsPunctuation(ReadOnlySpan<char> value)
+    internal static bool IsPunctuation(ReadOnlySpan<char> value)
     {
-        foreach (char current in value)
+        for (int index = 0; index < value.Length;)
         {
-            if (char.IsWhiteSpace(current)
-                || char.IsSeparator(current)
-                || char.IsPunctuation(current))
-            {
+            bool valid = UnicodeTokenisation.TryDecodeRuneAt(value, index, out Rune rune, out int width);
+            if (valid && (Rune.IsWhiteSpace(rune) || Rune.GetUnicodeCategory(rune) is
+                UnicodeCategory.SpaceSeparator or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator or
+                UnicodeCategory.ConnectorPunctuation or UnicodeCategory.DashPunctuation or UnicodeCategory.OpenPunctuation or
+                UnicodeCategory.ClosePunctuation or UnicodeCategory.InitialQuotePunctuation or UnicodeCategory.FinalQuotePunctuation or
+                UnicodeCategory.OtherPunctuation))
                 return true;
-            }
+            index += width;
         }
         return false;
     }

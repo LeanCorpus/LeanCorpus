@@ -1,5 +1,7 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Globalization;
+using System.Text;
+using Rowles.LeanCorpus.Analysis.Tokenisers;
 
 namespace Rowles.LeanCorpus.Analysis.Filters;
 
@@ -36,11 +38,23 @@ public sealed class DecimalDigitFilter : ISpanTokenFilter
                 ? stackalloc char[text.Length]
                 : (rented = ArrayPool<char>.Shared.Rent(text.Length));
 
-            text.CopyTo(buffer);
-            for (int i = index; i < text.Length; i++)
-                buffer[i] = NormaliseDigit(buffer[i]);
-
-            sink.Add(buffer[..text.Length], startOffset, endOffset, type, positionIncrement, payload);
+            text[..index].CopyTo(buffer);
+            int write = index;
+            for (int i = index; i < text.Length;)
+            {
+                if (UnicodeTokenisation.TryDecodeRuneAt(text, i, out Rune rune, out int width))
+                {
+                    if (Rune.GetUnicodeCategory(rune) == UnicodeCategory.DecimalDigitNumber &&
+                        Rune.GetNumericValue(rune) is double value && value is >= 0 and <= 9 && value == Math.Truncate(value))
+                        buffer[write++] = (char)('0' + (int)value);
+                    else
+                        write += rune.EncodeToUtf16(buffer[write..]);
+                }
+                else
+                    buffer[write++] = text[i];
+                i += width;
+            }
+            sink.Add(buffer[..write], startOffset, endOffset, type, positionIncrement, payload);
         }
         finally
         {
@@ -51,30 +65,17 @@ public sealed class DecimalDigitFilter : ISpanTokenFilter
 
     private static int IndexOfNormalisableDigit(ReadOnlySpan<char> text)
     {
-        for (int i = 0; i < text.Length; i++)
+        // ASCII cannot need decimal normalisation; skip it with the span search.
+        if (Ascii.IsValid(text)) return -1;
+        int firstNonAscii = text.IndexOfAnyInRange((char)128, char.MaxValue);
+        if (firstNonAscii < 0) return -1;
+        for (int i = firstNonAscii; i < text.Length;)
         {
-            char c = text[i];
-            if (c is >= '0' and <= '9')
-                continue;
-
-            if (char.GetUnicodeCategory(c) == UnicodeCategory.DecimalDigitNumber)
+            bool valid = UnicodeTokenisation.TryDecodeRuneAt(text, i, out Rune rune, out int width);
+            if (valid && rune.Value > 127 && Rune.GetUnicodeCategory(rune) == UnicodeCategory.DecimalDigitNumber)
                 return i;
+            i += width;
         }
-
         return -1;
-    }
-
-    private static char NormaliseDigit(char c)
-    {
-        if (c is >= '0' and <= '9')
-            return c;
-
-        if (char.GetUnicodeCategory(c) != UnicodeCategory.DecimalDigitNumber)
-            return c;
-
-        double value = char.GetNumericValue(c);
-        return value is >= 0 and <= 9 && value == Math.Truncate(value)
-            ? (char)('0' + (int)value)
-            : c;
     }
 }

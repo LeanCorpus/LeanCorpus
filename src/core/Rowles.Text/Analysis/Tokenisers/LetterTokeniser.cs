@@ -1,53 +1,55 @@
+﻿using System.Text;
+
 namespace Rowles.LeanCorpus.Analysis.Tokenisers;
 
-/// <summary>
-/// Splits input text into letter-only tokens, discarding digits and punctuation.
-/// </summary>
+/// <summary>Splits input into Unicode-scalar letter runs with UTF-16 source offsets.</summary>
 public sealed class LetterTokeniser : IShareableSpanTokeniser
 {
     /// <inheritdoc/>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     public void Tokenise(ReadOnlySpan<char> input, ISpanTokenSink sink)
     {
-        int i = 0;
-        while (i < input.Length)
-        {
-            if (!char.IsLetter(input[i]))
-            {
-                i++;
-                continue;
-            }
-
-            int start = i;
-            while (i < input.Length && char.IsLetter(input[i]))
-                i++;
-
-            sink.Add(input[start..i], start, i);
-        }
+        bool ascii = Ascii.IsValid(input);
+        int position = 0;
+        while (TryReadLetters(input, ascii, ref position, out int start, out int end))
+            sink.Add(input[start..end], start, end);
     }
 
-    /// <summary>
-    /// Emits letter-only token offsets into the supplied list without materialising token text.
-    /// </summary>
-    /// <param name="input">The text to tokenise.</param>
-    /// <param name="offsets">The list to populate. Cleared before use.</param>
+    /// <summary>Emits source offsets without materialising token text.</summary>
     internal void TokeniseOffsets(ReadOnlySpan<char> input, List<(int Start, int End)> offsets)
     {
         offsets.Clear();
-        int i = 0;
+        bool ascii = Ascii.IsValid(input);
+        int position = 0;
+        while (TryReadLetters(input, ascii, ref position, out int start, out int end))
+            offsets.Add((start, end));
+    }
 
-        while (i < input.Length)
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+    private static bool TryReadLetters(ReadOnlySpan<char> input, bool ascii, ref int position, out int start, out int end)
+    {
+        int index = position;
+        if (ascii)
         {
-            if (!char.IsLetter(input[i]))
-            {
-                i++;
-                continue;
-            }
-
-            int start = i;
-            while (i < input.Length && char.IsLetter(input[i]))
-                i++;
-
-            offsets.Add((start, i));
+            while (index < input.Length && (uint)((input[index] | 0x20) - 'a') > 'z' - 'a') index++;
+            start = index;
+            while (index < input.Length && (uint)((input[index] | 0x20) - 'a') <= 'z' - 'a') index++;
         }
+        else
+        {
+            while (index < input.Length)
+            {
+                bool letter = UnicodeTokenisation.TryDecodeRuneAt(input, index, out Rune rune, out int width)
+                    && Rune.IsLetter(rune);
+                if (letter) break;
+                index += width;
+            }
+            start = index;
+            while (index < input.Length && UnicodeTokenisation.TryDecodeRuneAt(input, index, out Rune rune, out int width)
+                && Rune.IsLetter(rune)) index += width;
+        }
+        position = index;
+        end = index;
+        return end > start;
     }
 }

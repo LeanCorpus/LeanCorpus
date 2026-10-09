@@ -65,3 +65,7 @@ var analyser = new Analyser(
 - [Analysers](01-analysers.md)
 - [Token filters](03-token-filters.md)
 - <xref:Rowles.LeanCorpus.Analysis.Tokenisers.ISpanTokeniser>
+
+NGram and EdgeNGram lengths count Unicode scalars. Their sink and streaming APIs
+share the same boundary generator; offsets remain UTF-16 source indices. Each
+isolated surrogate consumes one invalid unit, while valid pairs remain intact.
