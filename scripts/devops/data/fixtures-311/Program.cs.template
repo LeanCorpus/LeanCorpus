@@ -56,7 +56,7 @@ foreach (bool compound in new[] { false, true })
         MaxBufferedDocs = 100, MergePolicy = NoMergePolicy.Instance,
         UseCompoundFile = false, DurableCommits = true, BuildHnswOnFlush = true,
         HnswSeed = seed, NormaliseVectors = false,
-        IndexSort = new IndexSort(SortField.String("id")),
+        IndexSort = new IndexSort(SortField.String("sort:id")),
     }))
     {
         var random = new Random(seed);
@@ -67,6 +67,7 @@ foreach (bool compound in new[] { false, true })
                 var expected = documents[id];
                 var document = new LeanDocument();
                 document.Add(new StringField("id", expected.Id, stored: true));
+                document.Add(new StringField("sort:id", expected.Id));
                 document.Add(new TextField("body", expected.StoredValues["body"][0], stored: true));
                 foreach (var (name, values) in expected.StoredValues.Where(pair => pair.Key is not ("id" or "body")))
                     foreach (string value in values) document.Add(new StoredField(name, value));
@@ -122,6 +123,12 @@ foreach (bool compound in new[] { false, true })
             .ScoreDocs.Select(hit => searcher.GetStoredFields(hit.DocId)["id"].Single()).ToArray();
         if (!geoHits.SequenceEqual(new[] { "doc-03" }))
             throw new InvalidDataException("The deterministic released-package Geo query changed.");
+        string[] sortedIds = searcher.Search(new TermQuery("body", "migration"), 10, SortField.String("sort:id"))
+            .ScoreDocs.Select(hit => searcher.GetStoredFields(hit.DocId)["id"].Single()).ToArray();
+        if (!sortedIds.SequenceEqual(documents.Where(doc => doc.IsLive).Select(doc => doc.Id)))
+            throw new InvalidDataException("The released package must sort the colon-containing field correctly.");
+        if (readers.Any(reader => reader.Info.IndexSortFields is not { } sort || !sort.SequenceEqual(new[] { "String:sort:id:False" })))
+            throw new InvalidDataException("The released package must persist its unchanged colon sort metadata.");
         int docBase = 0;
         segments = readers.Select(reader =>
         {

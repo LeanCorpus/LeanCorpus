@@ -28,9 +28,12 @@ two segments and one committed deletion per segment.
 
 The corpus includes analysed and exact text, empty/small/large/Unicode stored
 values, numeric/binary/sorted DocValues with missing values, legacy Geo points,
-index sorting, an explicit zero vector, absent vectors and persisted HNSW
+physical index sorting on the real `sort:id` string field, an explicit zero vector, absent vectors and persisted HNSW
 membership. Manifest and archive hashes are pinned in the fixture loader;
-regeneration requires deliberate review and updating those pins.
+regeneration requires deliberate review and updating those pins. The released
+metadata remains `String:sort:id:False`. Acceptance preserves this exact sort
+through migration, independent reopen and force merge, and verifies the complete
+codec migration action set for each layout.
 
 Migration to 4.0 is one way. Current readers support the historical files and
 the normal migration framework rewrites supported legacy bodies. Rewritten

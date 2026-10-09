@@ -79,10 +79,10 @@ public static class HistoricalIndexFixtures
                 "ebaec3b42819af4c35049e589d75fc682dd4b6169ad85fbf2e7b7197e066a961"),
             HistoricalIndexFixture.Version311ReleaseLoose => new(
                 prefix + "3.1.1-release-loose.fixture.b64",
-                "5800db79c95c56b7115300364238dc8f38d40adcc40ce53c7e123719f2a5b46a"),
+                "657007c6f4d09eb317fe2903861c0ce1820cf672b2a7c5d2833035ea349a2299"),
             HistoricalIndexFixture.Version311ReleaseCompound => new(
                 prefix + "3.1.1-release-compound.fixture.b64",
-                "29dd32e6101df8a6e978e996228a99bf7ac154dfa8d9c1be3e1405449bd2d4ba"),
+                "e3adfcba53955611f65282e3080f19035d15fa1ed2b8612f110de4d1b60c79a2"),
             _ => throw new ArgumentOutOfRangeException(nameof(fixture), fixture, "Unknown historical index fixture."),
         };
     }

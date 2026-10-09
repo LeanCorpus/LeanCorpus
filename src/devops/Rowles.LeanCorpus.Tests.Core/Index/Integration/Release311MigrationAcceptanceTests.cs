@@ -34,8 +34,8 @@ public sealed class Release311MigrationAcceptanceTests : IDisposable
             Assert.True(compatibility.CanValidate);
             Assert.True(compatibility.CanMigrate);
             Assert.False(compatibility.CanWrite);
-            AssertMigrationActions(compatibility.MigrationActions);
-            AssertPlan(IndexCodecMigrator.Plan(directory));
+            AssertMigrationActions(compatibility.MigrationActions, manifest);
+            AssertPlan(IndexCodecMigrator.Plan(directory), manifest);
             var dryRun = IndexCodecMigrator.Migrate(directory, new IndexCodecMigrationOptions { DryRun = true });
             Assert.True(dryRun.Succeeded, Issues(dryRun));
             Assert.True(dryRun.DryRun);
@@ -61,7 +61,7 @@ public sealed class Release311MigrationAcceptanceTests : IDisposable
         using (var directory = new MMapDirectory(target))
         using (var writer = new IndexWriter(directory, new IndexWriterConfig
         {
-            IndexSort = new IndexSort(SortField.String("id")),
+            IndexSort = new IndexSort(SortField.String("sort:id")),
             UseCompoundFile = compound,
             BuildHnswOnFlush = true,
             HnswSeed = 311400,
@@ -107,7 +107,7 @@ public sealed class Release311MigrationAcceptanceTests : IDisposable
         Directory.CreateDirectory(blockedCommit);
         using (var directory = new MMapDirectory(path))
         {
-            AssertPlan(IndexCodecMigrator.Plan(directory));
+            AssertPlan(IndexCodecMigrator.Plan(directory), manifest);
             var failure = IndexCodecMigrator.Migrate(directory, new IndexCodecMigrationOptions { DryRun = false });
             Assert.False(failure.Succeeded);
         }
@@ -132,29 +132,42 @@ public sealed class Release311MigrationAcceptanceTests : IDisposable
         AssertCurrentFormats(path, manifest);
     }
 
-    private static void AssertPlan(IndexCodecMigrationPlan plan)
+    private static void AssertPlan(IndexCodecMigrationPlan plan, JsonElement manifest)
     {
         Assert.True(plan.CanExecute);
-        AssertMigrationActions(plan.Actions);
+        AssertMigrationActions(plan.Actions, manifest);
     }
 
-    private static void AssertMigrationActions(IReadOnlyList<IndexCodecMigrationAction> migrationActions)
+    private static void AssertMigrationActions(IReadOnlyList<IndexCodecMigrationAction> migrationActions, JsonElement manifest)
     {
-        foreach (var (extension, version) in new[] { (".fdt", 5), (".dvs", 3), (".vec", 2) })
+        // The planner represents compound rewrites through their owning container;
+        // repacking and commit publication are execution steps, not extra plan actions.
+        var expected = manifest.GetProperty("Segments").EnumerateArray().SelectMany(segment =>
         {
-            var actions = migrationActions.Where(action => action.FileName?.EndsWith(extension, StringComparison.Ordinal) == true).ToArray();
-            Assert.Equal(2, actions.Length);
-            Assert.All(actions, action =>
+            string id = segment.GetProperty("SegmentId").GetString()!;
+            return new[]
             {
-                Assert.Equal(extension == ".fdt" ? IndexCodecMigrationActionKind.CoordinatedRewrite
-                    : IndexCodecMigrationActionKind.Rewrite, action.Kind);
-                if (extension == ".fdt")
-                    Assert.Contains(action.SourcePaths, name => name.EndsWith(".fdx", StringComparison.Ordinal));
-                Assert.Equal((byte)version, action.ToVersion);
-                Assert.Equal((byte)(extension == ".dvs" ? 2 : extension == ".fdt" ? 3 : 1), action.FromVersion);
-                Assert.True(action.CanExecute, action.ReasonCannotExecute);
-                if (extension == ".vec") Assert.Equal((byte)1, action.FromVersion);
-            });
+                (SegmentId: id, FileName: id + ".fdt", FormatId: "leancorpus.stored-fields.data",
+                    Kind: IndexCodecMigrationActionKind.CoordinatedRewrite, From: (byte?)3, To: (byte?)5),
+                (SegmentId: id, FileName: id + ".dvs", FormatId: "leancorpus.doc-values.sorted",
+                    Kind: IndexCodecMigrationActionKind.Rewrite, From: (byte?)2, To: (byte?)3),
+                (SegmentId: id, FileName: VectorFilePaths.VectorFile(id, "embedding"), FormatId: "leancorpus.vectors.float32",
+                    Kind: IndexCodecMigrationActionKind.Rewrite, From: (byte?)1, To: (byte?)2),
+            };
+        }).OrderBy(action => action.FileName, StringComparer.Ordinal).ToArray();
+        var actual = migrationActions.OrderBy(action => action.FileName, StringComparer.Ordinal).ToArray();
+        Assert.Equal(expected.Length, actual.Length);
+        for (int i = 0; i < expected.Length; i++)
+        {
+            var action = actual[i];
+            Assert.Equal(expected[i], (action.SegmentId, action.FileName, action.FormatId,
+                action.Kind, action.FromVersion, action.ToVersion));
+            Assert.True(action.CanExecute, action.ReasonCannotExecute);
+            Assert.Equal(manifest.GetProperty("IsCompound").GetBoolean() ? action.SegmentId + ".cfs" : null,
+                action.CompoundFileName);
+            string[] sources = action.Kind == IndexCodecMigrationActionKind.CoordinatedRewrite
+                ? [action.SegmentId + ".fdt", action.SegmentId + ".fdx"] : [action.FileName!];
+            Assert.Equal(sources.Order(StringComparer.Ordinal), action.SourcePaths.Order(StringComparer.Ordinal));
         }
     }
 
@@ -181,7 +194,14 @@ public sealed class Release311MigrationAcceptanceTests : IDisposable
         foreach (var segment in segments)
         {
             Assert.Equal(manifest.GetProperty("IsCompound").GetBoolean(), segment.Info.IsCompoundFile);
-            Assert.Equal(new[] { "String:id:False" }, segment.Info.IndexSortFields);
+            Assert.All(manifest.GetProperty("Segments").EnumerateArray(), expectedSegment =>
+                Assert.Equal(new[] { "String:sort:id:False" }, expectedSegment.GetProperty("IndexSort")
+                    .EnumerateArray().Select(field => field.GetString()).ToArray()));
+            Assert.Equal(new[] { "String:sort:id:False" }, segment.Info.IndexSortFields);
+            Assert.True(IndexSort.TryParseSerialisedField(Assert.Single(segment.Info.IndexSortFields), out var logicalSort));
+            Assert.Equal("sort:id", logicalSort.FieldName);
+            Assert.Equal(SortFieldType.String, logicalSort.Type);
+            Assert.False(logicalSort.Descending);
             using ISegmentFileSource files = segment.Info.IsCompoundFile
                 ? new CompoundSegmentFileSource(directory, segment.Info.SegmentId)
                 : new LooseSegmentFileSource(directory, segment.Info.SegmentId);
@@ -260,7 +280,7 @@ public sealed class Release311MigrationAcceptanceTests : IDisposable
             geoQuery.GetProperty("Latitude").GetDouble(), geoQuery.GetProperty("Longitude").GetDouble(),
             geoQuery.GetProperty("RadiusMetres").GetDouble()), 10);
         Assert.Equal(geoQuery.GetProperty("ExpectedIds").EnumerateArray().Select(value => value.GetString()), geoHits);
-        string[] sortedIds = searcher.Search(new TermQuery("body", "migration"), 10, SortField.String("id"),
+        string[] sortedIds = searcher.Search(new TermQuery("body", "migration"), 10, SortField.String("sort:id"),
                 new SearchOptions { CancellationToken = TestContext.Current.CancellationToken }).ScoreDocs
             .Select(hit => Assert.Single(searcher.GetStoredFields(hit.DocId)["id"])).ToArray();
         Assert.Equal(liveIds, sortedIds);
