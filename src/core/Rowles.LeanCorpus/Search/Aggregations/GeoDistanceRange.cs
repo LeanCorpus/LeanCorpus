@@ -41,4 +41,3 @@ public readonly record struct GeoDistanceRange
             throw new ArgumentOutOfRangeException(parameterName, "Distance bounds must be finite and non-negative.");
     }
 }
-

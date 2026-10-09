@@ -8,4 +8,3 @@ public sealed record WikipediaEligibilityResult(WikipediaEligibilityRejection Re
 {
     public bool IsEligible => Rejection == WikipediaEligibilityRejection.None;
 }
-

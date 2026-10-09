@@ -20,4 +20,3 @@ public sealed class GeoCentroidAggregationRequest : ISearchAggregationRequest
     /// <inheritdoc/>
     public string Field { get; }
 }
-

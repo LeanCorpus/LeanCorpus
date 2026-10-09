@@ -20,4 +20,3 @@ public sealed record WikipediaReferenceBuildResult(
     DataForgeManifest Manifest,
     IReadOnlyDictionary<string, long> RejectionCounts,
     long ElapsedMilliseconds);
-

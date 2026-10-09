@@ -24,4 +24,3 @@ public sealed class GeoBoundsAggregationRequest : ISearchAggregationRequest
     /// <summary>Gets whether the result should use the minimum circular longitude envelope.</summary>
     public bool WrapLongitude { get; }
 }
-

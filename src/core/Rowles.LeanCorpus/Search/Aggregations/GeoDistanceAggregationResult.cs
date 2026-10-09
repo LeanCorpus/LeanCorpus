@@ -23,4 +23,3 @@ public sealed class GeoDistanceAggregationResult : ISearchAggregationResult
     /// <summary>Gets the distance buckets in request order.</summary>
     public IReadOnlyList<GeoDistanceBucket> Buckets { get; }
 }
-

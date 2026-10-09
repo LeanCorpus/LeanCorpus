@@ -218,4 +218,3 @@ public static class GeoSimplifier
             => new(value.X / scalar, value.Y / scalar, value.Z / scalar);
     }
 }
-

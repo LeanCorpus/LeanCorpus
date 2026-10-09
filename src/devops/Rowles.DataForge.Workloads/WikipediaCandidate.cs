@@ -29,4 +29,3 @@ public sealed class WikipediaCandidate : IComparable<WikipediaCandidate>
         return comparison != 0 ? comparison : Entry.PageId.CompareTo(other.Entry.PageId);
     }
 }
-

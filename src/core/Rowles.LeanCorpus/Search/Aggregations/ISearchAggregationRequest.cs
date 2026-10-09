@@ -9,4 +9,3 @@ public interface ISearchAggregationRequest
     /// <summary>Gets the field to aggregate.</summary>
     string Field { get; }
 }
-

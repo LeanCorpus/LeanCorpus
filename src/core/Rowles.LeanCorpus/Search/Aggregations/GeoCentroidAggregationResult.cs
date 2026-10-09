@@ -36,4 +36,3 @@ public sealed class GeoCentroidAggregationResult : ISearchAggregationResult
     /// <summary>Gets the matched-document count contributing to the selected dimension.</summary>
     public long ContributingDocumentCount { get; }
 }
-

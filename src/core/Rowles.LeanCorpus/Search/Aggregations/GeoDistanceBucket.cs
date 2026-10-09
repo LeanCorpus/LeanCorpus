@@ -6,4 +6,3 @@ namespace Rowles.LeanCorpus.Search.Aggregations;
 
 /// <summary>One Geo distance bucket.</summary>
 public readonly record struct GeoDistanceBucket(double? FromMetres, double? ToMetres, long DocumentCount);
-

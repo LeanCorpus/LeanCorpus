@@ -36,4 +36,3 @@ public sealed class GeoDistanceAggregationRequest : ISearchAggregationRequest
     /// <summary>Gets the requested ranges in result order.</summary>
     public IReadOnlyList<GeoDistanceRange> Ranges { get; }
 }
-
