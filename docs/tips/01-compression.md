@@ -48,7 +48,9 @@ In standard .NET the module initialiser registers automatically. In Native AOT, 
 
 ## Block size
 
-`StoredFieldBlockSize` (default `16`) is the maximum number of documents in a compression block. The writer also targets 1 MiB of raw stored-field data and flushes before the next document would exceed that target. A single larger document gets its own block, up to the 256 MiB hard limit.
+`StoredFieldBlockSize` (default `16`) is the maximum number of documents in a compression block. The writer also targets 1 MiB of raw stored-field data and flushes before the next document would exceed that target. A single larger document gets its own block, up to the 256 MiB raw/decompressed hard limit. Current stored-fields v5 has a separate 320 MiB encoded limit, allowing a legal raw block to expand during compression without a raw-to-encoded ratio restriction. Historical v1-v4 files retain their 256 MiB encoded limit. These are absolute byte ceilings; output above the encoded ceiling is rejected before it is written or read.
+
+The stored-fields format remains v5 with unchanged body layouts. Existing 3.1.1 stored-fields v3 files still migrate to v5 through the coordinated `.fdt`/`.fdx` rewrite; this limit correction introduces no additional migration.
 
 Retrieval cost scales with the raw bytes in the selected block. Current readers understand the byte-bounded v4 and v5 layouts and continue to read stored-fields versions 1 through 4. Builds predating v4 reject v4 segments, and v4 readers reject v5 segments rather than mis-mapping documents.
 

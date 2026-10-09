@@ -1,4 +1,4 @@
-namespace Rowles.LeanCorpus.Codecs;
+﻿namespace Rowles.LeanCorpus.Codecs;
 
 /// <summary>
 /// Format version constants for all codec file types.
@@ -11,7 +11,8 @@ internal static class CodecConstants
 {
     // v2 -> v3 bumps for streaming trailer: postings, norms, stored fields, term vectors.
     // v3 -> v4 gives stored fields byte-bounded variable document grouping.
-    // v4 -> v5 stores segment field names once and encodes document fields by ID.
+    // v4 -> v5 stores segment field names once, encodes document fields by ID,
+    // and has independent 256 MiB raw and 320 MiB encoded block ceilings.
     // v1 -> v2 bumps for streaming trailer: all DocValues, field lengths, Int64 variants.
     // v2 -> v3 keeps missing-value placeholders out of the sorted DocValues term table.
     public const byte TermDictionaryVersion = 1;

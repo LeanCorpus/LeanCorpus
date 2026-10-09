@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Codecs.StoredFields;
 using Rowles.LeanCorpus.Store;
@@ -13,6 +13,72 @@ public sealed class StoredFieldsCorruptionTests : IClassFixture<TestDirectoryFix
     private readonly TestDirectoryFixture _fixture;
 
     public StoredFieldsCorruptionTests(TestDirectoryFixture fixture) => _fixture = fixture;
+
+    [Theory]
+    [InlineData(335544321, "exceeds maximum 335544320")]
+    [InlineData(268435457, "indexed boundary")]
+    public void Open_RejectsEncodedLengthBeforeReadingPayload(int encodedLength, string message)
+    {
+        string path = CreateIndex([CreateStringDocument("corrupt")], blockSize: 1);
+        long blockOffset = ReadBlockOffsets(path + ".fdx")[0];
+        WriteInt32(path + ".fdt", blockOffset + 2 * sizeof(int), encodedLength);
+
+        var error = Assert.Throws<InvalidDataException>(() => StoredFieldsReader.Open(path + ".fdt", path + ".fdx"));
+        Assert.Contains(message, error.Message, StringComparison.Ordinal);
+        Assert.True(new FileInfo(path + ".fdt").Length < 1024);
+
+        string validPath = CreateIndex([CreateStringDocument("valid")], blockSize: 1);
+        using var reader = StoredFieldsReader.Open(validPath + ".fdt", validPath + ".fdx");
+        Assert.Equal("valid", reader.ReadDocumentValues(0)["id"][0].StringValue);
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void Open_HistoricalEncodedLengthRetains256MiBCeiling(int version)
+    {
+        string path = Path.Combine(_fixture.Path, $"stored-historical-length-{Guid.NewGuid():N}");
+        long blockOffset = 0;
+        CodecFileWriter.WriteAtomically(path + ".fdt", StoredFieldsCodecFiles.Data.FormatId, version,
+            durable: false, output =>
+            {
+                output.WriteInt32(1);
+                output.WriteByte((byte)FieldCompressionPolicy.None);
+                blockOffset = output.Position;
+                output.WriteInt32(1);
+                output.WriteInt32(sizeof(int));
+                output.WriteInt32(StoredFieldsBlockPolicy.MaximumRawBytes + 1);
+                output.WriteInt32(0);
+                output.WriteByte(0);
+            });
+        CodecFileWriter.WriteAtomically(path + ".fdx", StoredFieldsCodecFiles.Index.FormatId, version,
+            durable: false, output =>
+            {
+                output.WriteInt32(1);
+                output.WriteInt32(1);
+                output.WriteInt32(1);
+                output.WriteInt64(blockOffset);
+            });
+
+        var error = Assert.Throws<InvalidDataException>(() => StoredFieldsReader.Open(path + ".fdt", path + ".fdx"));
+        Assert.Contains("exceeds maximum 268435456", error.Message, StringComparison.Ordinal);
+        Assert.True(new FileInfo(path + ".fdt").Length < 1024);
+    }
+
+    [Theory]
+    [InlineData(335544321, "exceeds maximum 335544320")]
+    [InlineData(268435457, "indexed boundary")]
+    public void Read_RejectsChangedEncodedLengthAndKeepsOtherBlockReadable(int encodedLength, string message)
+    {
+        string path = CreateIndex([CreateStringDocument("corrupt"), CreateStringDocument("valid")], blockSize: 1);
+        long blockOffset = ReadBlockOffsets(path + ".fdx")[0];
+        using var reader = StoredFieldsReader.Open(path + ".fdt", path + ".fdx");
+        WriteInt32(path + ".fdt", blockOffset + 2 * sizeof(int), encodedLength);
+
+        var error = Assert.Throws<InvalidDataException>(() => reader.ReadDocumentValues(0));
+        Assert.Contains(message, error.Message, StringComparison.Ordinal);
+        Assert.Equal("valid", reader.ReadDocumentValues(1)["id"][0].StringValue);
+    }
 
     [Fact(DisplayName = "Stored Fields: unknown value kind is corruption and another block remains readable")]
     public void ReadDocumentValues_RejectsUnknownValueKindAndKeepsReaderUsable()

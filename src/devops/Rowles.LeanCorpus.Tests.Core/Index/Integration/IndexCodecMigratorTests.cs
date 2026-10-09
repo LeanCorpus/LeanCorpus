@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
@@ -1315,17 +1315,21 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
         frame.ValidateChecksum();
     }
 
-    [Fact(DisplayName = "Migrate: Rewrite stored fields preserves source compression policy")]
-    public void Migrate_Rewrite_StoredFields_PreservesCompression()
+    [Theory(DisplayName = "Migrate: Rewrite stored fields preserves typed values and source compression policy")]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void Migrate_Rewrite_StoredFields_PreservesCompression(int sourceVersion)
     {
-        var path = CreateCurrentVersionIndex("migrate_rewrite_fdt_compression");
+        var path = CreateCurrentVersionIndex($"migrate_rewrite_fdt_compression_v{sourceVersion}");
         var fdtPath = Directory.GetFiles(path, "*.fdt").Single();
         var fdxPath = Directory.GetFiles(path, "*.fdx").Single();
 
         // Recreate stored fields with no compression so we can distinguish it from Deflate.
         var doc = new Dictionary<string, List<StoredFieldValue>>(StringComparer.Ordinal)
         {
-            ["body"] = [StoredFieldValue.FromString("hello world test migration")],
+            ["body"] = [StoredFieldValue.FromString("hello world test migration"), StoredFieldValue.FromString("second value")],
+            ["payload"] = [StoredFieldValue.FromBinary([0, 1, 127, 255])],
             ["count"] = [StoredFieldValue.FromLong(42)],
             ["id"] = [StoredFieldValue.FromString("doc-1")]
         };
@@ -1333,7 +1337,17 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
         File.Delete(fdtPath);
         File.Delete(fdxPath);
         StoredFieldsWriter.Write(fdtPath, fdxPath, 1, _ => doc, compression: FieldCompressionPolicy.None);
-        DowngradeStoredFieldsToV1(path);
+        if (sourceVersion == 1)
+            DowngradeStoredFieldsToV1(path);
+        else
+        {
+            DowngradeStoredFieldsToV4(path);
+            if (sourceVersion == 3)
+            {
+                Assert.True(PatchCanonicalFormatVersion(fdtPath, 3));
+                Assert.True(PatchCanonicalFormatVersion(fdxPath, 3));
+            }
+        }
 
         var result = IndexCodecMigrator.Migrate(
             new MMapDirectory(path),
@@ -1349,8 +1363,17 @@ public sealed class IndexCodecMigratorTests : IClassFixture<TestDirectoryFixture
 
         var migratedFdtPath = GetLatestSegmentFile(path, "*.fdt");
         var migratedFdxPath = GetLatestSegmentFile(path, "*.fdx");
+        Assert.Equal(5, ReadVersionByte(path, "*.fdt"));
+        Assert.Equal(5, ReadVersionByte(path, "*.fdx"));
         using var reader = StoredFieldsReader.Open(migratedFdtPath, migratedFdxPath);
         Assert.Equal(FieldCompressionPolicy.None, reader.Compression);
+        Assert.Equal(1, reader.DocCount);
+        var values = reader.ReadDocumentValues(0);
+        Assert.Equal(new[] { "body", "count", "id", "payload" }, values.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(new[] { "hello world test migration", "second value" }, values["body"].Select(v => v.StringValue));
+        Assert.Equal(42, values["count"].Single().LongValue);
+        Assert.Equal("doc-1", values["id"].Single().StringValue);
+        Assert.Equal(new byte[] { 0, 1, 127, 255 }, values["payload"].Single().BinaryValue);
         AssertIndexReadable(path);
     }
 

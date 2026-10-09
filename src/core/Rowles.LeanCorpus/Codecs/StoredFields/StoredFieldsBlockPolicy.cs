@@ -1,13 +1,14 @@
-namespace Rowles.LeanCorpus.Codecs.StoredFields;
+﻿namespace Rowles.LeanCorpus.Codecs.StoredFields;
 
 /// <summary>
-/// Shared limits for the stored-fields v4-and-later block layout. Keep these values stable
-/// for a body version because they define which blocks its reader accepts.
+/// Shared raw and document limits, with version-aware encoded limits for stored-fields blocks.
+/// Raw/decompressed and encoded byte ceilings are independent absolute bounds.
 /// </summary>
 internal static class StoredFieldsBlockPolicy
 {
     internal const int TargetRawBytes = 1024 * 1024;
     internal const int MaximumRawBytes = 256 * 1024 * 1024;
+    internal const int MaximumEncodedBytes = 320 * 1024 * 1024;
     internal const int MaximumDocumentCount = 100_000;
 
     internal static void ValidateRawLength(long rawLength)
@@ -15,6 +16,20 @@ internal static class StoredFieldsBlockPolicy
         if (rawLength < 0 || rawLength > MaximumRawBytes)
             throw new InvalidDataException(
                 $"Stored fields raw length {rawLength} exceeds the maximum block size {MaximumRawBytes}.");
+    }
+
+    internal static void ValidateEncodedLength(int encodedLength, int formatVersion)
+    {
+        int maximumEncodedBytes = formatVersion switch
+        {
+            >= 1 and <= 4 => MaximumRawBytes,
+            5 => MaximumEncodedBytes,
+            _ => throw new ArgumentOutOfRangeException(nameof(formatVersion), formatVersion,
+                "Encoded block limits are defined only for stored-fields versions 1 through 5.")
+        };
+        if (encodedLength <= 0 || encodedLength > maximumEncodedBytes)
+            throw new InvalidDataException(
+                $"Stored fields block compLength {encodedLength} exceeds maximum {maximumEncodedBytes}.");
     }
 
     internal static bool IsValidMaximumDocumentCount(int maximumDocumentCount)

@@ -70,6 +70,8 @@
 
 ## Fixed
 
+- Separate stored-fields v5 raw/decompressed (256 MiB) and encoded (320 MiB) ceilings so legal raw blocks can expand during compression. Preserve v1-v4 encoded limits, the v5 body layout and the existing 3.1.1 v3-to-v5 coordinated migration, with no additional migration.
+
 - Complete frozen 3.1.1 migration acceptance with colon-containing physical index sorting through migration and merge, and exact migration action checks.
 
 - Make text analysis Unicode-scalar correct while retaining UTF-16 source offsets, including supplementary letters, grams, digits, case boundaries, punctuation and accent marks. Truncation preserves original source offsets; reversal preserves scalar encodings. Span accent normalisation safely handles isolated surrogates. Affected existing analyser configurations may require reindexing, with no codec change or postings migration.

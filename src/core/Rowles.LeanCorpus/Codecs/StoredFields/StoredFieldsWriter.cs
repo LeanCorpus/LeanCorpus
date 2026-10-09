@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using Rowles.LeanCorpus.Codecs;
 using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Store;
@@ -214,7 +214,7 @@ internal static class StoredFieldsWriter
         int rawLength = rawData.Length;
         StoredFieldsBlockPolicy.ValidateRawLength(rawLength);
         var (compData, compLength) = StoredFieldCompression.Compress(rawData, compressionCodec);
-        ValidateCompressedLength(rawLength, compLength);
+        StoredFieldsBlockPolicy.ValidateEncodedLength(compLength, CodecConstants.StoredFieldsVersion);
 
         blockOffsets.Add(output.Position);
         output.WriteInt32(intraOffsets.Count);
@@ -223,13 +223,6 @@ internal static class StoredFieldsWriter
         for (int i = 0; i < intraOffsets.Count; i++)
             output.WriteInt32(intraOffsets[i]);
         output.WriteBytes(compData.AsSpan(0, compLength));
-    }
-
-    internal static void ValidateCompressedLength(int rawLength, int compLength)
-    {
-        if (compLength <= 0 || compLength > StoredFieldsBlockPolicy.MaximumRawBytes)
-            throw new InvalidDataException(
-                $"Stored fields block compLength {compLength} exceeds maximum {StoredFieldsBlockPolicy.MaximumRawBytes}.");
     }
 
     private static void WriteFdx(

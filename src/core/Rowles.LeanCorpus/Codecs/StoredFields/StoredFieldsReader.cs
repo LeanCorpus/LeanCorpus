@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 using Rowles.LeanCorpus.Codecs.CodecKit;
@@ -195,7 +195,8 @@ internal sealed class StoredFieldsReader : IDisposable
                 firstBlockPosition,
                 fdtBlockSize,
                 docCount,
-                variableBlockCounts);
+                variableBlockCounts,
+                fdtFrame.Version);
 
             var result = new StoredFieldsReader(
                 fdtInput,
@@ -229,7 +230,8 @@ internal sealed class StoredFieldsReader : IDisposable
         long firstBlockPosition,
         int maximumDocumentCount,
         int totalDocumentCount,
-        bool variableBlockCounts)
+        bool variableBlockCounts,
+        int formatVersion)
     {
         var blockDocCounts = new int[blockOffsets.Length];
         int[]? blockDocStarts = variableBlockCounts ? new int[blockOffsets.Length] : null;
@@ -257,9 +259,7 @@ internal sealed class StoredFieldsReader : IDisposable
             if (rawLength <= 0 || rawLength > StoredFieldsBlockPolicy.MaximumRawBytes)
                 throw new InvalidDataException(
                     $"Stored fields block rawLength {rawLength} exceeds maximum {StoredFieldsBlockPolicy.MaximumRawBytes}.");
-            if (compLength <= 0 || compLength > StoredFieldsBlockPolicy.MaximumRawBytes)
-                throw new InvalidDataException(
-                    $"Stored fields block compLength {compLength} exceeds maximum {StoredFieldsBlockPolicy.MaximumRawBytes}.");
+            StoredFieldsBlockPolicy.ValidateEncodedLength(compLength, formatVersion);
             if (variableBlockCounts && rawLength > StoredFieldsBlockPolicy.TargetRawBytes && blockDocCount != 1)
                 throw new InvalidDataException(
                     $"Stored fields block rawLength {rawLength} exceeds target {StoredFieldsBlockPolicy.TargetRawBytes} for {blockDocCount} documents.");
@@ -564,8 +564,7 @@ internal sealed class StoredFieldsReader : IDisposable
                         $"Stored fields block has {docCount} documents but its validated count is {_blockDocCounts[blockIndex]}.");
                 if (rawLength <= 0 || rawLength > MaxDecompressedBlockBytes)
                     throw new InvalidDataException($"Stored fields block rawLength {rawLength} exceeds maximum {MaxDecompressedBlockBytes}.");
-                if (compLength <= 0 || compLength > MaxDecompressedBlockBytes)
-                    throw new InvalidDataException($"Stored fields block compLength {compLength} exceeds maximum {MaxDecompressedBlockBytes}.");
+                StoredFieldsBlockPolicy.ValidateEncodedLength(compLength, _formatVersion);
                 if (_blockDocStarts is not null && rawLength > StoredFieldsBlockPolicy.TargetRawBytes && docCount != 1)
                     throw new InvalidDataException(
                         $"Stored fields block rawLength {rawLength} exceeds target {StoredFieldsBlockPolicy.TargetRawBytes} for {docCount} documents.");

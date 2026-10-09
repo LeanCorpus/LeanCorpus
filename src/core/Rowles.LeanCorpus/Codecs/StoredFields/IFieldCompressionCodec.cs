@@ -15,6 +15,11 @@ public interface IFieldCompressionCodec
     /// </summary>
     /// <param name="raw">The uncompressed block data.</param>
     /// <returns>The compressed block data.</returns>
+    /// <remarks>
+    /// Stored-fields callers enforce an absolute encoded-payload bound independently of the raw size.
+    /// Current v5 rejects output above 320 MiB even when the raw block is within its 256 MiB limit.
+    /// This bound does not describe the maximum possible expansion of every codec.
+    /// </remarks>
     byte[] Compress(ReadOnlySpan<byte> raw);
 
     /// <summary>

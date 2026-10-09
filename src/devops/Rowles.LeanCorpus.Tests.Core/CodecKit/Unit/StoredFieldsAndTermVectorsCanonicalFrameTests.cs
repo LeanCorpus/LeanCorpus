@@ -1,6 +1,7 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
+using Rowles.LeanCorpus.Codecs;
 using Rowles.LeanCorpus.Codecs.CodecKit;
 using Rowles.LeanCorpus.Codecs.StoredFields;
 using Rowles.LeanCorpus.Codecs.TermVectors;
@@ -19,6 +20,11 @@ public sealed class StoredFieldsAndTermVectorsCanonicalFrameTests : IClassFixtur
     [Fact(DisplayName = "Stored Fields: direct and stream writers emit checksummed canonical pairs with monotonic offsets")]
     public void StoredFields_WritersEmitCanonicalPairsWithMonotonicOffsets()
     {
+        Assert.Equal(5, CodecConstants.StoredFieldsVersion);
+        Assert.Equal(5, StoredFieldsCodecFiles.Data.CurrentFormatVersion);
+        Assert.Equal(5, StoredFieldsCodecFiles.Index.CurrentFormatVersion);
+        Assert.Equal(5, CodecCatalog.Default.GetFile(StoredFieldsCodecFiles.Data.FormatId).CurrentFormatVersion);
+        Assert.Equal(5, CodecCatalog.Default.GetFile(StoredFieldsCodecFiles.Index.FormatId).CurrentFormatVersion);
         foreach (bool streaming in new[] { false, true })
         {
             string path = Path.Combine(_fixture.Path, $"stored-canonical-{streaming}-{Guid.NewGuid():N}");
@@ -42,10 +48,12 @@ public sealed class StoredFieldsAndTermVectorsCanonicalFrameTests : IClassFixtur
 
             using var dataInput = new IndexInput(path + ".fdt");
             using var dataFrame = CodecFileReader.Open(dataInput, StoredFieldsCodecFiles.Data);
+            Assert.Equal(5, dataFrame.Metadata.FormatVersion);
             dataFrame.ValidateChecksum();
 
             using var indexInput = new IndexInput(path + ".fdx");
             using var indexFrame = CodecFileReader.Open(indexInput, StoredFieldsCodecFiles.Index);
+            Assert.Equal(5, indexFrame.Metadata.FormatVersion);
             indexFrame.ValidateChecksum();
             indexInput.Seek(indexFrame.Metadata.BodyStart);
             Assert.Equal(2, indexInput.ReadInt32());
@@ -60,6 +68,25 @@ public sealed class StoredFieldsAndTermVectorsCanonicalFrameTests : IClassFixtur
             using var reader = StoredFieldsReader.Open(path + ".fdt", path + ".fdx");
             Assert.Equal("doc-4", reader.ReadDocument(4)["id"].Single());
         }
+    }
+
+    [Theory]
+    [InlineData(".fdt")]
+    [InlineData(".fdx")]
+    public void StoredFields_RejectsFutureCanonicalVersion(string extension)
+    {
+        string path = Path.Combine(_fixture.Path, $"stored-future-{Guid.NewGuid():N}");
+        StoredFieldsWriter.Write(path + ".fdt", path + ".fdx", 1, _ => CreateStoredDocument(0)
+            .ToDictionary(static pair => pair.Key, static pair => pair.Value.ToList()));
+        using (var stream = new FileStream(path + extension, FileMode.Open, FileAccess.Write))
+        {
+            stream.Position = sizeof(uint) + 2 * sizeof(byte);
+            Span<byte> version = stackalloc byte[sizeof(int)];
+            BinaryPrimitives.WriteInt32LittleEndian(version, 6);
+            stream.Write(version);
+        }
+        var error = Assert.Throws<CodecFileException>(() => StoredFieldsReader.Open(path + ".fdt", path + ".fdx"));
+        Assert.Equal(CodecFileErrorCode.UnsupportedFormatVersion, error.ErrorCode);
     }
 
     [Fact(DisplayName = "Stored Fields: reader accepts the v2 custom-header pair")]

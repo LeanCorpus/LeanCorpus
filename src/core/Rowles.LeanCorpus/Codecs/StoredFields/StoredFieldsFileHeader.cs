@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using Rowles.LeanCorpus.Store;
 
 namespace Rowles.LeanCorpus.Codecs.StoredFields;
@@ -8,7 +8,9 @@ namespace Rowles.LeanCorpus.Codecs.StoredFields;
 /// v1 used the CodecKit envelope: [version:byte][VarInt64 bodyLen][body].
 /// v2 streams directly: [version:byte][body] (ADR008 custom header).
 /// v3 legacy data uses the CodecKit trailer while legacy index files retain the custom header.
-/// Current v5 writes use the canonical CodecKit frame, byte-bounded blocks, and an index field-name table.
+/// Current v5 writes use canonical CodecKit framing and byte-bounded blocks.
+/// Field names are stored once in .fdx and document fields use IDs.
+/// Raw blocks have a 256 MiB hard ceiling; encoded blocks have an independent 320 MiB ceiling.
 /// </summary>
 internal static class StoredFieldsFileHeader
 {
