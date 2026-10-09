@@ -34,6 +34,8 @@
              Link="Foundation\Infrastructure\HistoricalCodecFixtures.cs" />
     <Compile Include="..\Rowles.LeanCorpus.Tests.Shared\Fixtures\HistoricalIndexFixtures.cs"
              Link="Foundation\Infrastructure\HistoricalIndexFixtures.cs" />
+    <Compile Include="..\Rowles.LeanCorpus.Tests.Shared\Fixtures\Release311Fixture.cs"
+             Link="Foundation\Infrastructure\Release311Fixture.cs" />
     <Compile Include="..\Rowles.LeanCorpus.Tests.Shared\Infrastructure\MaterialisingTokenSink.cs"
              Link="Foundation\Infrastructure\MaterialisingTokenSink.cs" />
     <Compile Include="..\Rowles.LeanCorpus.Tests.Shared\Metamorphic\MetamorphicRelations.cs"
@@ -46,6 +48,8 @@
 
   <!-- Historical fixture bytes: keep the manifest names stable regardless of project. -->
   <ItemGroup>
+    <EmbeddedResource Include="..\Rowles.LeanCorpus.Tests.Shared\Fixtures\Indexes\*.manifest.json"
+                      LogicalName="Rowles.LeanCorpus.Tests.Shared.Fixtures.Indexes.%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\Rowles.LeanCorpus.Tests.Shared\Fixtures\Indexes\*.fixture.b64"
                       Link="Fixtures\Indexes\%(Filename)%(Extension)"
                       LogicalName="Rowles.LeanCorpus.Tests.Shared.Fixtures.Indexes.%(Filename)%(Extension)" />

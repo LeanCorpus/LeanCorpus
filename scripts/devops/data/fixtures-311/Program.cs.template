@@ -18,6 +18,9 @@ const int seed = 311400;
 const string unicode = "caf\u00e9 \u6771\u4eac \U00010400 \U0001f600";
 string outputRoot = args[0];
 string packageArchive = args[1];
+if (Hash(File.ReadAllBytes(packageArchive)) != "cf124d5a2b9b3bf623cd69f98ea25c5a2e3f7d67ac9bdb4c017a60a00d00e478" ||
+    Hash(File.ReadAllBytes(typeof(IndexWriter).Assembly.Location)) != "6a633412002f615c36579490b6f7b5be57e6b237778bb92bd24492b943d6060c")
+    throw new InvalidDataException("The generator requires the pinned published LeanCorpus 3.1.1 package and assembly.");
 var vectors = new Dictionary<int, float[]>
 {
     [0] = [0, 0], [1] = [-1, 0], [3] = [1, 0], [4] = [0, 1], [7] = [0.8f, 0.6f],
@@ -33,10 +36,6 @@ var documents = Enumerable.Range(0, 8).Select(id =>
     return new
     {
         Id = $"doc-{id:00}", GlobalDocId = id, IsLive = id is not (1 or 5),
-        Stored = stored.ToDictionary(pair => pair.Key, pair => pair.Value.Select(value => new
-        {
-            Utf16Length = value.Length, Sha256 = Hash(Encoding.UTF8.GetBytes(value)),
-        }).ToArray()),
         Numeric = id is 2 or 6 ? (double?)null : id * 0.5,
         Sorted = id is 2 or 6 ? null : $"category-{id % 3}",
         Binary = id is 2 or 6 ? null : Convert.ToHexString(id == 3 ? [] : new byte[] { (byte)id, 0xff, 0, (byte)(id + 1) }),
@@ -105,6 +104,7 @@ foreach (bool compound in new[] { false, true })
     string[] neighbours;
     string[] geoHits;
     object[] segments;
+    var storedById = new Dictionary<string, object>(StringComparer.Ordinal);
     using (var directory = new MMapDirectory(path))
     using (var searcher = new IndexSearcher(directory))
     {
@@ -140,7 +140,19 @@ foreach (bool compound in new[] { false, true })
                 VectorDocIds = present, IndexSort = reader.Info.IndexSortFields,
             };
         }).ToArray();
-        foreach (var reader in readers) reader.Dispose();
+        foreach (var reader in readers)
+        {
+            for (int id = 0; id < reader.MaxDoc; id++)
+            {
+                var values = reader.GetStoredFields(id);
+                storedById.Add(values["id"].Single(), values.ToDictionary(pair => pair.Key,
+                    pair => pair.Value.Select(value => new
+                    {
+                        Utf16Length = value.Length, Sha256 = Hash(Encoding.UTF8.GetBytes(value)),
+                    }).ToArray()));
+            }
+            reader.Dispose();
+        }
     }
 
     var manifest = new
@@ -158,7 +170,7 @@ foreach (bool compound in new[] { false, true })
         Segments = segments,
         Documents = documents.Select(document => new
         {
-            document.Id, document.GlobalDocId, document.IsLive, document.Stored,
+            document.Id, document.GlobalDocId, document.IsLive, Stored = storedById[document.Id],
             document.Numeric, document.Sorted, document.Binary, document.Vector, document.GeoPoint,
         }).ToArray(),
         Files = Directory.GetFiles(path).Order(StringComparer.Ordinal).Select(file => new

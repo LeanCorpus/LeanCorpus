@@ -1,4 +1,4 @@
-using System.Formats.Tar;
+﻿using System.Formats.Tar;
 using System.IO.Compression;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -22,6 +22,12 @@ public enum HistoricalIndexFixture
 
     /// <summary>Package-generated 3.1.1 sparse float32 and Int8 vector indexes with HNSW, loose and compound.</summary>
     Version311SparseHnsw,
+
+    /// <summary>Package-generated comprehensive 3.1.1 loose release corpus.</summary>
+    Version311ReleaseLoose,
+
+    /// <summary>Package-generated comprehensive 3.1.1 compound release corpus.</summary>
+    Version311ReleaseCompound,
 }
 
 /// <summary>
@@ -71,6 +77,12 @@ public static class HistoricalIndexFixtures
             HistoricalIndexFixture.Version311SparseHnsw => new(
                 prefix + "3.1.1-sparse-hnsw.fixture.b64",
                 "ebaec3b42819af4c35049e589d75fc682dd4b6169ad85fbf2e7b7197e066a961"),
+            HistoricalIndexFixture.Version311ReleaseLoose => new(
+                prefix + "3.1.1-release-loose.fixture.b64",
+                "5800db79c95c56b7115300364238dc8f38d40adcc40ce53c7e123719f2a5b46a"),
+            HistoricalIndexFixture.Version311ReleaseCompound => new(
+                prefix + "3.1.1-release-compound.fixture.b64",
+                "29dd32e6101df8a6e978e996228a99bf7ac154dfa8d9c1be3e1405449bd2d4ba"),
             _ => throw new ArgumentOutOfRangeException(nameof(fixture), fixture, "Unknown historical index fixture."),
         };
     }
