@@ -76,12 +76,15 @@ internal static class LeanCorpusIndexingStateStore
         string temporaryPath = path + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            failures.Check(LeanCorpusFailurePoint.DuringCursorWrite);
+            byte[] stateBytes = JsonSerializer.SerializeToUtf8Bytes(
+                new LeanCorpusIndexingState { LastTaskId = taskId }, SerializerOptions);
             await using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                 bufferSize: 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
             {
-                await JsonSerializer.SerializeAsync(stream, new LeanCorpusIndexingState { LastTaskId = taskId }, SerializerOptions, cancellationToken)
-                    .ConfigureAwait(false);
+                int firstChunkLength = Math.Max(1, stateBytes.Length / 2);
+                await stream.WriteAsync(stateBytes.AsMemory(0, firstChunkLength), cancellationToken).ConfigureAwait(false);
+                failures.Check(LeanCorpusFailurePoint.DuringCursorWrite);
+                await stream.WriteAsync(stateBytes.AsMemory(firstChunkLength), cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }

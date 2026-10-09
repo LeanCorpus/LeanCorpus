@@ -48,6 +48,30 @@ public sealed class ProviderIntegrationTests
     }
 
     [Fact]
+    public async Task BatchUpdateReplacesDocumentsAndKeepsTheLastDuplicateId()
+    {
+        await using var fixture = new ProviderFixture();
+        Assert.True(await fixture.Indexes.CreateAsync(fixture.Profile));
+        Assert.True(await fixture.Documents.AddOrUpdateDocumentsAsync(fixture.Profile,
+        [
+            Article("batch-1", "original first"),
+            Article("batch-2", "original second"),
+        ]));
+
+        Assert.True(await fixture.Documents.AddOrUpdateDocumentsAsync(fixture.Profile,
+        [
+            Article("batch-1", "intermediate replacement"),
+            Article("batch-2", "updated second"),
+            Article("batch-1", "final replacement"),
+        ]));
+
+        Assert.Empty((await fixture.Search.SearchAsync(fixture.Profile, "original", 0, 10)).ContentItemIds);
+        Assert.Empty((await fixture.Search.SearchAsync(fixture.Profile, "intermediate", 0, 10)).ContentItemIds);
+        Assert.Equal("batch-1", Assert.Single((await fixture.Search.SearchAsync(fixture.Profile, "final replacement", 0, 10)).ContentItemIds));
+        Assert.Equal("batch-2", Assert.Single((await fixture.Search.SearchAsync(fixture.Profile, "updated second", 0, 10)).ContentItemIds));
+    }
+
+    [Fact]
     public async Task R8ResetRewindsBeforeDeleteSoReplayRemainsSafeAfterFailure()
     {
         await using var fixture = new ProviderFixture();
@@ -309,22 +333,22 @@ public sealed class ProviderIntegrationTests
     {
         await using var fixture = new ProviderFixture();
         Assert.True(await fixture.Indexes.CreateAsync(fixture.Profile));
-        var documents = new[]
-        {
-            Article("c", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"),
-            Article("a", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"),
-            Article("b", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"),
-        };
+        var documents = Enumerable.Range(0, 300)
+            .Select(index => Article($"paged-{index:D3}", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"))
+            .Append(Article("c", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"))
+            .Append(Article("a", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"))
+            .Append(Article("b", "orchard Crème brûlée 東京 🚀 𐐷 e\u0301"))
+            .ToArray();
         Assert.True(await fixture.Documents.AddOrUpdateDocumentsAsync(fixture.Profile, documents));
 
         var first = await fixture.Search.SearchAsync(fixture.Profile, "東京", 0, 10);
-        Assert.Equal(3, first.TotalCount);
-        Assert.Equal(new[] { "a", "b", "c" }, first.ContentItemIds);
+        Assert.Equal(303, first.TotalCount);
+        Assert.Equal(new[] { "a", "b" }, first.ContentItemIds.Take(2));
         var punctuated = await fixture.Search.SearchAsync(fixture.Profile, "東京!!!", 0, 10);
-        Assert.Equal(3, punctuated.TotalCount);
-        var page = await fixture.Search.SearchAsync(fixture.Profile, "東京", 1, 1);
-        Assert.Equal(3, page.TotalCount);
-        Assert.Equal("b", Assert.Single(page.ContentItemIds));
+        Assert.Equal(303, punctuated.TotalCount);
+        var page = await fixture.Search.SearchAsync(fixture.Profile, "東京", 300, 3);
+        Assert.Equal(303, page.TotalCount);
+        Assert.Equal(new[] { "paged-297", "paged-298", "paged-299" }, page.ContentItemIds);
     }
 
     private static DocumentIndex Article(string id, string title)

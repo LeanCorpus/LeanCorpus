@@ -6,6 +6,7 @@ using Microsoft.Playwright;
 namespace Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests;
 
 [Trait("Area", "Functional")]
+[Collection(OrchardBrowserTestCollection.Name)]
 public sealed class SearchLifecycleBrowserTests
 {
     [Fact]
@@ -76,14 +77,21 @@ public sealed class SearchLifecycleBrowserTests
             await AssertEquivalentSearchAsync(http, oldTerm, []);
             await AssertEquivalentSearchAsync(http, newTerm, [createdResult.ContentItemId]);
 
-            using HttpResponseMessage deleted = await http.DeleteAsync($"/__test/articles/{createdResult.ContentItemId}");
-            deleted.EnsureSuccessStatusCode();
+            using HttpResponseMessage unpublished = await http.PostAsync($"/__test/articles/{createdResult.ContentItemId}/unpublish", content: null);
+            unpublished.EnsureSuccessStatusCode();
             await ProcessIndexingQueueAsync(http);
             await WaitForSearchResultsAsync(http, "Lucene", "Search-Lucene", newTerm, []);
             await WaitForSearchResultsAsync(http, "LeanCorpus", "Search-LeanCorpus", newTerm, []);
             await AssertSearchPageContainsAsync(page, address, "Search-Lucene", newTerm, "Search browser lifecycle", expected: false);
             await AssertSearchPageContainsAsync(page, address, "Search-LeanCorpus", newTerm, "Search browser lifecycle", expected: false);
             await AssertEquivalentSearchAsync(http, newTerm, []);
+
+            using HttpResponseMessage deleted = await http.DeleteAsync($"/__test/articles/{companionResult.ContentItemId}");
+            deleted.EnsureSuccessStatusCode();
+            await ProcessIndexingQueueAsync(http);
+            await WaitForSearchResultsAsync(http, "Lucene", "Search-Lucene", "orchardcommon", []);
+            await WaitForSearchResultsAsync(http, "LeanCorpus", "Search-LeanCorpus", "orchardcommon", []);
+            await AssertEquivalentSearchAsync(http, "orchardcommon", []);
             completed = true;
         }
         finally

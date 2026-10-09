@@ -25,6 +25,7 @@ public sealed class Startup : StartupBase
         services.AddSingleton<LeanCorpusIndexHandleCache>();
         services.AddSingleton<LeanCorpusSchemaStore>();
         services.AddSingleton<LeanCorpusDocumentMapper>();
+        services.AddScoped<LeanCorpusIndexNameProvider>();
         services.AddScoped<LeanCorpusContentFieldRefresher>();
         services.AddSingleton<LeanCorpusSearchCompiler>();
         services.AddSingleton<LeanCorpusQueryCompiler>();

@@ -30,6 +30,13 @@
       "name": "ContentDefinition",
       "ContentTypes": [
         {
+          "Name": "VectorProbeArticle",
+          "DisplayName": "Vector Probe Article",
+          "ContentTypePartDefinitionRecords": [
+            { "PartName": "TitlePart", "Name": "TitlePart", "Settings": {} }
+          ]
+        },
+        {
           "Name": "SearchTestArticle",
           "DisplayName": "Search Test Article",
           "Settings": {
@@ -60,6 +67,7 @@
             { "FieldName": "TextField", "Name": "Title", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Title", "Editor": "TextArea" }, "TextFieldSettings": { "Required": true }, "LuceneContentIndexSettings": { "Included": true } } },
             { "FieldName": "TextField", "Name": "Body", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Body", "Editor": "TextArea" }, "LuceneContentIndexSettings": { "Included": true } } },
             { "FieldName": "TextField", "Name": "Category", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Category" }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "TextField", "Name": "Keywords", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Keywords" }, "LuceneContentIndexSettings": { "Included": true } } },
             { "FieldName": "DateTimeField", "Name": "PublishedUtc", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Published UTC" }, "LuceneContentIndexSettings": { "Included": true } } },
             { "FieldName": "NumericField", "Name": "Sequence", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Sequence" }, "NumericFieldSettings": { "Scale": 0 }, "LuceneContentIndexSettings": { "Included": true } } },
             { "FieldName": "NumericField", "Name": "Rating", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Rating" }, "NumericFieldSettings": { "Scale": 2 }, "LuceneContentIndexSettings": { "Included": true } } },
@@ -81,7 +89,7 @@
           "Properties": {
             "ContentIndexMetadata": {
               "IndexLatest": false,
-              "IndexedContentTypes": [ "SearchTestArticle" ],
+              "IndexedContentTypes": [ "SearchTestArticle", "VectorProbeArticle" ],
               "Culture": "any"
             },
             "LuceneIndexMetadata": {
@@ -102,7 +110,7 @@
           "Properties": {
             "ContentIndexMetadata": {
               "IndexLatest": false,
-              "IndexedContentTypes": [ "SearchTestArticle" ],
+              "IndexedContentTypes": [ "SearchTestArticle", "VectorProbeArticle" ],
               "Culture": "any"
             },
             "LeanCorpus": {

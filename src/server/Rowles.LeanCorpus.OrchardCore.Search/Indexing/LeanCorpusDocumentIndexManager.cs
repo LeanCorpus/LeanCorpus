@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using OrchardCore.Indexing;
 using OrchardCore.Indexing.Models;
+using Rowles.LeanCorpus.Document;
 using Rowles.LeanCorpus.OrchardCore.Search.Storage;
 using Rowles.LeanCorpus.OrchardCore.Search.Models;
 using Rowles.LeanCorpus.Search.Queries;
@@ -77,6 +78,10 @@ public sealed class LeanCorpusDocumentIndexManager : IDocumentIndexManager
                 DocumentIndex[] batchToMap = _contentFieldRefresher is null
                     ? batch
                     : await _contentFieldRefresher.RefreshAsync(batch, GetContentIndexSettings()).ConfigureAwait(false);
+                batchToMap = batchToMap
+                    .GroupBy(document => document.Id, StringComparer.Ordinal)
+                    .Select(group => group.Last())
+                    .ToArray();
                 _ = await LeanCorpusIndexingStateStore.ReadLastTaskIdAsync(paths.StatePath).ConfigureAwait(false);
                 LeanCorpusSchemaManifest current = await _schemas.ReadAsync(paths.SchemaPath).ConfigureAwait(false);
                 LeanCorpusIndexMetadata metadata = indexProfile.GetLeanCorpusMetadata(current.Metadata);
@@ -96,8 +101,10 @@ public sealed class LeanCorpusDocumentIndexManager : IDocumentIndexManager
 
                 _failures.Check(LeanCorpusFailurePoint.BeforeDocumentWrite);
                 LeanCorpusIndexHandle handle = entry.Open(createIfMissing: false, current);
+                var updates = new (string Term, LeanDocument Replacement)[batchToMap.Length];
                 for (int index = 0; index < batchToMap.Length; index++)
-                    handle.Writer.UpdateDocument(LeanCorpusDocumentMapper.DocumentIdField, batchToMap[index].Id, mapped.Documents[index]);
+                    updates[index] = (batchToMap[index].Id, mapped.Documents[index]);
+                handle.Writer.UpdateDocuments(LeanCorpusDocumentMapper.DocumentIdField, updates);
 
                 _failures.Check(LeanCorpusFailurePoint.AfterDocumentWriteBeforeCommit);
                 handle.CommitAndRefresh();
@@ -114,67 +121,6 @@ public sealed class LeanCorpusDocumentIndexManager : IDocumentIndexManager
             {
                 entry.Close();
                 _logger.LogError(exception, "LeanCorpus document batch failed for index {IndexFullName}.", indexProfile.IndexFullName);
-                return false;
-            }
-        }).ConfigureAwait(false);
-    }
-
-    /// <summary>Adds prebuilt documents to an index immediately after a physical rebuild.</summary>
-    /// <remarks>
-    /// The caller must have rebuilt the index and must supply documents with unique IDs.
-    /// This path skips update-by-ID deletion work and Orchard content refresh handlers, so it is
-    /// intended only for complete, already-mapped rebuild batches. Normal Orchard task replay must
-    /// continue to use <see cref="AddOrUpdateDocumentsAsync"/>.
-    /// </remarks>
-    internal async Task<bool> AddDocumentsToEmptyIndexAsync(IndexProfile indexProfile, IReadOnlyList<DocumentIndex> documents)
-    {
-        ArgumentNullException.ThrowIfNull(documents);
-        if (documents.Count == 0)
-            return false;
-        if (documents.Any(document => document is ContentItemDocumentIndex))
-            throw new ArgumentException("A full rebuild batch must contain prebuilt provider-neutral documents.", nameof(documents));
-
-        LeanCorpusIndexPaths paths = _paths.Resolve(indexProfile.IndexFullName);
-        return await _handles.WithExclusiveAsync(paths, async entry =>
-        {
-            try
-            {
-                _ = await LeanCorpusIndexingStateStore.ReadLastTaskIdAsync(paths.StatePath).ConfigureAwait(false);
-                LeanCorpusSchemaManifest current = await _schemas.ReadAsync(paths.SchemaPath).ConfigureAwait(false);
-                LeanCorpusIndexMetadata metadata = indexProfile.GetLeanCorpusMetadata(current.Metadata);
-                if (current.Fields.Count > 0 && current.Metadata.DefaultAnalyser != metadata.DefaultAnalyser)
-                    throw new InvalidDataException("Changing the default analyser requires a physical index rebuild.");
-                if (!LeanCorpusIndexProfileMetadataExtensions.MetadataEquals(current.Metadata, metadata))
-                {
-                    bool analyserChanged = current.Metadata.DefaultAnalyser != metadata.DefaultAnalyser;
-                    current = current with { Metadata = metadata };
-                    await _schemas.PublishAsync(paths.SchemaPath, current).ConfigureAwait(false);
-                    if (analyserChanged)
-                        entry.Close();
-                }
-
-                LeanCorpusMappedBatch mapped = _mapper.Map(documents, current);
-                if (!SameSchema(current, mapped.Manifest))
-                    await _schemas.PublishAsync(paths.SchemaPath, mapped.Manifest).ConfigureAwait(false);
-
-                _failures.Check(LeanCorpusFailurePoint.BeforeDocumentWrite);
-                LeanCorpusIndexHandle handle = entry.Open(createIfMissing: false, mapped.Manifest);
-                handle.Writer.AddDocuments(mapped.Documents);
-                _failures.Check(LeanCorpusFailurePoint.AfterDocumentWriteBeforeCommit);
-                handle.CommitAndRefresh();
-                _failures.Check(LeanCorpusFailurePoint.AfterCommitBeforeCursor);
-                return true;
-            }
-            catch (InvalidDataException exception)
-            {
-                entry.Close();
-                _logger.LogError(exception, "LeanCorpus full-build batch failed for index {IndexFullName}.", indexProfile.IndexFullName);
-                return false;
-            }
-            catch (Exception exception)
-            {
-                entry.Close();
-                _logger.LogError(exception, "LeanCorpus full-build batch failed for index {IndexFullName}.", indexProfile.IndexFullName);
                 return false;
             }
         }).ConfigureAwait(false);
@@ -322,24 +268,29 @@ public sealed class LeanCorpusDocumentIndexManager : IDocumentIndexManager
 
     private static void DeleteAllDocuments(LeanCorpusIndexHandle handle)
     {
-        string[] ids;
         using (var lease = handle.AcquireSearcher())
         {
-            TopDocs hits = lease.Searcher.Search(new MatchAllDocsQuery(), int.MaxValue);
-            var documentIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var hit in hits.ScoreDocs)
+            var query = new MatchAllDocsQuery();
+            TopDocs hits = lease.Searcher.Search(query, 256);
+            while (true)
             {
-                var fields = lease.Searcher.GetStoredFields(hit.DocId);
-                if (fields.TryGetValue(LeanCorpusDocumentMapper.DocumentIdField, out var values))
-                    foreach (string id in values)
-                        documentIds.Add(id);
-            }
+                foreach (var hit in hits.ScoreDocs)
+                {
+                    var fields = lease.Searcher.GetStoredFields(hit.DocId);
+                    if (fields.TryGetValue(LeanCorpusDocumentMapper.DocumentIdField, out var values))
+                    {
+                        foreach (string id in values)
+                            handle.Writer.DeleteDocuments(new TermQuery(LeanCorpusDocumentMapper.DocumentIdField, id));
+                    }
+                }
 
-            ids = documentIds.ToArray();
+                if (hits.ScoreDocs.Length < 256)
+                    break;
+
+                hits = lease.Searcher.SearchAfter(hits.ScoreDocs[^1], query, 256, SortField.Score);
+            }
         }
 
-        foreach (string id in ids)
-            handle.Writer.DeleteDocuments(new TermQuery(LeanCorpusDocumentMapper.DocumentIdField, id));
         handle.CommitAndRefresh();
     }
 }

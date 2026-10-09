@@ -155,6 +155,7 @@ public sealed class MappingAndStorageTests
             failures.Point = LeanCorpusFailurePoint.DuringCursorWrite;
             await Assert.ThrowsAsync<IOException>(() => LeanCorpusIndexingStateStore.PublishAsync(path, 9, failures, TestContext.Current.CancellationToken));
             Assert.Equal(8, await LeanCorpusIndexingStateStore.ReadLastTaskIdAsync(path, TestContext.Current.CancellationToken));
+            Assert.Empty(Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "state.json.tmp-*"));
 
             failures.Point = LeanCorpusFailurePoint.AfterCursorFlushBeforePublish;
             await Assert.ThrowsAsync<IOException>(() => LeanCorpusIndexingStateStore.PublishAsync(path, 10, failures, TestContext.Current.CancellationToken));

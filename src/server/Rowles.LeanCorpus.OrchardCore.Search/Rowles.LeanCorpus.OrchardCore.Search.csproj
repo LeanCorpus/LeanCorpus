@@ -18,6 +18,7 @@
     <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.Tests" />
     <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests" />
     <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.TestHost" />
+    <InternalsVisibleTo Include="Rowles.LeanCorpus.OrchardCore.Search.TestModule" />
   </ItemGroup>
 
   <ItemGroup>

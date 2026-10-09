@@ -5,6 +5,8 @@ using OrchardCore.Search.Abstractions;
 using Rowles.LeanCorpus.OrchardCore.Search.Indexing;
 using Rowles.LeanCorpus.OrchardCore.Search.Storage;
 using Rowles.LeanCorpus.OrchardCore.Search.Models;
+using Rowles.LeanCorpus.Search.Scoring;
+using Rowles.LeanCorpus.Search.Searcher;
 
 namespace Rowles.LeanCorpus.OrchardCore.Search.Search;
 
@@ -12,6 +14,7 @@ namespace Rowles.LeanCorpus.OrchardCore.Search.Search;
 public sealed class LeanCorpusSearchService : ISearchService
 {
     private const int MaximumPageSize = 100;
+    private const int SearchPageSize = 256;
     private readonly LeanCorpusIndexPathResolver _paths;
     private readonly LeanCorpusIndexHandleCache _handles;
     private readonly LeanCorpusSchemaStore _schemas;
@@ -61,32 +64,41 @@ public sealed class LeanCorpusSearchService : ISearchService
                 if (query is null)
                     return Empty(success: true);
 
-                var hits = searcher.Search(query, int.MaxValue);
-                var bestByContentId = new Dictionary<string, float>(StringComparer.Ordinal);
-                foreach (var hit in hits.ScoreDocs)
-                {
-                    var stored = searcher.GetStoredFields(hit.DocId);
-                    string? contentId = ReadFirst(stored, LeanCorpusDocumentMapper.ContentItemIdField)
-                        ?? ReadFirst(stored, LeanCorpusDocumentMapper.DocumentIdField);
-                    if (string.IsNullOrWhiteSpace(contentId))
-                        continue;
-                    if (!bestByContentId.TryGetValue(contentId, out float score) || hit.Score > score)
-                        bestByContentId[contentId] = hit.Score;
-                }
-
-                var ordered = bestByContentId
-                    .OrderByDescending(pair => pair.Value)
-                    .ThenBy(pair => pair.Key, StringComparer.Ordinal)
-                    .Select(pair => pair.Key)
-                    .ToArray();
                 int safeStart = Math.Max(0, start);
                 int safeSize = Math.Clamp(size, 0, MaximumPageSize);
+                SortField[] sorts = [SortField.Score, SortField.String(LeanCorpusDocumentMapper.DocumentIdField)];
+                var seenContentIds = new HashSet<string>(StringComparer.Ordinal);
+                var pageIds = new List<string>(safeSize);
+                int uniqueResultIndex = 0;
+                TopDocs hits = searcher.Search(query, SearchPageSize, sorts);
+                while (true)
+                {
+                    foreach (var hit in hits.ScoreDocs)
+                    {
+                        var stored = searcher.GetStoredFields(hit.DocId);
+                        string? documentId = ReadFirst(stored, LeanCorpusDocumentMapper.DocumentIdField);
+                        string? contentId = ReadFirst(stored, LeanCorpusDocumentMapper.ContentItemIdField) ?? documentId;
+                        if (string.IsNullOrWhiteSpace(contentId) || !seenContentIds.Add(contentId))
+                            continue;
+
+                        if (uniqueResultIndex >= safeStart && pageIds.Count < safeSize)
+                            pageIds.Add(contentId);
+                        uniqueResultIndex++;
+                    }
+
+                    if (hits.ScoreDocs.Length < SearchPageSize)
+                        break;
+
+                    SearchAfterValue[] cursor = searcher.CaptureSortValues(hits.ScoreDocs[^1], sorts);
+                    hits = searcher.SearchAfter(cursor, query, SearchPageSize, sorts);
+                }
+
                 return new SearchResult
                 {
                     Success = true,
                     Latest = true,
-                    TotalCount = ordered.LongLength,
-                    ContentItemIds = ordered.Skip(safeStart).Take(safeSize).ToList(),
+                    TotalCount = seenContentIds.Count,
+                    ContentItemIds = pageIds,
                     Highlights = new Dictionary<string, IReadOnlyDictionary<string, IReadOnlyCollection<string>>>(StringComparer.Ordinal),
                 };
             }, async entry =>

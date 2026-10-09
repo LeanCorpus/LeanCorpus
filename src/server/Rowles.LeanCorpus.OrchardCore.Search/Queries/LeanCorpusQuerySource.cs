@@ -4,6 +4,7 @@ using OrchardCore.Indexing;
 using OrchardCore.Queries;
 using Rowles.LeanCorpus.OrchardCore.Search.Indexing;
 using Rowles.LeanCorpus.OrchardCore.Search.Storage;
+using Rowles.LeanCorpus.Search.Scoring;
 
 namespace Rowles.LeanCorpus.OrchardCore.Search.Queries;
 
@@ -66,16 +67,20 @@ public sealed class LeanCorpusQuerySource : IQuerySource
 
             string indexFullName = _nameProvider.GetFullIndexName(indexElement.GetString()!);
             LeanCorpusIndexPaths paths = _paths.Resolve(indexFullName);
+            int skip = ParseSkip(json.RootElement);
+            int take = ParseTake(json.RootElement);
             var items = await _handles.WithSearcherAsync(paths, (searcher, schema) =>
             {
                 var (_, compiled) = _compiler.Compile(query.Schema, schema);
                 int topN = compiled is Rowles.LeanCorpus.Search.Queries.VectorQuery vector
                     ? vector.TopK
-                    : int.MaxValue;
-                var hits = searcher.Search(compiled, topN);
+                    : checked(skip + take);
+                TopDocs hits = compiled is Rowles.LeanCorpus.Search.Queries.VectorQuery
+                    ? searcher.Search(compiled, topN)
+                    : searcher.Search(compiled, topN, SortField.Score, SortField.String(LeanCorpusDocumentMapper.DocumentIdField));
                 return hits.ScoreDocs
-                    .Skip(ParseSkip(json.RootElement))
-                    .Take(ParseTake(json.RootElement))
+                    .Skip(skip)
+                    .Take(take)
                     .Select(hit =>
                     {
                         var stored = searcher.GetStoredFields(hit.DocId);

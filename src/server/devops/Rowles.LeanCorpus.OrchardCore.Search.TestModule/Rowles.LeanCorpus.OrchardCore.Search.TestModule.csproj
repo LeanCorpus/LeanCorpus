@@ -9,5 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="OrchardCore.Module.Targets" />
+    <PackageReference Include="OrchardCore.Indexing" />
+    <ProjectReference Include="../../Rowles.LeanCorpus.OrchardCore.Search/Rowles.LeanCorpus.OrchardCore.Search.csproj" />
   </ItemGroup>
 </Project>

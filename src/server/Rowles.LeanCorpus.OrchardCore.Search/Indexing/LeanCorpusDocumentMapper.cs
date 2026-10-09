@@ -30,7 +30,7 @@ internal sealed class LeanCorpusDocumentMapper(ILogger<LeanCorpusDocumentMapper>
                 throw new InvalidDataException("Orchard supplied a document without an ID.");
 
             var document = new LeanDocument();
-            document.Add(new StringField(DocumentIdField, documentIndex.Id));
+            document.Add(new StringField(DocumentIdField, documentIndex.Id, stored: true, boost: 1, storeDocValues: true));
             string contentItemId;
             if (documentIndex is ContentItemDocumentIndex contentItemDocument)
             {
