@@ -1,5 +1,7 @@
-using Rowles.LeanCorpus.Analysis;
+﻿using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Filters;
+using Rowles.LeanCorpus.Analysis.Analysers;
+using Rowles.LeanCorpus.Analysis.Tokenisers;
 using Rowles.LeanCorpus.Tests.Shared.Infrastructure;
 
 namespace Rowles.Text.Tests.Filters;
@@ -202,6 +204,38 @@ public class CommonGramsFilterTests
         filter.Finish(sink);
 
         Assert.Equal("the quick", sink.Tokens[1].Text);
+    }
+
+    [Theory]
+    [InlineData(1, 2, 1)]
+    [InlineData(2, 2, 1)]
+    [InlineData(1, 0, 1)]
+    [InlineData(1, 1, 2)]
+    [InlineData(2, 1, 3)]
+    public void GraphInputsPreserveBufferedEdgesWithoutInvalidBigrams(
+        int firstLength, int secondIncrement, int secondLength)
+    {
+        var analyser = new Analyser(new GraphTokeniser(firstLength, secondIncrement, secondLength),
+            new CommonGramsFilter(["the", "quick"]));
+        var sink = new MaterialisingTokenSink();
+
+        analyser.Analyse("the quick", sink);
+
+        Assert.Equal(
+            [("the", 0, firstLength, 0, 3, 1, firstLength),
+             ("quick", secondIncrement, secondIncrement + secondLength, 4, 9, secondIncrement, secondLength)],
+            DescribeEdges(MaterialiseGraph(sink.Tokens)));
+        Assert.Equal("custom", sink.Tokens[0].Type);
+        Assert.Equal(new byte[] { 42 }, sink.Tokens[0].Payload);
+    }
+
+    private sealed class GraphTokeniser(int firstLength, int secondIncrement, int secondLength) : ISpanTokeniser
+    {
+        public void Tokenise(ReadOnlySpan<char> input, ISpanTokenSink sink)
+        {
+            sink.Add(input[..3], 0, 3, "custom", 1, firstLength, [42]);
+            sink.Add(input[4..], 4, 9, "term", secondIncrement, secondLength, null);
+        }
     }
 
     private static TokenGraph MaterialiseGraph(IEnumerable<Token> tokens)

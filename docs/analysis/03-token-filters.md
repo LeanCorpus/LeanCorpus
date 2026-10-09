@@ -91,7 +91,7 @@ See [Hunspell](07-hunspell.md) for dictionary loading and limitations.
 | `SynonymGraphFilter` | Expands source phrases into alternate token-graph edges. |
 | `FlattenGraphFilter` | Converts graph edges to unit-length positions for postings. Required before indexing a graph-producing pipeline. |
 | `ShingleFilter` | Emits connected token n-gram graph edges. Configure minimum and maximum size, unigram output, and separator. |
-| `CommonGramsFilter` | Emits common-word bigrams using a supplied word set and separator. |
+| `CommonGramsFilter` | Emits bigrams for adjacent unit-position common words using a supplied word set and separator; preserves incoming graph lengths and does not combine across gaps or same-position alternatives. |
 
 ```csharp
 var synonyms = new SynonymMap();

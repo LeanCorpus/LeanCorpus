@@ -71,6 +71,8 @@
 
 ## Fixed
 
+- Preserve buffered CommonGrams graph edge lengths and combine only adjacent unit-position tokens; retain graph lengths when ICU and URL/email tokenisers delegate Thai runs.
+
 - Restore Native AOT smoke coverage for complex-phrase rejection, parser reuse and flat alternatives, and select it for affected parser changes.
 
 - Separate stored-fields v5 raw/decompressed (256 MiB) and encoded (320 MiB) ceilings so legal raw blocks can expand during compression. Preserve v1-v4 encoded limits, the v5 body layout and the existing 3.1.1 v3-to-v5 coordinated migration, with no additional migration.

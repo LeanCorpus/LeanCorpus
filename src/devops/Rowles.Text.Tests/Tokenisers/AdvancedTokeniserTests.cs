@@ -1,4 +1,4 @@
-using Rowles.LeanCorpus.Analysis;
+﻿using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Analysers;
 using Rowles.LeanCorpus.Analysis.Tokenisers;
 
@@ -286,6 +286,37 @@ public sealed class AdvancedTokeniserTests
     [Fact(DisplayName = "Thai Tokeniser: Empty Lexicon Throws")]
     public void ThaiTokeniser_EmptyLexicon_Throws()
         => Assert.Throws<ArgumentException>(() => new ThaiTokeniser([]));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ThaiDelegationPreservesGraphEdges(bool useIcu)
+    {
+        ISpanTokeniser tokeniser = useIcu
+            ? new IcuTokeniser(new GraphThaiTokeniser())
+            : new UrlEmailTokeniser(new GraphThaiTokeniser());
+        var sink = new MaterialisingTokenSink();
+
+        tokeniser.Tokenise("prefix ภาษาไทย suffix", sink);
+
+        Assert.Equal(["prefix", "ภาษา", "ไทย", "suffix"], sink.Tokens.Select(token => token.Text));
+        Assert.Equal([0, 7, 11, 15], sink.Tokens.Select(token => token.StartOffset));
+        Assert.Equal([6, 11, 14, 21], sink.Tokens.Select(token => token.EndOffset));
+        Assert.Equal([1, 2, 0, 1], sink.Tokens.Select(token => token.PositionIncrement));
+        Assert.Equal([1, 2, 3, 1], sink.Tokens.Select(token => token.PositionLength));
+        Assert.Equal("graph-thai", sink.Tokens[1].Type);
+        Assert.Equal(new byte[] { 42 }, sink.Tokens[1].Payload);
+        Assert.Equal(new byte[] { 43 }, sink.Tokens[2].Payload);
+    }
+
+    private sealed class GraphThaiTokeniser : ISpanTokeniser
+    {
+        public void Tokenise(ReadOnlySpan<char> input, ISpanTokenSink sink)
+        {
+            sink.Add(input[..4], 0, 4, "graph-thai", 2, 2, [42]);
+            sink.Add(input[4..], 4, input.Length, "graph-thai", 0, 3, [43]);
+        }
+    }
 
     private static string ResolveLexiconPath(string fileName)
     {

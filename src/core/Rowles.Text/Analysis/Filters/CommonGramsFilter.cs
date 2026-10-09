@@ -1,4 +1,4 @@
-using System.Buffers;
+﻿using System.Buffers;
 using System.Collections.Frozen;
 
 namespace Rowles.LeanCorpus.Analysis.Filters;
@@ -7,11 +7,13 @@ namespace Rowles.LeanCorpus.Analysis.Filters;
 /// Produces bigrams of consecutive common words to improve phrase query recall.
 /// </summary>
 /// <remarks>
-/// <para>When two consecutive tokens are both in the <em>common words</em> set, this
+/// <para>When two adjacent unit-position tokens are both in the <em>common words</em> set, this
 /// filter emits a bigram token (e.g. <c>"the_quick"</c>) in addition to the individual
 /// common words. The bigram appears at the same position as the first common word
 /// (<c>positionIncrement = 0</c>), enabling phrase queries to match across common-word
 /// boundaries.</para>
+/// <para>Incoming multi-position edges pass through unchanged. Position gaps and
+/// same-position alternatives do not produce bigrams.</para>
 /// <para>This filter is stateful — it buffers the previous token across calls — and
 /// relies on <see cref="ISpanTokenFilter.Finish"/> to flush the final buffered token
 /// at end-of-stream.</para>
@@ -31,6 +33,7 @@ public sealed class CommonGramsFilter : ISpanTokenFilter
     private int _previousEndOffset;
     private string _previousType = Token.DefaultType;
     private int _previousPositionIncrement;
+    private int _previousPositionLength;
     private byte[]? _previousPayload;
     private bool _previousIsCommon;
     private bool _hasPrevious;
@@ -61,38 +64,42 @@ public sealed class CommonGramsFilter : ISpanTokenFilter
         int positionIncrement,
         byte[]? payload,
         ISpanTokenSink sink)
+        => Apply(text, startOffset, endOffset, type, positionIncrement, 1, payload, sink);
+
+    /// <inheritdoc/>
+    public void Apply(
+        ReadOnlySpan<char> text,
+        int startOffset,
+        int endOffset,
+        string type,
+        int positionIncrement,
+        int positionLength,
+        byte[]? payload,
+        ISpanTokenSink sink)
     {
         ArgumentNullException.ThrowIfNull(sink);
+        Token.ValidatePositionLength(positionLength);
 
         bool currentIsCommon = _lookup.Contains(text);
 
         if (_hasPrevious)
         {
-            if (_previousIsCommon && currentIsCommon)
-            {
-                // Keep the first unigram at its incoming position, then add the bigram
-                // as an alternate edge spanning both common-word positions.
-                sink.Add(
-                    _previousText.AsSpan(),
-                    _previousStartOffset,
-                    _previousEndOffset,
-                    _previousType,
-                    _previousPositionIncrement,
-                    _previousPayload);
+            // Buffered edges must retain their own length across calls and Finish.
+            sink.Add(
+                _previousText.AsSpan(),
+                _previousStartOffset,
+                _previousEndOffset,
+                _previousType,
+                _previousPositionIncrement,
+                _previousPositionLength,
+                _previousPayload);
 
+            if (_previousIsCommon && currentIsCommon
+                && _previousPositionLength == 1 && positionLength == 1
+                && positionIncrement == 1)
+            {
                 EmitBigram(_previousText.AsSpan(), text, _previousStartOffset, endOffset,
                     _previousType, _previousPayload, sink);
-            }
-            else
-            {
-                // Emit the buffered previous token unchanged.
-                sink.Add(
-                    _previousText.AsSpan(),
-                    _previousStartOffset,
-                    _previousEndOffset,
-                    _previousType,
-                    _previousPositionIncrement,
-                    _previousPayload);
             }
         }
 
@@ -102,6 +109,7 @@ public sealed class CommonGramsFilter : ISpanTokenFilter
         _previousEndOffset = endOffset;
         _previousType = type;
         _previousPositionIncrement = positionIncrement;
+        _previousPositionLength = positionLength;
         _previousPayload = payload;
         _previousIsCommon = currentIsCommon;
         _hasPrevious = true;
@@ -120,6 +128,7 @@ public sealed class CommonGramsFilter : ISpanTokenFilter
                 _previousEndOffset,
                 _previousType,
                 _previousPositionIncrement,
+                _previousPositionLength,
                 _previousPayload);
 
             _hasPrevious = false;

@@ -20,6 +20,8 @@ Tokenisers split raw text into token boundaries. Choose based on the input struc
 | `PatternTokeniser` | Regex-based tokenisation. Accepts a pattern string and optional group index |
 | `MediaWikiTokeniser` | MediaWiki markup: headings, links, categories, citations |
 
+Thai delegation in `IcuTokeniser` and `UrlEmailTokeniser` preserves the nested tokeniser's position increments, graph position lengths, types and payloads. Only character offsets are shifted back to the original input.
+
 ## Picking one
 
 - `Tokeniser` for ordinary mixed-alphanumeric text.

@@ -1,4 +1,4 @@
-namespace Rowles.LeanCorpus.Analysis.Tokenisers;
+﻿namespace Rowles.LeanCorpus.Analysis.Tokenisers;
 
 /// <summary>
 /// Forwards tokens to an inner sink with an added offset to start/end positions.
@@ -26,5 +26,18 @@ internal sealed class OffsetAdjustingSink : Analysis.ISpanTokenSink
     {
         _inner.Add(text, startOffset + _offset, endOffset + _offset,
             type, positionIncrement, payload);
+    }
+
+    public void Add(
+        ReadOnlySpan<char> text,
+        int startOffset,
+        int endOffset,
+        string type,
+        int positionIncrement,
+        int positionLength,
+        byte[]? payload = null)
+    {
+        _inner.Add(text, startOffset + _offset, endOffset + _offset,
+            type, positionIncrement, positionLength, payload);
     }
 }
