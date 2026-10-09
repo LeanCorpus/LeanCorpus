@@ -1,4 +1,4 @@
-using Xunit;
+﻿using Xunit;
 using Rowles.LeanCorpus.Analysis;
 using Rowles.LeanCorpus.Analysis.Analysers;
 using Rowles.LeanCorpus.Codecs.StoredFields;
@@ -171,12 +171,30 @@ public class IndexSmokeTests : IClassFixture<IndexSmokeFixture>
 
             {
                 var parser = new ComplexPhraseQueryParser("title", new StandardAnalyser());
+                string rejectedQueryText = "\"nat* aot\"";
+                var exception = Assert.Throws<QueryParseException>(() => parser.Parse(rejectedQueryText));
                 Assert.Equal(
-                    1,
-                    searcher.Search(
-                        parser.Parse("\"native aot\""),
-                        10,
-                        TestContext.Current.CancellationToken).TotalHits);
+                    "Complex phrase syntax supports flat alternatives only; other embedded operators remain unsupported until a position-preserving grammar is available.",
+                    exception.Message);
+                Assert.Equal(rejectedQueryText.IndexOf('*'), exception.Offset);
+
+                var parsed = Assert.IsType<SpanNearQuery>(parser.Parse("\"native (aot OR search)\""));
+                Assert.Equal("title", parsed.Field);
+                Assert.Equal(0, parsed.Slop);
+                Assert.True(parsed.InOrder);
+                Assert.Equal(2, parsed.Clauses.Count);
+                var native = Assert.IsType<SpanTermQuery>(parsed.Clauses[0]);
+                Assert.Equal("title", native.Field);
+                Assert.Equal("native", native.Term);
+                var alternatives = Assert.IsType<SpanOrQuery>(parsed.Clauses[1]);
+                Assert.Equal(2, alternatives.Clauses.Count);
+                var aot = Assert.IsType<SpanTermQuery>(alternatives.Clauses[0]);
+                Assert.Equal("title", aot.Field);
+                Assert.Equal("aot", aot.Term);
+                var search = Assert.IsType<SpanTermQuery>(alternatives.Clauses[1]);
+                Assert.Equal("title", search.Field);
+                Assert.Equal("search", search.Term);
+                Assert.Equal(1, searcher.Search(parsed, 10, TestContext.Current.CancellationToken).TotalHits);
             }
 
             {
