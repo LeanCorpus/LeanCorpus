@@ -5,11 +5,14 @@ namespace Rowles.LeanCorpus.Index.Indexer;
 public sealed partial class IndexWriter
 {
     /// <summary>
-    /// Replaces documents with distinct terms as one ordered batch. Existing pending work and
-    /// deletions are applied before the replacements are added, so commit-time deletes cannot
-    /// remove documents from this batch.
+    /// Replaces documents identified by distinct terms as one ordered batch, applying deletions
+    /// once before adding replacements. Existing pending work is applied first, so commit-time
+    /// deletes cannot remove documents from this batch.
     /// </summary>
-    internal void UpdateDocuments(string field, IReadOnlyList<(string Term, LeanDocument Replacement)> updates)
+    /// <param name="field">The indexed field used to identify existing documents.</param>
+    /// <param name="updates">The distinct delete terms and their replacement documents, in input order.</param>
+    /// <exception cref="ArgumentException">The field is empty or a delete term is repeated in the batch.</exception>
+    public void UpdateDocuments(string field, IReadOnlyList<(string Term, LeanDocument Replacement)> updates)
     {
         ArgumentException.ThrowIfNullOrEmpty(field);
         ArgumentNullException.ThrowIfNull(updates);

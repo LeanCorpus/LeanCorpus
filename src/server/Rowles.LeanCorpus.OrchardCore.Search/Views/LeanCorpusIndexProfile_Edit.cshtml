@@ -1,0 +1,14 @@
+@model Rowles.LeanCorpus.OrchardCore.Search.Drivers.LeanCorpusIndexProfileViewModel
+<fieldset class="mb-3">
+    <label asp-for="DefaultAnalyser">Default analyser</label>
+    <select asp-for="DefaultAnalyser" class="form-select">
+        <option value="standard">Standard</option>
+        <option value="keyword">Keyword</option>
+    </select>
+    <span class="hint">Changing the analyser requires a physical rebuild of the index.</span>
+</fieldset>
+<fieldset class="mb-3">
+    <label asp-for="SearchFields">Site-search fields</label>
+    <select asp-for="SearchFields" asp-items="Model.SearchFieldOptions" class="form-select" multiple></select>
+    <span class="hint">Leave empty to search all indexed analysed text fields.</span>
+</fieldset>

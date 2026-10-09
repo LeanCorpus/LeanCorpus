@@ -66,6 +66,33 @@
         Coverage = $false
         Capabilities = @('Trx', 'HangDump', 'CrashDump')
     }
+    'server-orchard' = @{
+        Name = 'Orchard Provider'
+        Project = 'src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.Tests/Rowles.LeanCorpus.OrchardCore.Search.Tests.csproj'
+        Runner = 'Mtp'
+        Frameworks = @('net11.0')
+        DefaultFramework = 'net11.0'
+        Coverage = $false
+        Capabilities = @('Trx', 'HangDump', 'CrashDump')
+    }
+    'server-orchard-functional' = @{
+        Name = 'Orchard Provider Functional'
+        Project = 'src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests.csproj'
+        Runner = 'Mtp'
+        Frameworks = @('net11.0')
+        DefaultFramework = 'net11.0'
+        Coverage = $false
+        Capabilities = @('Trx', 'HangDump', 'CrashDump')
+    }
+    'server-orchard-performance' = @{
+        Name = 'Orchard Provider Performance'
+        Project = 'src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests.csproj'
+        Runner = 'Mtp'
+        Frameworks = @('net11.0')
+        DefaultFramework = 'net11.0'
+        Coverage = $false
+        Capabilities = @('Trx', 'HangDump', 'CrashDump')
+    }
     aot = @{
         Name = 'AOT'
         Project = 'src/devops/Rowles.LeanCorpus.Tests.AOTSmoke/Rowles.LeanCorpus.Tests.AOTSmoke.csproj'

@@ -30,4 +30,9 @@
   <Project Path="src/server/devops/Rowles.LeanCorpus.Server.Integration.Tests/Rowles.LeanCorpus.Server.Integration.Tests.csproj" />
   <Project Path="src/server/Rowles.LeanCorpus.Server.Local/Rowles.LeanCorpus.Server.Local.csproj" />
   <Project Path="src/server/Rowles.LeanCorpus.Studio/Rowles.LeanCorpus.Studio.csproj" />
+  <Project Path="src/server/Rowles.LeanCorpus.OrchardCore.Search/Rowles.LeanCorpus.OrchardCore.Search.csproj" />
+  <Project Path="src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.Tests/Rowles.LeanCorpus.OrchardCore.Search.Tests.csproj" />
+  <Project Path="src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestHost/Rowles.LeanCorpus.OrchardCore.Search.TestHost.csproj" />
+  <Project Path="src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestModule/Rowles.LeanCorpus.OrchardCore.Search.TestModule.csproj" />
+  <Project Path="src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests.csproj" />
 </Solution>

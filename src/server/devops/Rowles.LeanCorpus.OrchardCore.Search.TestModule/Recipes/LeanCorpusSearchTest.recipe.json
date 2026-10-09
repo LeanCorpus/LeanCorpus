@@ -1,0 +1,125 @@
+{
+  "name": "LeanCorpusSearchTest",
+  "displayName": "LeanCorpus Search Test",
+  "description": "Deterministic Orchard content and paired search profiles for provider tests.",
+  "author": "LeanCorpus",
+  "website": "https://orchardcore.net",
+  "version": "1.0.0",
+  "issetuprecipe": true,
+  "tags": [ "testing", "search" ],
+  "steps": [
+    {
+      "name": "feature",
+      "enable": [
+        "OrchardCore.ContentFields",
+        "OrchardCore.ContentFields.Indexing.SQL",
+        "OrchardCore.ContentTypes",
+        "OrchardCore.Contents",
+        "OrchardCore.Admin",
+        "OrchardCore.Indexing",
+        "OrchardCore.Navigation",
+        "OrchardCore.Search",
+        "OrchardCore.Users",
+        "OrchardCore.Queries",
+        "OrchardCore.Lucene",
+        "Rowles.LeanCorpus.OrchardCore.Search",
+        "Rowles.LeanCorpus.OrchardCore.Search.TestHostModule"
+      ]
+    },
+    {
+      "name": "ContentDefinition",
+      "ContentTypes": [
+        {
+          "Name": "VectorProbeArticle",
+          "DisplayName": "Vector Probe Article",
+          "ContentTypePartDefinitionRecords": [
+            { "PartName": "TitlePart", "Name": "TitlePart", "Settings": {} }
+          ]
+        },
+        {
+          "Name": "SearchTestArticle",
+          "DisplayName": "Search Test Article",
+          "Settings": {
+            "ContentTypeSettings": {
+              "Creatable": true,
+              "Listable": true,
+              "Draftable": true,
+              "Versionable": true,
+              "Securable": true
+            },
+            "FullTextAspectSettings": {
+              "IncludeFullTextTemplate": false,
+              "IncludeBodyAspect": true,
+              "IncludeDisplayText": true
+            }
+          },
+          "ContentTypePartDefinitionRecords": [
+            { "PartName": "TitlePart", "Name": "TitlePart", "Settings": {} },
+            { "PartName": "SearchTestArticle", "Name": "SearchTestArticle", "Settings": {} }
+          ]
+        }
+      ],
+      "ContentParts": [
+        {
+          "Name": "SearchTestArticle",
+          "Settings": { "ContentPartSettings": { "Attachable": false, "Reusable": false } },
+          "ContentPartFieldDefinitionRecords": [
+            { "FieldName": "TextField", "Name": "Title", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Title", "Editor": "TextArea" }, "TextFieldSettings": { "Required": true }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "TextField", "Name": "Body", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Body", "Editor": "TextArea" }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "TextField", "Name": "Category", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Category" }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "TextField", "Name": "Keywords", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Keywords" }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "DateTimeField", "Name": "PublishedUtc", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Published UTC" }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "NumericField", "Name": "Sequence", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Sequence" }, "NumericFieldSettings": { "Scale": 0 }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "NumericField", "Name": "Rating", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Rating" }, "NumericFieldSettings": { "Scale": 2 }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "BooleanField", "Name": "Featured", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Featured" }, "LuceneContentIndexSettings": { "Included": true } } },
+            { "FieldName": "GeoPointField", "Name": "Location", "Settings": { "ContentPartFieldSettings": { "DisplayName": "Location" }, "LuceneContentIndexSettings": { "Included": true } } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "CreateOrUpdateIndexProfile",
+      "indexes": [
+        {
+          "Id": "profile-search-lucene",
+          "Name": "Search-Lucene",
+          "IndexName": "Search-Lucene",
+          "ProviderName": "Lucene",
+          "Type": "Content",
+          "Properties": {
+            "ContentIndexMetadata": {
+              "IndexLatest": false,
+              "IndexedContentTypes": [ "SearchTestArticle", "VectorProbeArticle" ],
+              "Culture": "any"
+            },
+            "LuceneIndexMetadata": {
+              "AnalyzerName": "standardanalyzer",
+              "StoreSourceData": false
+            },
+            "LuceneIndexDefaultQueryMetadata": {
+              "DefaultSearchFields": [ "SearchTestArticle.Title", "SearchTestArticle.Body" ]
+            }
+          }
+        },
+        {
+          "Id": "profile-search-leancorpus",
+          "Name": "Search-LeanCorpus",
+          "IndexName": "Search-LeanCorpus",
+          "ProviderName": "LeanCorpus",
+          "Type": "Content",
+          "Properties": {
+            "ContentIndexMetadata": {
+              "IndexLatest": false,
+              "IndexedContentTypes": [ "SearchTestArticle", "VectorProbeArticle" ],
+              "Culture": "any"
+            },
+            "LeanCorpus": {
+              "DefaultAnalyser": "standard",
+              "SearchFields": [ "SearchTestArticle.Title", "SearchTestArticle.Body" ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
