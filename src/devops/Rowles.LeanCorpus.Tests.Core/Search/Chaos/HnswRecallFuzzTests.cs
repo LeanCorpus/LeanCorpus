@@ -7,6 +7,7 @@ using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 namespace Rowles.LeanCorpus.Tests.Core.Search;
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Search)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class HnswRecallFuzzTests : IClassFixture<ChaosDirectoryFixture>
 {
     private readonly ChaosDirectoryFixture _fixture;

@@ -45,6 +45,7 @@ function Invoke-DevOpsBenchmark {
 
     $suiteMap = Import-PowerShellDataFile "$PSScriptRoot/../config/benchmark-suites.psd1"
     $stratMap = Import-PowerShellDataFile "$PSScriptRoot/../config/benchmark-strategies.psd1"
+    $datasetMap = Import-PowerShellDataFile "$PSScriptRoot/../config/benchmark-datasets.psd1"
 
     if ($list) {
         Write-Host ''
@@ -65,7 +66,7 @@ function Invoke-DevOpsBenchmark {
         }
         Write-Host ''
         Write-Host '  Dataset: -Dataset synthetic|wikipedia (default: synthetic)'
-        Write-Host '  Wikipedia suites: index, query, boolean, phrase, prefix, fuzzy, wildcard, regexp, mlt, highlighter, combined, terminset, parallel, similarity, async-index, merge, flush'
+        Write-Host "  Wikipedia suites: $($datasetMap.wikipedia -join ', ')"
         Write-Host '  Wikipedia -ReferencePath defaults to artifacts/dataforge/reference/leancorpus-wikipedia-en-v1.'
         Write-Host ''
         exit 0
@@ -78,10 +79,7 @@ function Invoke-DevOpsBenchmark {
 
     $resolvedReferencePath = ''
     if ($dataset -eq 'wikipedia') {
-        $wikipediaSuites = @(
-            'index', 'query', 'boolean', 'phrase', 'prefix', 'fuzzy', 'wildcard', 'regexp', 'mlt',
-            'highlighter', 'combined', 'terminset', 'parallel', 'similarity', 'async-index', 'merge', 'flush'
-        )
+        $wikipediaSuites = @($datasetMap.wikipedia)
         if ($suite -notin $wikipediaSuites) {
             Write-Error "Suite '$suite' is not supported with the Wikipedia reference. Select one of: $($wikipediaSuites -join ', ')."
             exit 1
@@ -112,39 +110,35 @@ function Invoke-DevOpsBenchmark {
         exit 1
     }
 
+    $stratCfg = Resolve-BenchmarkStrategy $strat
+    $stratDocCount = $stratCfg.DocCount
+    $stratJobArgs = $stratCfg.Job
+    if ($controlled) {
+        if ($docCount -le 0 -and $stratDocCount -le 0) { $stratDocCount = 1000 }
+        if ($stratJobArgs.Count -eq 0) { $stratJobArgs = @('--job', 'short') }
+        $standaloneSuites = @('codec-frame', 'codec-frame-read', 'codec-migration', 'compound-file', 'windows-filesystem', 'windows-storage')
+        if ($suite -notin $standaloneSuites) { $corpusOnly = $true }
+    }
+    $effectiveDocCount = if ($docCount -gt 0) { $docCount } else { [int]$stratDocCount }
+
     if ($area -or $group) {
         if ($suite -notin @('core', 'text')) {
             Write-Error '-Area and -Group require the core or text benchmark suite.'
             exit 1
         }
+        if ($prepareData) {
+            Write-Error '-PrepareData requires a named Gutenberg benchmark suite.'
+            exit 1
+        }
+        if ($gcDump -and -not $dry) { Assert-DotNetTool 'dotnet-gcdump' }
+        if ($effectiveDocCount -gt 0) { $env:BENCH_DOC_COUNT = $effectiveDocCount.ToString() }
 
-        Invoke-SelectedBenchmarks -Suite $suite -Area $area -Group $group -Framework $framework -Dry $dry
+        Invoke-SelectedBenchmarks -Suite $suite -Area $area -Group $group -Framework $framework -Dry $dry `
+            -JobArguments $stratJobArgs -DocCount $effectiveDocCount -CorpusOnly:$corpusOnly -GcDump:$gcDump -PassThrough $passThrough
         exit $LASTEXITCODE
     }
 
     $projectKeys = if ($suite -eq 'all') { @('core', 'text', 'compression') } elseif ($suite -in @('core', 'text', 'compression')) { @($suite) } else { @('core') }
-
-    $stratCfg = Resolve-BenchmarkStrategy $strat
-    $stratDocCount = $stratCfg.DocCount
-    $stratJobArgs = $stratCfg.Job
-
-    if ($controlled) {
-        if ($docCount -le 0 -and $stratDocCount -le 0) { $stratDocCount = 1000 }
-        if ($stratJobArgs.Count -eq 0) { $stratJobArgs = @('--job', 'short') }
-        $standaloneSuites = @(
-            'codec-frame',
-            'codec-frame-read',
-            'codec-migration',
-            'compound-file',
-            'windows-filesystem',
-            'windows-storage'
-        )
-        if ($suite -notin $standaloneSuites) { $corpusOnly = $true }
-    }
-
-    $effectiveDocCount = 0
-    if ($docCount -gt 0) { $effectiveDocCount = $docCount }
-    elseif ($stratDocCount -gt 0) { $effectiveDocCount = $stratDocCount }
 
     if ($prepareData) {
         Prepare-BenchmarkData -RepoRoot $repoRoot -ScriptsPath $scriptsPath -BookCount $bookCount `
@@ -202,9 +196,7 @@ function Invoke-DevOpsBenchmark {
         exit 0
     }
 
-    if ($gcDump) {
-        Assert-DotNetTool 'dotnet-gcdump'
-    }
+    if ($gcDump) { Assert-DotNetTool 'dotnet-gcdump' }
 
     $datasetReport = [ordered]@{ mode = 'synthetic'; identity = $null }
     if ($dataset -eq 'wikipedia') {
@@ -373,8 +365,17 @@ function Invoke-SelectedBenchmarks {
         [string]$Area,
         [string]$Group,
         [string]$Framework,
-        [bool]$Dry
+        [bool]$Dry,
+        [string[]]$JobArguments = @(),
+        [int]$DocCount = 0,
+        [bool]$CorpusOnly = $false,
+        [bool]$GcDump = $false,
+        [string[]]$PassThrough = @()
     )
+
+    if (@($PassThrough | Where-Object { $_ -in @('--filter', '-f') -or $_ -match '^(--filter|-f)=' }).Count -gt 0) {
+        throw 'A custom BenchmarkDotNet filter cannot be combined with area/group selection because each selected class already has its own filter.'
+    }
 
     $groups = Import-PowerShellDataFile "$PSScriptRoot/../config/benchmark-groups.psd1"
     $targets = @{}
@@ -401,7 +402,8 @@ function Invoke-SelectedBenchmarks {
     if ($Area) { Write-Host "  Area:          $Area" }
     if ($Group) { Write-Host "  Group:         $Group" }
     Write-Host ''
-    Invoke-BenchmarkTargets -Targets $targets -Framework $Framework -Dry $Dry
+    Invoke-BenchmarkTargets -Targets $targets -Framework $Framework -Dry $Dry -JobArguments $JobArguments `
+        -DocCount $DocCount -CorpusOnly:$CorpusOnly -GcDump:$GcDump -PassThrough $PassThrough
 }
 
 function Test-BenchmarkGroupSelection {
@@ -423,7 +425,12 @@ function Invoke-BenchmarkTargets {
     param(
         [hashtable]$Targets,
         [string]$Framework,
-        [bool]$Dry
+        [bool]$Dry,
+        [string[]]$JobArguments = @(),
+        [int]$DocCount = 0,
+        [bool]$CorpusOnly = $false,
+        [bool]$GcDump = $false,
+        [string[]]$PassThrough = @()
     )
 
     $failed = @()
@@ -433,20 +440,24 @@ function Invoke-BenchmarkTargets {
 
         foreach ($class in $classes) {
             # BDN --filter is a single glob (no OR), so run one class per call.
-            $projectArgs = @()
-            if ($project -eq 'core') { $projectArgs = @('--suite', 'all') }
+            $runnerArguments = @()
+            if ($project -eq 'core') {
+                $runnerArguments += @('--suite', 'all')
+                if ($DocCount -gt 0) { $runnerArguments += @('--doccount', $DocCount.ToString()) }
+                if ($CorpusOnly) { $runnerArguments += '--corpus-only' }
+                if ($GcDump) { $runnerArguments += '--gcdump' }
+            }
+            $benchmarkArguments = @($JobArguments) + @($PassThrough) + @('--filter', "*$class*")
+            $dotnetArguments = @('run', '-c', 'Release', '--framework', $Framework, '--project', $projectPath, '--') + $runnerArguments
+            if ($project -eq 'core') { $dotnetArguments += '--' }
+            $dotnetArguments += $benchmarkArguments
 
             Write-Info "  $project/$class..."
             if ($Dry) {
-                $filterArgs = if ($project -eq 'core') { "--suite all -- --filter `"*$class*`"" } else { "--filter `"*$class*`"" }
-                Write-Host "    dotnet run -c Release --framework $Framework --project `"$projectPath`" -- $filterArgs"
+                Write-Host ("    " + (ConvertTo-CommandLineText -Command 'dotnet' -Arguments $dotnetArguments))
                 continue
             }
-            if ($project -eq 'core') {
-                dotnet run -c Release --framework $framework --project $projectPath -- @projectArgs -- --filter "*$class*"
-            } else {
-                dotnet run -c Release --framework $framework --project $projectPath -- --filter "*$class*"
-            }
+            dotnet @dotnetArguments
             if ($LASTEXITCODE -ne 0) {
                 Write-Failure "  $project/$class - FAILED"
                 $failed += "$project/$class"
@@ -461,6 +472,10 @@ function Invoke-BenchmarkTargets {
         Write-Error "Failed benchmark projects: $($failed -join ', ')"
         exit 1
     }
-    Write-Success 'All selected benchmark targets passed.'
+    if ($Dry) {
+        Write-Info 'Dry run completed; no benchmark targets were executed.'
+    } else {
+        Write-Success 'All selected benchmark targets passed.'
+    }
     exit 0
 }

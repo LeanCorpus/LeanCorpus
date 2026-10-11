@@ -7,6 +7,8 @@ namespace Rowles.LeanCorpus.Tests.Core.Index.Chaos.StateMachine;
 
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Index)]
+[Technique(TestTechnique.PropertyBased)]
+[Technique(TestTechnique.StateMachine)]
 public sealed class IndexReaderLifecycleStateMachineTests
 {
     [Property(

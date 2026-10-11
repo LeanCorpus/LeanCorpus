@@ -252,6 +252,13 @@ function Invoke-TestTarget {
     $progressCallback = {
         param($process, $elapsed)
         $elapsedText = ([TimeSpan]$elapsed).ToString('hh\:mm\:ss')
+        Write-TestProgressEvent -Context $Context -Name 'TargetProgress' -Data @{
+            target = $target.Key
+            iteration = $Iteration
+            execution = $ExecutionNumber
+            elapsed = $elapsedText
+            elapsedMs = ([TimeSpan]$elapsed).TotalMilliseconds
+        }
         Write-Host "  [$ExecutionNumber/$ExecutionCount] $($target.Key) still running ($elapsedText elapsed)..." -ForegroundColor DarkGray
     }.GetNewClosure()
 

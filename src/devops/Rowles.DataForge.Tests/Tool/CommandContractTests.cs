@@ -24,6 +24,24 @@ public sealed class CommandContractTests
     }
 
     [Fact]
+    public void Profiles_json_command_exposes_the_registered_descriptors()
+    {
+        var output = new StringWriter();
+        var error = new StringWriter();
+        var exitCode = DataForgeCommandLine.Run(["profiles", "-Json"], output, error, Path.GetTempPath());
+        using var document = System.Text.Json.JsonDocument.Parse(output.ToString());
+        var profiles = document.RootElement.EnumerateArray().ToArray();
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(profiles, profile => profile.GetProperty("profileId").GetString() == "leancorpus-search" &&
+            profile.GetProperty("profileVersion").GetInt32() == 1 &&
+            profile.GetProperty("defaultSeed").GetUInt64() == 42 &&
+            profile.GetProperty("defaultCount").GetInt32() == 20000 &&
+            profile.GetProperty("description").GetString() is not null);
+        Assert.Empty(error.ToString());
+    }
+
+    [Fact]
     public void Vector_profile_parameters_round_trip_through_manifest_and_reproduction()
     {
         var root = Path.Combine(Path.GetTempPath(), "dataforge-vector-cli-" + Guid.NewGuid().ToString("N"));

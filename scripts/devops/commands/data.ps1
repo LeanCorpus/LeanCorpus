@@ -1,6 +1,17 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Get-GutenbergDownloadArguments {
+    param([object]$BookCount = 200)
+
+    $parsedCount = 0
+    if (-not [int]::TryParse([string]$BookCount, [ref]$parsedCount) -or $parsedCount -lt 1) {
+        throw 'Gutenberg -BookCount must be a positive integer.'
+    }
+
+    return @('-BookCount', $parsedCount.ToString([Globalization.CultureInfo]::InvariantCulture))
+}
+
 function Invoke-DevOpsData {
     param([string[]]$Arguments = @())
 
@@ -33,6 +44,8 @@ function Invoke-DevOpsData {
     }
 
     Write-Heading "Downloading $dataset data..."
-    if ($parsed.PassThrough.Count -gt 0) { & $scriptPath @($parsed.PassThrough) } else { & $scriptPath }
+    $downloadArguments = @(Get-GutenbergDownloadArguments -BookCount ($parsed.Get('BookCount', '200')))
+    if ($parsed.PassThrough.Count -gt 0) { $downloadArguments += @($parsed.PassThrough) }
+    & $scriptPath @downloadArguments
     exit $LASTEXITCODE
 }

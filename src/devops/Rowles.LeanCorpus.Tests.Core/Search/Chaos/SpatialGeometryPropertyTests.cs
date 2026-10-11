@@ -7,6 +7,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Search;
 
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Search)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class SpatialGeometryPropertyTests
 {
     [Property(DisplayName = "Geo sortable encoding is monotonic", MaxTest = 200, StartSize = 1, EndSize = 128)]

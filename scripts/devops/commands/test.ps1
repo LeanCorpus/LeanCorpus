@@ -21,26 +21,29 @@ function Show-TestSuites {
 function Invoke-DevOpsTest {
     param([string[]]$Arguments = @())
 
+    $uiEventPath = [string]$env:LEANCORPUS_DEVOPS_UI_EVENTS_FILE
     try {
         $parsed = ConvertFrom-DevOpsArguments $Arguments
         $repoRoot = Get-RepoRoot
         $testSuites = Get-TestSuiteRegistry
 
-        $suite = $parsed.Get('Suite', '')
-        if (-not $suite -and $parsed.Positionals.Count -gt 0) {
-            $suite = $parsed.Positionals[0]
+        $suiteValue = [string]$parsed.Get('Suite', '')
+        if (-not $suiteValue -and $parsed.Positionals.Count -gt 0) {
+            $suiteValue = [string]$parsed.Positionals[0]
         }
-        if (-not $suite) {
-            $suite = 'all'
+        $suite = @(ConvertTo-TestArgumentList $suiteValue)
+        if ($suite.Count -eq 0) {
+            $suite = @('all')
         }
-        $suite = ([string]$suite).ToLowerInvariant()
+        $suite = @($suite | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
+        $isAffectedSuite = $suite.Count -eq 1 -and $suite[0] -eq 'affected'
 
         $commit = ''
         $range = ''
         if ($parsed.Has('Commit') -and $parsed.Has('Range')) { throw '-Commit and -Range are mutually exclusive.' }
         foreach ($option in @('Commit', 'Range')) {
             if ($parsed.Has($option)) {
-                if ($suite -ne 'affected') { throw "-$option is valid only for the affected suite." }
+                if (-not $isAffectedSuite) { throw "-$option is valid only for the affected suite." }
                 $value = $parsed.Get($option, '')
                 if ($value -is [bool] -or [string]::IsNullOrWhiteSpace([string]$value)) {
                     throw "-$option requires a value."
@@ -71,6 +74,7 @@ function Invoke-DevOpsTest {
         $runtimeIdentifier = [string]$parsed.Get('RuntimeIdentifier', '')
         $area = [string]$parsed.Get('Area', '')
         $category = [string]$parsed.Get('Category', '')
+        $technique = [string]$parsed.Get('Technique', '')
         $filter = [string]$parsed.Get('Filter', '')
         $hangTimeout = [string]$parsed.Get('HangTimeout', '100s')
         if ([string]::IsNullOrWhiteSpace($hangTimeout)) {
@@ -100,14 +104,15 @@ function Invoke-DevOpsTest {
             throw "Unknown test profile '$parallelProfile'. Valid: unit, integration, stress."
         }
         $verbosity = [string]$parsed.Get('Verbosity', '')
-        $artifactsEnabled = $count -gt 1 -or $flaky -or $diagnostics -or $ci -or $collectCoverage
+        $artifactsEnabled = $count -gt 1 -or $flaky -or $diagnostics -or $ci -or $collectCoverage -or
+            -not [string]::IsNullOrWhiteSpace($uiEventPath)
 
         $affectedSelection = $null
         $resolutionStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
         $targets = @(
             Resolve-TestTargets -Suite $suite -Framework $framework -FrameworkExplicit $frameworkWasSpecified `
                 -Configuration $configuration -RuntimeIdentifier $runtimeIdentifier -Area $area `
-                -Category $category -Filter $filter -Ci $ci -CollectCoverage $collectCoverage `
+                -Category $category -Technique $technique -Filter $filter -Ci $ci -CollectCoverage $collectCoverage `
                 -Commit $commit -Range $range -AffectedSelection ([ref]$affectedSelection) `
                 -AdditionalArguments @($parsed.PassThrough) -RepoRoot $repoRoot -TestSuites $testSuites
         )
@@ -117,6 +122,17 @@ function Invoke-DevOpsTest {
             Write-Info "Affected source: $($affectedSelection.mode) $sourceValue"
             Write-Info "Changed files: $($affectedSelection.paths.Count)"
             Write-Info "Targets: $($affectedSelection.targets -join ', ')"
+        }
+        Write-DevOpsUiTestEvent -Path $uiEventPath -Name 'TargetsResolved' -Data @{
+            targets = @($targets | ForEach-Object { $_.Key })
+            affected = if ($null -ne $affectedSelection) { $affectedSelection } else { $null }
+        }
+        if ($parsed.Has('ExplainAffected')) {
+            if (-not $isAffectedSuite) { throw '-ExplainAffected is valid only for -Suite affected.' }
+            Write-Host "Affected source: $($affectedSelection.mode)"
+            Write-Host "Changed files: $($affectedSelection.paths.Count)"
+            Write-Host "Selected targets: $($affectedSelection.targets -join ', ')"
+            return 0
         }
 
         $options = [pscustomobject]@{
@@ -137,6 +153,8 @@ function Invoke-DevOpsTest {
             RuntimeIdentifier = $runtimeIdentifier
             Area = $area
             Category = $category
+            Technique = $technique
+            UiEventPath = $uiEventPath
             Filter = $filter
             Verbosity = $verbosity
             HangTimeout = $hangTimeout.ToLowerInvariant()
@@ -150,6 +168,7 @@ function Invoke-DevOpsTest {
         return Invoke-TestPipeline -Targets $targets -Options $options -CommandLine $commandLine `
             -DisplayName $displayName -RepoRoot $repoRoot
     } catch {
+        Write-DevOpsUiTestEvent -Path $uiEventPath -Name 'RunError' -Data @{ message = $_.Exception.Message }
         Write-Failure "Test command failed: $($_.Exception.Message)"
         return 1
     }

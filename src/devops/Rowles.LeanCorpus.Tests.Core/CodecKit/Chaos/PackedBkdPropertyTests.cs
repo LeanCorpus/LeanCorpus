@@ -5,6 +5,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Codecs;
 
 [Category(TestCategory.Chaos)]
 [Area(TestArea.CodecKit)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class PackedBkdPropertyTests
 {
     [Property(DisplayName = "Packed BKD intersections match a brute-force model", MaxTest = 200, StartSize = 1, EndSize = 96)]

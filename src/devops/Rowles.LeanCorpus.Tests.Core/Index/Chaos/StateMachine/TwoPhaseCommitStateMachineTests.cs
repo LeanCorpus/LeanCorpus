@@ -7,6 +7,8 @@ namespace Rowles.LeanCorpus.Tests.Core.Index.Chaos.StateMachine;
 
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Index)]
+[Technique(TestTechnique.PropertyBased)]
+[Technique(TestTechnique.StateMachine)]
 public sealed class TwoPhaseCommitStateMachineTests
 {
     [Property(DisplayName = "Two-phase commit state machine preserves prepared and published state", MaxTest = 30, StartSize = 1, EndSize = 30, Parallelism = 1)]

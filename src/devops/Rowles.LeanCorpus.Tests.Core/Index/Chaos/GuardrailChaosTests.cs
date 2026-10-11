@@ -8,6 +8,7 @@ using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 namespace Rowles.LeanCorpus.Tests.Core.Compatibility;
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Index)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class GuardrailChaosTests : IClassFixture<ChaosDirectoryFixture>
 {
     private readonly ChaosDirectoryFixture _fixture;

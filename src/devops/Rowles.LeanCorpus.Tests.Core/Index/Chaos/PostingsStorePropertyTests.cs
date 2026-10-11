@@ -8,6 +8,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Index;
 
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Index)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class PostingsStorePropertyTests
 {
     private static readonly string[] Fields = ["body", "title", "タイトル"];

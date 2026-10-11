@@ -1,0 +1,6 @@
+@{
+    wikipedia = @(
+        'index', 'query', 'boolean', 'phrase', 'prefix', 'fuzzy', 'wildcard', 'regexp', 'mlt',
+        'highlighter', 'combined', 'terminset', 'parallel', 'similarity', 'async-index', 'merge', 'flush'
+    )
+}

@@ -9,6 +9,7 @@ using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 namespace Rowles.LeanCorpus.Tests.Core.CodecKit;
 [Category(TestCategory.Chaos)]
 [Area(TestArea.CodecKit)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class HeaderFuzzTests : IClassFixture<ChaosDirectoryFixture>
 {
     private readonly ChaosDirectoryFixture _fixture;

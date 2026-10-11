@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.RegularExpressions;
+using FsCheck.Xunit;
 using Rowles.LeanCorpus.Tests.Metadata;
 
 namespace Rowles.LeanCorpus.Tests.Core.Foundation.Unit;
@@ -43,6 +44,30 @@ public sealed class MetadataClassificationTests
             TestArea.Serialization or TestArea.Store or TestArea.TextIntegration or TestArea.Util or
             TestArea.Analysers or TestArea.Filters or TestArea.Stemmers or TestArea.Tokenisers or
             TestArea.Dictionaries or TestArea.Languages));
+    }
+
+    [Fact]
+    public void Property_tests_are_classified_by_technique()
+    {
+        var offenders = new List<string>();
+        foreach (var type in typeof(MetadataClassificationTests).Assembly.GetTypes())
+        {
+            if (!HasTestMethod(type))
+                continue;
+
+            bool hasPropertyTest = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
+                .Any(static method => method.GetCustomAttributes(inherit: true).Any(static attribute => attribute is PropertyAttribute));
+            bool hasPropertyBasedTrait = type.GetCustomAttributes<TechniqueAttribute>()
+                .Any(static attribute => attribute.Technique == TestTechnique.PropertyBased);
+            if (hasPropertyTest && !hasPropertyBasedTrait)
+                offenders.Add($"{type.FullName}: missing Technique=PropertyBased.");
+
+            if (type.Name.EndsWith("StateMachineTests", StringComparison.Ordinal) &&
+                !type.GetCustomAttributes<TechniqueAttribute>().Any(static attribute => attribute.Technique == TestTechnique.StateMachine))
+                offenders.Add($"{type.FullName}: missing Technique=StateMachine.");
+        }
+
+        Assert.True(offenders.Count == 0, string.Join(Environment.NewLine, offenders));
     }
 
     [Fact]

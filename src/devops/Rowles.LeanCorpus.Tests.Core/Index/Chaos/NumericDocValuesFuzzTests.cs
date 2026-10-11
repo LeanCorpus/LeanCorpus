@@ -5,6 +5,7 @@ using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 namespace Rowles.LeanCorpus.Tests.Core.Index;
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Index)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class NumericDocValuesFuzzTests : IClassFixture<ChaosDirectoryFixture>
 {
     private readonly ChaosDirectoryFixture _fixture;

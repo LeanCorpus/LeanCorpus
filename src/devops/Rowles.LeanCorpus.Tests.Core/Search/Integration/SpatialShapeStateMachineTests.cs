@@ -11,6 +11,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Search;
 
 [Category(TestCategory.Integration)]
 [Area(TestArea.Search)]
+[Technique(TestTechnique.StateMachine)]
 public sealed class SpatialShapeStateMachineTests : IDisposable
 {
     private const int ReplaySeed = 0x7032_034;

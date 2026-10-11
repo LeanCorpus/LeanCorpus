@@ -4,6 +4,23 @@ Set-StrictMode -Version Latest
 function Invoke-DevOpsSetup {
     param([string[]]$Arguments = @())
 
+    $parsed = ConvertFrom-DevOpsArguments $Arguments
+    $unknownOptions = @($parsed.Parsed.Keys | Where-Object { $_ -notin @('InstallUi') })
+    if ($unknownOptions.Count -gt 0 -or $parsed.Positionals.Count -gt 0 -or $parsed.PassThrough.Count -gt 0) {
+        Write-Failure 'Usage: ./devops setup [-InstallUi]'
+        return 2
+    }
+    if ($parsed.Has('InstallUi')) {
+        try {
+            $module = Install-DevOpsUiDependency
+            Write-Success "PwshSpectreConsole $($module.Version) is installed for the current user."
+            return 0
+        } catch {
+            Write-Failure "Could not install the interactive UI dependency: $($_.Exception.Message)"
+            return 1
+        }
+    }
+
     $repoRoot = Get-RepoRoot
 
     Write-Heading 'LeanCorpus devops setup'
@@ -72,6 +89,12 @@ function Invoke-DevOpsSetup {
         Write-Failure '  docfx: not installed (run: dotnet tool install -g docfx)'
     }
 
+    if (Test-DevOpsUiDependency) {
+        Write-Success "  PwshSpectreConsole $(Get-DevOpsUiDependencyVersion): installed"
+    } else {
+        Write-Info "  PwshSpectreConsole $(Get-DevOpsUiDependencyVersion): not installed (run: ./devops setup -InstallUi)"
+    }
+
     Write-Host ''
 
     # Git status vs origin (notify only, no pull)
@@ -101,5 +124,5 @@ function Invoke-DevOpsSetup {
 
     Write-Host ''
     Write-Success 'Setup checks complete.'
-    exit 0
+    return 0
 }

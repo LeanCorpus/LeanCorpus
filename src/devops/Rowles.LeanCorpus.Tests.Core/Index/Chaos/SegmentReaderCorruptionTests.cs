@@ -14,6 +14,7 @@ using Xunit;
 namespace Rowles.LeanCorpus.Tests.Core.Index;
 [Category(TestCategory.Chaos)]
 [Area(TestArea.Index)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class SegmentReaderCorruptionTests : IClassFixture<ChaosDirectoryFixture>
 {
     private readonly ChaosDirectoryFixture _fixture;

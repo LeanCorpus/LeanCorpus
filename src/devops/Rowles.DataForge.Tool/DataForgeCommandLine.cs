@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Rowles.DataForge;
 using Rowles.DataForge.Workloads;
 
@@ -57,8 +58,21 @@ public static class DataForgeCommandLine
 
     private static int RunProfiles(string[] args, TextWriter output)
     {
-        if (args.Length != 0)
-            throw new CommandLineException("The profiles command does not accept arguments.");
+        var options = ParseFlags(args,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Json" },
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase));
+
+        if (options.Flags.Contains("Json"))
+        {
+            var descriptors = Profiles
+                .OrderBy(static item => item.Descriptor.ProfileId, StringComparer.Ordinal)
+                .Select(static item => item.Descriptor);
+            output.WriteLine(JsonSerializer.Serialize(descriptors, new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            }));
+            return 0;
+        }
 
         output.WriteLine("ID | Version | Kind | Default seed | Default count | Description");
         foreach (var profile in Profiles.OrderBy(static item => item.Descriptor.ProfileId, StringComparer.Ordinal))
@@ -375,7 +389,8 @@ public static class DataForgeCommandLine
         if (args.Length != 0)
             throw new CommandLineException("Help does not accept arguments.");
         output.WriteLine("Usage:");
-        output.WriteLine("  ./devops dataforge profiles");
+        output.WriteLine("  ./devops dataforge profiles [-Json]");
+        output.WriteLine("    -Json writes profile descriptors with version, kind, defaults and description.");
         output.WriteLine("  ./devops dataforge generate -Profile leancorpus-search -Version 1 -Seed 42 -Count 20000 [-Output <path>] [-Force]");
         output.WriteLine("  ./devops dataforge generate -Profile leancorpus-vector -Version 1 -Seed 42 -Count 1000 [-Dimension 64] [-VectorDistribution Uniform] [-ClusterCount 8] [-QueryCount 1] [-Output <path>] [-Force]");
         output.WriteLine("  ./devops dataforge generate -Profile leancorpus-hybrid -Version 1 -Seed 42 -Count 20000 [-Dimension 64] [-Output <path>] [-Force]");

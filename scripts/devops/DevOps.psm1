@@ -16,6 +16,7 @@ $Script:BenchmarkSuites = Import-PowerShellDataFile "$PSScriptRoot/config/benchm
 $Script:BenchmarkStrategies = Import-PowerShellDataFile "$PSScriptRoot/config/benchmark-strategies.psd1"
 
 . "$PSScriptRoot/testing/targets.ps1"
+. "$PSScriptRoot/testing/events.ps1"
 . "$PSScriptRoot/testing/artifacts.ps1"
 . "$PSScriptRoot/testing/results.ps1"
 . "$PSScriptRoot/testing/preparation.ps1"
@@ -45,6 +46,7 @@ $Script:BenchmarkStrategies = Import-PowerShellDataFile "$PSScriptRoot/config/be
 . "$PSScriptRoot/commands/server.ps1"
 . "$PSScriptRoot/commands/clean.ps1"
 . "$PSScriptRoot/commands/pack.ps1"
+. "$PSScriptRoot/ui/ui.ps1"
 
 function Invoke-DevOps {
     param([string]$Command, [string[]]$Arguments)
@@ -65,6 +67,7 @@ function Invoke-DevOps {
         'server'     { Invoke-DevOpsServer -Arguments $Arguments }
         'clean'      { Invoke-DevOpsClean -Arguments $Arguments }
         'pack'       { Invoke-DevOpsPack -Arguments $Arguments }
+        'ui'         { Invoke-DevOpsUi -Arguments $Arguments }
         ''           { Invoke-DevOpsHelp }
         '--help'     { Invoke-DevOpsHelp }
         '-Help'      { Invoke-DevOpsHelp }
@@ -85,11 +88,11 @@ function Invoke-DevOpsHelp {
     Write-Host '      -Framework          net10.0 or net11.0 for -Project builds (default: net11.0)'
     Write-Host ''
     Write-Host '    test                 Run test suites'
-    Write-Host '      -Suite              core, text, sourcegen, architecture, server-abstractions,'
-    Write-Host '                          server-core, server-integration, aot, affected,'
-    Write-Host '                          or all (default: all)'
+    Write-Host '      -Suite              Comma-separated registered suite keys, all, or affected'
+    Write-Host "                          Registered keys: $($Script:TestSuites.Keys -join ', ')"
     Write-Host '      -Commit             Select only files changed by a commit (affected suite only)'
     Write-Host '      -Range              Select only an explicit Git range; exclusive with -Commit'
+    Write-Host '      -ExplainAffected     Resolve affected files and targets, then exit without running tests'
     Write-Host '      affected            Default: modified, staged and untracked files only'
     Write-Host '                          Unmapped files and zero targets fail in every mode'
     Write-Host '      -Framework          net10.0 or net11.0 (default: net10.0)'
@@ -101,6 +104,7 @@ function Invoke-DevOpsHelp {
     Write-Host '      -HangTimeout        Integration test hang timeout (default: 100s; use off to disable)'
     Write-Host '      -Area               Comma-separated test areas'
     Write-Host '      -Category           Comma-separated test categories'
+    Write-Host '      -Technique          Comma-separated test techniques: PropertyBased,StateMachine,Metamorphic'
     Write-Host '      -Count              Sequential repetitions (default: 1)'
     Write-Host '      -Flaky              Repeat 30 times by default; use stress parallelism and summary telemetry'
     Write-Host '      -FailFast            Stop scheduling after the first failed target'
@@ -168,6 +172,7 @@ function Invoke-DevOpsHelp {
     Write-Host ''
     Write-Host '    dataforge            Deterministic datasets and frozen reference data'
     Write-Host '      profiles            List available profiles and defaults'
+    Write-Host '        -Json              Emit profile descriptors as JSON for automation'
     Write-Host '      generate            Generate and materialise a named profile'
     Write-Host '      inspect             Read dataset manifest details'
     Write-Host '      verify              Check materialised bytes and manifest hashes'
@@ -189,10 +194,11 @@ function Invoke-DevOpsHelp {
     Write-Host '      DocFX warnings are summarised; full logs are written to artifacts/docs'
     Write-Host ''
     Write-Host '    benchmarks           Benchmark documentation'
-    Write-Host '      docs                Generate benchmark result pages'
+    Write-Host '      docs                Generate benchmark result pages from retained results'
     Write-Host ''
 
     Write-Host '    setup                Verify dev environment and directories'
+    Write-Host '      -InstallUi          Install the pinned PwshSpectreConsole UI dependency for the current user'
     Write-Host '    clean [target]       Remove owned artefacts; default preserves packages and benchmark data/runs'
     Write-Host '    pack                 Build NuGet packages under artifacts/package/release'
     Write-Host '      -CompressionOnly   Pack only Core and the three optional codecs'
@@ -200,6 +206,7 @@ function Invoke-DevOpsHelp {
     Write-Host '      -ValidatePackages  Run isolated consumers for every shipping package'
     Write-Host '      -NoBuild           Pack existing builds'
     Write-Host '      -Clean             Remove previous package output before packing'
+    Write-Host '    ui                   Open the interactive DevOps workbench (PowerShell 7.4+; run setup -InstallUi once)'
     Write-Host '    report               Repository health report'
     Write-Host '      git                 Repository/commit-level stats (default: all groups)'
     Write-Host '      files               Per-file facts and history'
@@ -221,6 +228,7 @@ function Invoke-DevOpsHelp {
     Write-Host '    devops build'
     Write-Host '    devops test -Suite core -Category Integration -Framework net11.0'
     Write-Host '    devops test -Suite core -Category Unit -Verbosity detailed'
+    Write-Host '    devops test -Suite core,text -Area Index,Search -Technique PropertyBased,Metamorphic'
     Write-Host '    ./devops test affected'
     Write-Host '    ./devops test affected -Commit HEAD'
     Write-Host '    ./devops test affected -Commit caf4bd5'

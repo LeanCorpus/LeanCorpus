@@ -8,6 +8,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Search;
 
 [Category(TestCategory.Unit)]
 [Area(TestArea.Search)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class QueryParserAdversarialTests
 {
     private const string EscapableSyntaxCharacters = "+-!(){}[]^\"~:\\*?/";

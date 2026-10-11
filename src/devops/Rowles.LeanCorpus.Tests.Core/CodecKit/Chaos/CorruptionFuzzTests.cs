@@ -6,6 +6,7 @@ using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 namespace Rowles.LeanCorpus.Tests.Core.Validation;
 [Category(TestCategory.Chaos)]
 [Area(TestArea.CodecKit)]
+[Technique(TestTechnique.PropertyBased)]
 public sealed class CorruptionFuzzTests : IClassFixture<ChaosDirectoryFixture>
 {
     private static readonly HashSet<string> MutatableExtensions = [".dic", ".pos", ".fdt", ".fdx", ".seg"];

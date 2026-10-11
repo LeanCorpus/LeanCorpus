@@ -2,6 +2,9 @@
 
 ## Added
 
+- Add an optional PwshSpectreConsole-backed DevOps workbench with registry-driven test and benchmark selectors, structured test progress, run inspection, diagnostics, DataForge generation parameters and repository workflows.
+- Add `dataforge profiles -Json` for machine-readable profile descriptors used by automation and the DevOps workbench.
+
 - Select affected tests from an isolated commit or explicit Git range with `-Commit` and `-Range`, retaining dirty-state selection by default and recording selection provenance in test artefacts.
 
 - Expose ordered multi-document replacement on `IndexWriter` for integrations that need one delete pass per batch.
@@ -27,6 +30,8 @@
 - Add optional per-clause distinct-term limits to `WildcardQuery`, `PrefixQuery` and `RegexpQuery`, with `QueryExpansionLimitException` when execution exceeds the limit; existing constructors remain unlimited. ([af6aacfa7](https://github.com/jordansrowles/LeanCorpus/commit/af6aacfa7d1128e0f8876ab1c6d1511cb62f7c25))
 
 ## Changed
+
+- Extend `./devops test` to accept multiple explicit suites and filter by test technique; expose affected-target explanations and structured UI events. Grouped benchmarks now honour strategy and run options instead of dropping them.
 
 - Decompose segment merging into internal planning and codec writers while preserving document ordering, retention and persisted formats.
 
@@ -91,6 +96,7 @@
 - Repair CI platform-smoke SDK and managed-test preparation, and install the package-matched Playwright Chromium before Orchard browser tests.
 - Run Orchard provider functional tests once without the explicit performance phases in the normal suite registry.
 - Keep the existing Core and Server Abstractions theory rows while disabling discovery-time enumeration for their non-serialisable data.
+- Forward the documented `data gutenberg -BookCount` value to the downloader instead of silently using its default count.
 
 - Preserve buffered CommonGrams graph edge lengths and combine only adjacent unit-position tokens; retain graph lengths when ICU and URL/email tokenisers delegate Thai runs.
 

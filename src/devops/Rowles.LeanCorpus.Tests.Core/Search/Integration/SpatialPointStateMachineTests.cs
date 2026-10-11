@@ -14,6 +14,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Search.Sorting;
 
 [Category(TestCategory.Integration)]
 [Area(TestArea.Search)]
+[Technique(TestTechnique.StateMachine)]
 public sealed class SpatialPointStateMachineTests : IDisposable
 {
     private const int ReplaySeed = 0x7002_032;

@@ -88,7 +88,8 @@ function ConvertTo-TestArgumentList {
 function Build-TraitFilter {
     param(
         [string]$Area,
-        [string]$Category
+        [string]$Category,
+        [string]$Technique
     )
 
     $parts = [System.Collections.Generic.List[string]]::new()
@@ -102,6 +103,11 @@ function Build-TraitFilter {
         [void]$parts.Add('(' + (($categories | ForEach-Object { "Category=$($_)" }) -join '|') + ')')
     }
 
+    $techniques = @(ConvertTo-TestArgumentList $Technique)
+    if ($techniques.Count -gt 0) {
+        [void]$parts.Add('(' + (($techniques | ForEach-Object { "Technique=$($_)" }) -join '|') + ')')
+    }
+
     return ($parts -join '&')
 }
 
@@ -110,6 +116,7 @@ function Build-TestFilter {
         [string[]]$AffectedAreas = @(),
         [string]$Area = '',
         [string]$Category = '',
+        [string]$Technique = '',
         [string]$Filter = ''
     )
 
@@ -119,7 +126,7 @@ function Build-TestFilter {
         [void]$parts.Add('(' + (($affected | ForEach-Object { "Area=$($_)" }) -join '|') + ')')
     }
 
-    $traitFilter = Build-TraitFilter -Area $Area -Category $Category
+    $traitFilter = Build-TraitFilter -Area $Area -Category $Category -Technique $Technique
     if ($traitFilter) {
         [void]$parts.Add($traitFilter)
     }
@@ -180,6 +187,7 @@ function New-TestTarget {
         [string[]]$Areas,
         [string]$Area,
         [string]$Category,
+        [string]$Technique,
         [string[]]$AdditionalArguments = @()
     )
 
@@ -216,6 +224,7 @@ function New-TestTarget {
         Filter = $Filter
         Areas = @($Areas | Sort-Object -Unique)
         Categories = ConvertTo-TestArgumentList $Category
+        Techniques = ConvertTo-TestArgumentList $Technique
         CoverageEligible = $coverageEligible
         Capabilities = @($capabilities | Sort-Object -Unique)
         AdditionalArguments = $additionalArguments
@@ -297,13 +306,14 @@ function Get-AffectedTestIntent {
 
 function Resolve-TestTargets {
     param(
-        [string]$Suite = 'all',
+        [string[]]$Suite = @('all'),
         [string]$Framework = '',
         [bool]$FrameworkExplicit = $false,
         [string]$Configuration = 'Release',
         [string]$RuntimeIdentifier = '',
         [string]$Area = '',
         [string]$Category = '',
+        [string]$Technique = '',
         [string]$Filter = '',
         [bool]$Ci = $false,
         [bool]$CollectCoverage = $false,
@@ -316,7 +326,19 @@ function Resolve-TestTargets {
         [hashtable]$TestSuites = (Get-TestSuiteRegistry)
     )
 
-    $requestedSuite = if ($Suite) { $Suite.ToLowerInvariant() } else { 'all' }
+    $suiteValues = @(
+        foreach ($suiteValue in @($Suite)) {
+            foreach ($suiteToken in @(ConvertTo-TestArgumentList ([string]$suiteValue))) {
+                $suiteToken.ToLowerInvariant()
+            }
+        }
+    )
+    if ($suiteValues.Count -eq 0) { $suiteValues = @('all') }
+    $suiteValues = @($suiteValues | Select-Object -Unique)
+    if ($suiteValues.Count -gt 1 -and ($suiteValues -contains 'all' -or $suiteValues -contains 'affected')) {
+        throw "'-Suite all' and '-Suite affected' cannot be combined with explicit suites."
+    }
+    $requestedSuite = $suiteValues -join ','
     if (($Commit -or $Range) -and $requestedSuite -ne 'affected') {
         throw '-Commit and -Range are valid only for the affected suite.'
     }
@@ -327,7 +349,7 @@ function Resolve-TestTargets {
         foreach ($suiteKey in @($affected.AreasBySuite.Keys | Sort-Object)) {
             $suiteTargets = Resolve-TestTargets -Suite $suiteKey -Framework $Framework `
                 -FrameworkExplicit $FrameworkExplicit -Configuration $Configuration `
-                -RuntimeIdentifier $RuntimeIdentifier -Area $Area -Category $Category `
+                -RuntimeIdentifier $RuntimeIdentifier -Area $Area -Category $Category -Technique $Technique `
                 -Filter $Filter -Ci $Ci -CollectCoverage $CollectCoverage `
                 -AdditionalArguments $AdditionalArguments -RepoRoot $RepoRoot `
                 -TestSuites $TestSuites -AffectedAreas @($affected.AreasBySuite[$suiteKey])
@@ -341,14 +363,14 @@ function Resolve-TestTargets {
     $affectedAreas = @($AffectedAreas)
     $hasAffectedAreas = $PSBoundParameters.ContainsKey('AffectedAreas') -and $null -ne $AffectedAreas
 
-    $suiteKeys = if ($requestedSuite -eq 'all') {
+    $suiteKeys = if ($suiteValues.Count -eq 1 -and $suiteValues[0] -eq 'all') {
         Get-OrderedTestSuiteKeys -TestSuites $TestSuites
     } else {
-        @($requestedSuite)
+        $suiteValues
     }
 
     $targets = [System.Collections.Generic.List[object]]::new()
-    $isExplicitSuite = $requestedSuite -ne 'all'
+    $isExplicitSuite = -not ($suiteValues.Count -eq 1 -and $suiteValues[0] -eq 'all')
     foreach ($suiteKey in $suiteKeys) {
         if (-not $TestSuites.ContainsKey($suiteKey)) {
             throw "Unknown test suite '$suiteKey'."
@@ -391,7 +413,8 @@ function Resolve-TestTargets {
 
         foreach ($selectedFramework in $selectedFrameworks) {
             $targetAreas = if ($hasAffectedAreas) { $affectedAreas } else { @() }
-            $targetFilter = Build-TestFilter -AffectedAreas $targetAreas -Area $Area -Category $Category -Filter $Filter
+            $targetFilter = Build-TestFilter -AffectedAreas $targetAreas -Area $Area `
+                -Category $Category -Technique $Technique -Filter $Filter
             $targetRuntimeIdentifier = if ($runner -eq 'AotNative') {
                 if ($RuntimeIdentifier) { $RuntimeIdentifier } else { Get-DefaultRuntimeIdentifier }
             } else {
@@ -409,7 +432,7 @@ function Resolve-TestTargets {
             $target = New-TestTarget -Key $targetKey -SuiteKey $suiteKey -Suite $suiteConfig `
                 -Framework $selectedFramework -Configuration $Configuration `
                 -RuntimeIdentifier $targetRuntimeIdentifier -Filter $targetFilter `
-                -Areas $targetAreas -Area $Area -Category $Category `
+                -Areas $targetAreas -Area $Area -Category $Category -Technique $Technique `
                 -AdditionalArguments $suiteArguments
             [void]$targets.Add($target)
         }

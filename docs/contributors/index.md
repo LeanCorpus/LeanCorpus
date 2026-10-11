@@ -23,6 +23,7 @@ This section routes repository contributors to the shortest useful guide. Packag
 | Change analysers, filters, tokenisers, stemmers or languages | [Rowles.Text contribution guide](../../src/core/Rowles.Text/CONTRIBUTING.md) |
 | Add tests, benchmarks or repository tooling | [DevOps and tests contribution guide](../../src/devops/CONTRIBUTING.md) |
 | Understand `devops` and `devops.ps1` | [DevOps entry point](devops-entry-point.md) |
+| Use the interactive DevOps workbench | [Interactive DevOps workbench](devops-ui.md) |
 | Change the DocFX site or generated documentation | [Documentation](documentation.md) |
 | Add or assess a benchmark | [Benchmarking](benchmarking.md) |
 
