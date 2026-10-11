@@ -12,6 +12,7 @@
     <PackageReference Include="coverlet.MTP" />
     <PackageReference Include="FsCheck" />
     <PackageReference Include="FsCheck.Xunit.v3" />
+    <PackageReference Include="Spectre.Console.Testing" />
     <PackageReference Include="Microsoft.Testing.Extensions.CrashDump" />
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
     <PackageReference Include="Microsoft.Testing.Extensions.GitHubActionsReport" />

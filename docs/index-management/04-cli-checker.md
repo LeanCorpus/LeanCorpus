@@ -25,6 +25,90 @@ The binary lands under the target framework output directory:
 | `backup <path> <backup-path>` | Copies files for one commit point and writes a backup manifest |
 | `restore <backup-path> <target-path>` | Validates a manifest and restores files into a target index directory |
 
+The existing commands remain available at the top level. The additive Workbench commands provide interactive inspection and deterministic test data while keeping their scriptable forms usable in CI.
+
+## Workbench output modes
+
+Inspection commands use Spectre.Console tables when stdout is an interactive terminal. Redirected output and `--plain` use stable plain text. `--json` writes machine-readable output without terminal prompts. `--no-color` selects plain output for environments that cannot display colour safely.
+
+```bash
+leancorpus-cli browse ./index
+leancorpus-cli index info ./index
+leancorpus-cli segment list ./index --json
+leancorpus-cli field inspect ./index body --plain
+leancorpus-cli term postings ./index body government
+leancorpus-cli document get ./index 12 --json
+```
+
+`browse` opens a prompt-driven explorer only when stdin and stdout are interactive. With redirected streams it prints an index overview and exits.
+
+## Search and inspection
+
+```bash
+leancorpus-cli search run ./index 'government AND public' --field body --take 20
+leancorpus-cli search explain ./index body government 12
+leancorpus-cli vector inspect ./index --json
+leancorpus-cli vector neighbours ./index embedding 12 --take 10
+leancorpus-cli vector explain ./index embedding 12
+leancorpus-cli facet inspect ./index category
+leancorpus-cli geo inspect ./index location
+leancorpus-cli geo query ./index location 51.5 -0.1 --radius-metres 5000
+leancorpus-cli analyse 'A sample of searchable text' --json
+```
+
+The geo query accepts a centre latitude and longitude in decimal degrees and a positive radius in metres. Facet inspection reports indexed bucket counts for fields with ordinal DocValues.
+
+## Deterministic index creation
+
+Presets use DataForge as a library and write `.leancorpus/recipe.json` and `.leancorpus/dataforge-manifest.json` beside the index. The first catalogue includes `minimal`, `search-small`, `search-medium`, `realistic-mixed`, `vector-flat`, `vector-hnsw`, `vector-int8`, `vector-bbq`, `vector-filtered`, `hybrid-balanced`, `hybrid-text-heavy`, `hybrid-vector-heavy`, `multilingual`, `compound`, `non-compound`, `many-small-segments`, `delete-heavy`, `codec-current`, and the frozen `codec-migration-required` release fixture.
+
+```bash
+leancorpus-cli create preset vector-hnsw ./vector-index --seed 1234 --count 500 --dimension 64
+leancorpus-cli create reproduce ./vector-index ./vector-index-recreated
+leancorpus-cli index diff ./vector-index ./vector-index-recreated --logical --json
+leancorpus-cli index fingerprint ./vector-index
+```
+
+Custom schemas use deterministic Search-profile records as their value source. Supported field types are `text`, `keyword`, `double`, `int64`, `vector`, and `geoPoint`; keyword fields can use sorted DocValues or facet paths, and vector fields can request dimensions and HNSW. For example:
+
+```json
+{
+  "schemaVersion": 1,
+  "compound": true,
+  "fields": [
+    { "name": "title", "type": "text", "source": "title", "stored": true, "positions": true },
+    { "name": "category", "type": "keyword", "source": "category", "facet": true, "docValues": true },
+    { "name": "price", "type": "double", "source": "price", "docValues": true },
+    { "name": "embedding", "type": "vector", "dimensions": 64, "hnsw": true },
+    { "name": "location", "type": "geoPoint" }
+  ]
+}
+```
+
+```bash
+leancorpus-cli create custom ./custom-index --schema ./schema.json --seed 42 --count 100
+```
+
+The schema is copied to `.leancorpus/schema.json` and embedded in the recipe so reproduction does not depend on the original schema file.
+
+## Test Lab and workloads
+
+Mutating commands write a new destination and leave the source index unchanged. Corruption and non-corrupting stress mutations record their operation, seed, target and before/after fingerprints under `.leancorpus/mutation.json`.
+
+```bash
+leancorpus-cli testlab corrupt ./index ./corrupt-copy --component postings --mode truncate --seed 123
+leancorpus-cli testlab mutate ./index ./many-segments --mode many-small-segments --count 64 --seed 123
+leancorpus-cli testlab fixture pack ./index ./issue.lcf
+leancorpus-cli testlab fixture unpack ./issue.lcf ./unpacked-index
+leancorpus-cli testlab seed-search --from 1 --to 100 --find zero-results --count 64 --json
+leancorpus-cli create workload ./workload --seed 42 --count 128 --queries 100
+leancorpus-cli search replay ./workload --json
+leancorpus-cli search compare ./index 'government' 'market' --field body --take 20
+leancorpus-cli transform compact ./index ./compacted-index --segments 1
+```
+
+Seed search is bounded to 1,000 seeds per invocation. Available predicates are zero-result queries, segment-count thresholds, validation failures and size outliers. Workload replay compares result document IDs with the saved expected results and reports latency as a functional smoke measure; use BenchmarkDotNet for performance measurements.
+
 ## Check
 
 ```powershell

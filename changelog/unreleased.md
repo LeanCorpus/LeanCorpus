@@ -4,6 +4,7 @@
 
 - Add an optional PwshSpectreConsole-backed DevOps workbench with registry-driven test and benchmark selectors, structured test progress, run inspection, diagnostics, DataForge generation parameters and repository workflows.
 - Add `dataforge profiles -Json` for machine-readable profile descriptors used by automation and the DevOps workbench.
+- Add a Spectre.Console CLI Workbench for index browsing, search and analysis, supported Core inspection models, deterministic DataForge presets and schema creation, recipe reproduction, fingerprints, Test Lab fixtures, and workload replay.
 
 - Select affected tests from an isolated commit or explicit Git range with `-Commit` and `-Range`, retaining dirty-state selection by default and recording selection provenance in test artefacts.
 
