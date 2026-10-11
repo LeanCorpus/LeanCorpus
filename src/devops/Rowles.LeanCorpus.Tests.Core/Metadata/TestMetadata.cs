@@ -16,6 +16,11 @@ public enum TestTechnique
     Metamorphic
 }
 
+public enum TestScope
+{
+    PlatformSmoke
+}
+
 public enum TestArea
 {
     Foundation,
@@ -68,5 +73,16 @@ public sealed class TechniqueAttribute(TestTechnique technique) : Attribute, ITr
     public IReadOnlyCollection<KeyValuePair<string, string>> GetTraits() =>
     [
         new("Technique", Technique.ToString())
+    ];
+}
+
+[AttributeUsage(AttributeTargets.Assembly | AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
+public sealed class ScopeAttribute(TestScope scope) : Attribute, ITraitAttribute
+{
+    public TestScope Scope { get; } = scope;
+
+    public IReadOnlyCollection<KeyValuePair<string, string>> GetTraits() =>
+    [
+        new("Scope", Scope.ToString())
     ];
 }

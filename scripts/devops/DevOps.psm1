@@ -115,7 +115,7 @@ function Invoke-DevOpsHelp {
     Write-Host '      -List               List available suites and exit'
     Write-Host ''
     Write-Host '    aot                  Run NativeAOT smoke tests for both frameworks'
-    Write-Host '      -RuntimeIdentifier  linux-x64, osx-x64, win-x64 (auto-detected if omitted)'
+    Write-Host '      -RuntimeIdentifier  linux-x64, linux-arm64, osx-x64, osx-arm64, win-x64 or win-arm64 (auto-detected if omitted)'
     Write-Host '      -NoRestore           Use existing restored packages and skip restore'
     Write-Host ''
     Write-Host '    coverage             Run tests with code coverage collection'

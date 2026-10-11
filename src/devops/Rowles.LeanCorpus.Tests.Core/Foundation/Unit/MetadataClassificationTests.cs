@@ -62,9 +62,15 @@ public sealed class MetadataClassificationTests
             }
 
             var segments = Path.GetRelativePath(GetProjectDirectory(), sourcePath).Split(Path.DirectorySeparatorChar);
-            if (segments.Length < 2 ||
-                !Enum.TryParse<TestArea>(segments[0], ignoreCase: false, out var expectedArea) ||
-                !Enum.TryParse<TestCategory>(segments[1], ignoreCase: false, out var expectedCategory))
+            bool platformIntegration = segments.Length >= 3 &&
+                segments[0] == "Platform" && segments[1] == "Integration";
+            TestArea expectedArea = default;
+            bool hasExpectedArea = !platformIntegration && segments.Length >= 2 &&
+                Enum.TryParse(segments[0], ignoreCase: false, out expectedArea);
+            bool hasExpectedCategory = platformIntegration
+                ? true
+                : segments.Length >= 2 && Enum.TryParse(segments[1], ignoreCase: false, out TestCategory _);
+            if (!hasExpectedArea && !platformIntegration || !hasExpectedCategory)
             {
                 offenders.Add($"{type.FullName}: source path must start with Area/Category.");
                 continue;
@@ -72,8 +78,11 @@ public sealed class MetadataClassificationTests
 
             var actualCategory = type.GetCustomAttribute<CategoryAttribute>()?.Category;
             var actualAreas = type.GetCustomAttributes<AreaAttribute>().Select(static attribute => attribute.Area);
-            if (actualCategory != expectedCategory || !actualAreas.Contains(expectedArea))
-                offenders.Add($"{type.FullName}: expected Category={expectedCategory}, Area={expectedArea} from source path.");
+            TestCategory? expectedCategory = platformIntegration ? TestCategory.Integration : Enum.Parse<TestCategory>(segments[1], ignoreCase: false);
+            if (actualCategory != expectedCategory || (!platformIntegration && !actualAreas.Contains(expectedArea)))
+                offenders.Add(platformIntegration
+                    ? $"{type.FullName}: expected Category=Integration from the Platform/Integration source path."
+                    : $"{type.FullName}: expected Category={expectedCategory}, Area={expectedArea} from source path.");
         }
 
         Assert.True(offenders.Count == 0, string.Join(Environment.NewLine, offenders));

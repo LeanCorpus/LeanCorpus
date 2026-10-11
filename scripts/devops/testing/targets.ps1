@@ -131,15 +131,41 @@ function Build-TestFilter {
     return ($parts -join '&')
 }
 
-function Get-DefaultRuntimeIdentifier {
-    if ($IsLinux) {
-        return 'linux-x64'
-    }
-    if ($IsMacOS) {
-        return 'osx-x64'
+function Get-PlatformRuntimeIdentifier {
+    param(
+        [Parameter(Mandatory = $true)][string]$OperatingSystem,
+        [Parameter(Mandatory = $true)][string]$Architecture
+    )
+
+    $platform = switch ($OperatingSystem.Trim().ToLowerInvariant()) {
+        'linux' { 'linux' }
+        'macos' { 'osx' }
+        'windows' { 'win' }
+        default { throw "Unsupported operating system '$OperatingSystem'. Supported operating systems are Linux, macOS and Windows." }
     }
 
-    return 'win-x64'
+    $architectureSuffix = switch ($Architecture.Trim().ToLowerInvariant()) {
+        'x64' { 'x64' }
+        'arm64' { 'arm64' }
+        default { throw "Unsupported architecture '$Architecture'. Supported architectures are X64 and Arm64." }
+    }
+
+    return "$platform-$architectureSuffix"
+}
+
+function Get-DefaultRuntimeIdentifier {
+    $operatingSystem = if ($IsLinux) {
+        'Linux'
+    } elseif ($IsMacOS) {
+        'macOS'
+    } elseif ($IsWindows) {
+        'Windows'
+    } else {
+        throw 'Unsupported operating system. LeanCorpus Native AOT supports Linux, macOS and Windows.'
+    }
+
+    $architecture = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    return Get-PlatformRuntimeIdentifier -OperatingSystem $operatingSystem -Architecture $architecture
 }
 
 function New-TestTarget {

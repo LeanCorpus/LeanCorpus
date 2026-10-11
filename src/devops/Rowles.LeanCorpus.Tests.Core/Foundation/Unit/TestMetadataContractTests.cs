@@ -33,4 +33,19 @@ public sealed class TestMetadataContractTests
                 Assert.Equal("Foundation", trait.Value);
             });
     }
+
+    [Fact]
+    public void ScopeAttribute_exposes_a_typed_scope_trait()
+    {
+        var attribute = new ScopeAttribute(TestScope.PlatformSmoke);
+
+        Assert.Equal(TestScope.PlatformSmoke, attribute.Scope);
+        Assert.Collection(
+            attribute.GetTraits(),
+            trait =>
+            {
+                Assert.Equal("Scope", trait.Key);
+                Assert.Equal("PlatformSmoke", trait.Value);
+            });
+    }
 }
