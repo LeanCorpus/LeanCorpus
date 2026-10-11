@@ -114,6 +114,28 @@ jobs:
           path: artifacts/test/runs
           if-no-files-found: warn
 
+  package-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with: { dotnet-version: '10.0.x' }
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
+      - name: Validate shipping package APIs and archives
+        shell: pwsh
+        run: ./devops.ps1 pack -Clean
+      - name: Upload package validation artefacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-validation-artefacts
+          path: artifacts/package
+          if-no-files-found: error
+
   arm64-smoke:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- https://learn.microsoft.com/dotnet/fundamentals/package-validation/diagnostic-ids -->
+<!-- Assembly identity changes with the intentional 2.0.0 codec release; its LeanCorpus 4.0 dependency range is documented in changelog/unreleased.md. -->
+<Suppressions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Suppression>
+    <DiagnosticId>CP0003</DiagnosticId>
+    <Target>Rowles.LeanCorpus.Compression.LZ4, Version=1.0.1.0, Culture=neutral, PublicKeyToken=null</Target>
+    <Left>lib/net10.0/Rowles.LeanCorpus.Compression.LZ4.dll</Left>
+    <Right>lib/net10.0/Rowles.LeanCorpus.Compression.LZ4.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0003</DiagnosticId>
+    <Target>Rowles.LeanCorpus.Compression.LZ4, Version=1.0.1.0, Culture=neutral, PublicKeyToken=null</Target>
+    <Left>lib/net11.0/Rowles.LeanCorpus.Compression.LZ4.dll</Left>
+    <Right>lib/net11.0/Rowles.LeanCorpus.Compression.LZ4.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+</Suppressions>

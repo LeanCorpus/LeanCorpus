@@ -3,36 +3,153 @@ Set-StrictMode -Version Latest
 
 function Invoke-DevOpsPack {
     param([string[]]$Arguments = @())
+
     try {
         $parsed = ConvertFrom-DevOpsArguments $Arguments
         $repoRoot = Get-RepoRoot
+        $scriptsRoot = Get-ScriptsPath
         $configuration = [string]$parsed.Get('Configuration', 'Release')
         $outputDirectory = Join-Path (Get-ArtifactKindRoot -Kind package -RepoRoot $repoRoot) 'release'
-        if ($parsed.Has('Clean') -and (Test-Path $outputDirectory)) {
+        $packagingDirectory = Join-Path $scriptsRoot 'devops/packaging'
+        $policyPath = Join-Path $packagingDirectory 'package-policy.json'
+        . (Join-Path $packagingDirectory 'validate-package-archive.ps1')
+
+        if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) { throw "Package policy is missing: $policyPath" }
+        $policy = Get-Content -LiteralPath $policyPath -Raw | ConvertFrom-Json -AsHashtable
+        if ($policy.schemaVersion -ne 1 -or @($policy.packages).Count -eq 0) {
+            throw 'Package policy must use schemaVersion 1 and contain packages.'
+        }
+
+        $validKinds = @('library', 'analyzer', 'razor-library', 'application')
+        $allEntries = @($policy.packages)
+        $ids = @($allEntries | ForEach-Object { [string]$_.packageId })
+        if (@($ids | Sort-Object -Unique).Count -ne $ids.Count) { throw 'Package policy contains duplicate package IDs.' }
+        foreach ($entry in $allEntries) {
+            if ([string]::IsNullOrWhiteSpace($entry.packageId) -or [string]::IsNullOrWhiteSpace($entry.projectPath)) {
+                throw 'Every package policy entry requires packageId and projectPath.'
+            }
+            if ($entry.kind -notin $validKinds) { throw "Unsupported package kind '$($entry.kind)' for $($entry.packageId)." }
+            if ($null -eq $entry.expectedFrameworks) { throw "Package $($entry.packageId) requires expectedFrameworks." }
+            $frameworks = @($entry.expectedFrameworks | ForEach-Object { [string]$_ })
+            if ($entry.kind -eq 'analyzer' -and $frameworks.Count -ne 0) {
+                throw "Analyzer package $($entry.packageId) must declare no library TFMs."
+            }
+            if ($entry.kind -ne 'analyzer' -and $frameworks.Count -eq 0) {
+                throw "Package $($entry.packageId) must declare at least one target framework."
+            }
+            foreach ($property in @('enableApiCompatibility', 'requireXmlDocs', 'requireSymbols')) {
+                if ($entry[$property] -isnot [bool]) { throw "Package $($entry.packageId) requires a Boolean '$property' policy value." }
+            }
+            $project = Join-Path $repoRoot ([string]$entry.projectPath)
+            if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { throw "Package policy project does not exist: $($entry.projectPath)" }
+            $projectMetadata = Get-PackageProjectMetadata -ProjectPath $project
+            if ($projectMetadata.packageId -cne $entry.packageId) {
+                throw "Policy package ID '$($entry.packageId)' does not match project package ID '$($projectMetadata.packageId)' in $project."
+            }
+            if ([string]::IsNullOrWhiteSpace($projectMetadata.version)) { throw "Project has no explicit Version for $($entry.packageId)." }
+            if ($entry.enableApiCompatibility -and $entry.kind -notin @('analyzer', 'application')) {
+                if ($null -eq $entry.baselineVersion -and [string]$projectMetadata.version -notmatch '-') {
+                    Write-Info "$($entry.packageId) has no published baseline; SDK package validation will run without baseline comparison."
+                }
+            }
+        }
+
+        $selectedEntries = if ($parsed.Has('CompressionOnly')) {
+            @($allEntries | Where-Object { @($_.packageGroups) -contains 'compression' })
+        } else { $allEntries }
+        if ($selectedEntries.Count -eq 0) { throw 'Package policy selection produced no projects.' }
+        if ($parsed.Has('Clean') -and (Test-Path -LiteralPath $outputDirectory)) {
             Remove-OwnedArtifactPath -Path $outputDirectory -ArtifactRoot (Get-ArtifactRoot -RepoRoot $repoRoot)
         }
         [void][System.IO.Directory]::CreateDirectory($outputDirectory)
 
-        $projects = if ($parsed.Has('CompressionOnly')) {
-            @('Rowles.LeanCorpus', 'Rowles.LeanCorpus.Compression.LZ4', 'Rowles.LeanCorpus.Compression.Snappy', 'Rowles.LeanCorpus.Compression.Zstandard') | ForEach-Object {
-                Join-Path $repoRoot "src/core/$_/$_.csproj"
+        Write-Heading "Packing $($selectedEntries.Count) policy packages"
+        $expectedVersions = @{}
+        foreach ($entry in $selectedEntries) {
+            $project = Join-Path $repoRoot ([string]$entry.projectPath)
+            $projectMetadata = Get-PackageProjectMetadata -ProjectPath $project
+            $expectedVersions[[string]$entry.packageId] = [string]$projectMetadata.version
+            $propsPath = $null
+
+            $packArguments = @(
+                'pack', $project, '-c', $configuration, '--output', $outputDirectory,
+                '--disable-build-servers', '-m:1', '-p:UseSharedCompilation=false', '--tl:off',
+                "-p:IncludeSymbols=$([string]([bool]$entry.requireSymbols).ToString().ToLowerInvariant())",
+                '-p:SymbolPackageFormat=snupkg'
+            )
+            if ($entry.enableApiCompatibility -and $entry.kind -notin @('analyzer', 'application')) {
+                $propsDirectory = Join-Path (Get-ArtifactKindRoot -Kind temp -RepoRoot $repoRoot) 'package-validation'
+                [void][IO.Directory]::CreateDirectory($propsDirectory)
+                $propsPath = Join-Path $propsDirectory ("baseline-" + [Guid]::NewGuid().ToString('N') + '.props')
+                $projectName = [IO.Path]::GetFileNameWithoutExtension($project)
+                $baselineProperty = if ([string]::IsNullOrWhiteSpace([string]$entry.baselineVersion)) {
+                    ''
+                } else {
+                    "<PackageValidationBaselineVersion>$($entry.baselineVersion)</PackageValidationBaselineVersion>"
+                }
+                $props = "<Project><PropertyGroup Condition=`"'`$(MSBuildProjectName)' == '$projectName'`"><EnablePackageValidation>true</EnablePackageValidation><EnableStrictModeForBaselineValidation>true</EnableStrictModeForBaselineValidation>$baselineProperty</PropertyGroup></Project>"
+                [IO.File]::WriteAllText($propsPath, $props, [Text.UTF8Encoding]::new($false))
+                $packArguments += "-p:CustomAfterMicrosoftCommonProps=$propsPath"
             }
-        } else { @(Join-Path $repoRoot 'Rowles.LeanCorpus.slnx') }
-        Write-Heading 'Packing LeanCorpus packages'
-        foreach ($project in $projects) {
-            $packArguments = @('pack', $project, '-c', $configuration, '--output', $outputDirectory, '--disable-build-servers', '-m:1', '-p:UseSharedCompilation=false', '--tl:off')
             if ($parsed.Has('NoBuild')) { $packArguments += '--no-build' }
-            Invoke-DotNet $packArguments | ForEach-Object { Write-Host $_ }
+            try {
+                Invoke-DotNet $packArguments | ForEach-Object { Write-Host $_ }
+            } finally {
+                if ($null -ne $propsPath -and (Test-Path -LiteralPath $propsPath)) {
+                    Remove-Item -LiteralPath $propsPath -Force
+                }
+            }
+
+            $packagePath = Join-Path $outputDirectory "$($entry.packageId).$($projectMetadata.version).nupkg"
+            if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+                throw "Packing $($entry.projectPath) did not produce the expected $($entry.packageId) $($projectMetadata.version) package."
+            }
+        }
+
+        $actualPackages = @(Get-ChildItem -LiteralPath $outputDirectory -File -Filter '*.nupkg' | Sort-Object Name)
+        $selectedIds = @($selectedEntries | ForEach-Object { [string]$_.packageId })
+        $seenIds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($package in $actualPackages) {
+            $archiveInfo = Get-PackageArchiveInfo -Path $package.FullName
+            if ($archiveInfo.id -notin $selectedIds) {
+                throw "Unrepresented shipping package '$($archiveInfo.id)' was produced in $($package.FullName)."
+            }
+            if (-not $seenIds.Add([string]$archiveInfo.id)) {
+                throw "More than one package version was produced for '$($archiveInfo.id)'; clean the package output and retry."
+            }
+            if ($archiveInfo.version -cne $expectedVersions[[string]$archiveInfo.id]) {
+                throw "Unexpected version $($archiveInfo.version) for policy package $($archiveInfo.id); expected $($expectedVersions[[string]$archiveInfo.id])."
+            }
+        }
+        foreach ($entry in $selectedEntries) {
+            if (-not $seenIds.Contains([string]$entry.packageId)) { throw "Policy package $($entry.packageId) was not emitted." }
+        }
+
+        foreach ($entry in $selectedEntries) {
+            $version = $expectedVersions[[string]$entry.packageId]
+            $packagePath = Join-Path $outputDirectory "$($entry.packageId).$version.nupkg"
+            $symbolPath = Join-Path $outputDirectory "$($entry.packageId).$version.snupkg"
+            if (-not (Test-Path -LiteralPath $symbolPath -PathType Leaf)) { $symbolPath = '' }
+            [void](Test-PackageArchive -PackagePath $packagePath -SymbolPath $symbolPath -PolicyEntry $entry -RepoRoot $repoRoot)
+        }
+
+        $allSymbols = @(Get-ChildItem -LiteralPath $outputDirectory -File -Filter '*.snupkg' | Sort-Object Name)
+        foreach ($symbol in $allSymbols) {
+            $expectedName = [IO.Path]::GetFileNameWithoutExtension($symbol.Name)
+            if ($expectedName -notmatch '^(?<id>.+)\.(?<version>\d+\.\d+\.\d+(?:[-+].+)?)$') {
+                throw "Unexpected symbol package name '$($symbol.Name)'."
+            }
+            $symbolId = $Matches.id
+            $symbolVersion = $Matches.version
+            $symbolPolicy = @($selectedEntries | Where-Object { $_.packageId -ceq $symbolId })
+            if ($symbolPolicy.Count -ne 1 -or -not [bool]$symbolPolicy[0].requireSymbols -or
+                $symbolVersion -cne $expectedVersions[$symbolId]) {
+                throw "Unrepresented symbol package '$($symbol.Name)' was produced."
+            }
         }
 
         $git = Get-ArtifactGitContext -RepoRoot $repoRoot
-        $packages = @(Get-ChildItem $outputDirectory -File | Where-Object { $_.Extension -in @('.nupkg', '.snupkg') } | Sort-Object Name)
-        if ($parsed.Has('CompressionOnly')) {
-            $currentNames = @('LeanCorpus.4.0.0', 'LeanCorpus.Compression.LZ4.2.0.0', 'LeanCorpus.Compression.Snappy.2.0.0', 'LeanCorpus.Compression.Zstandard.2.0.0')
-            $packages = @($packages | Where-Object {
-                [IO.Path]::GetFileNameWithoutExtension($_.Name) -in $currentNames
-            })
-        }
+        $packages = @(Get-ChildItem -LiteralPath $outputDirectory -File | Where-Object { $_.Extension -in @('.nupkg', '.snupkg') } | Sort-Object Name)
         $entries = foreach ($package in $packages) {
             $name = [System.IO.Path]::GetFileNameWithoutExtension($package.Name)
             $match = [regex]::Match($name, '^(?<id>.+)\.(?<version>\d+\.\d+\.\d+(?:[-+].+)?)$')
@@ -51,8 +168,9 @@ function Invoke-DevOpsPack {
             configuration = $configuration
             packages = @($entries)
         })
+
         if ($parsed.Has('ValidateCompression')) {
-            . (Join-Path (Get-ScriptsPath) 'devops/packaging/validate-compression.ps1')
+            . (Join-Path $packagingDirectory 'validate-compression.ps1')
             Test-CompressionPackages -PackageDirectory $outputDirectory -RepoRoot $repoRoot
         }
         Write-Success "Packages written to: $outputDirectory"

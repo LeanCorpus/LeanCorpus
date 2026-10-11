@@ -30,6 +30,8 @@
 
 - Decompose segment merging into internal planning and codec writers while preserving document ordering, retention and persisted formats.
 
+- Make normal package packing policy-driven, validate pinned API baselines and package archive contents, and add an independent package-validation CI gate.
+
 - Advance LZ4, Snappy and Zstandard optional packages to 2.0.0, require LeanCorpus `[4.0.0,5.0.0)`, publish matching symbol packages and add local-package consumer acceptance to DevOps packing.
 
 - Define `ComplexPhraseQueryParser.InOrder` as controlling ordering only for multi-slot flat-alternative phrases; ordinary analysed phrases remain graph-aware and ordered.
