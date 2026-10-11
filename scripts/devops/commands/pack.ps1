@@ -13,6 +13,7 @@ function Invoke-DevOpsPack {
         $packagingDirectory = Join-Path $scriptsRoot 'devops/packaging'
         $policyPath = Join-Path $packagingDirectory 'package-policy.json'
         . (Join-Path $packagingDirectory 'validate-package-archive.ps1')
+        . (Join-Path $packagingDirectory 'validate-compression-package-archive.ps1')
 
         if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) { throw "Package policy is missing: $policyPath" }
         $policy = Get-Content -LiteralPath $policyPath -Raw | ConvertFrom-Json -AsHashtable
@@ -60,6 +61,12 @@ function Invoke-DevOpsPack {
         if ($selectedEntries.Count -eq 0) { throw 'Package policy selection produced no projects.' }
         if ($parsed.Has('ValidatePackages') -and $parsed.Has('CompressionOnly')) {
             throw '-ValidatePackages requires the complete shipping package set and cannot be combined with -CompressionOnly.'
+        }
+        $compressionContract = Get-CompressionPackageDependencyContract
+        $selectedPackageIds = @($selectedEntries | ForEach-Object { [string]$_.packageId })
+        $missingCompressionPackages = @($compressionContract.packageIds | Where-Object { $_ -notin $selectedPackageIds })
+        if ($missingCompressionPackages.Count -gt 0) {
+            throw "Package policy selection omitted required compression package(s): $($missingCompressionPackages -join ', ')."
         }
 
         if ($parsed.Has('Clean') -and (Test-Path -LiteralPath $outputDirectory)) {
@@ -135,6 +142,16 @@ function Invoke-DevOpsPack {
             $symbolPath = Join-Path $outputDirectory "$($entry.packageId).$version.snupkg"
             if (-not (Test-Path -LiteralPath $symbolPath -PathType Leaf)) { $symbolPath = '' }
             [void](Test-PackageArchive -PackagePath $packagePath -SymbolPath $symbolPath -PolicyEntry $entry -RepoRoot $repoRoot)
+
+            if ($entry.packageId -in $compressionContract.packageIds) {
+                $expectedDependencyFrameworks = if ($entry.Contains('expectedDependencyFrameworks')) {
+                    @($entry.expectedDependencyFrameworks | ForEach-Object { [string]$_ })
+                } else {
+                    @($entry.expectedFrameworks | ForEach-Object { [string]$_ })
+                }
+                Assert-CompressionPackageDependencyRange -PackageId ([string]$entry.packageId) `
+                    -PackagePath $packagePath -ExpectedFrameworks $expectedDependencyFrameworks
+            }
         }
 
         $allSymbols = @(Get-ChildItem -LiteralPath $outputDirectory -File -Filter '*.snupkg' | Sort-Object Name)

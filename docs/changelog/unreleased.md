@@ -30,7 +30,7 @@
 
 - Decompose segment merging into internal planning and codec writers while preserving document ordering, retention and persisted formats.
 
-- Make normal package packing policy-driven, validate pinned API baselines and package archive contents, and add an independent package-validation CI gate.
+- Make normal package packing policy-driven, validate pinned API baselines and package archive contents including the explicit compression-to-Core dependency range, and add an independent package-validation CI gate.
 
 - Validate every shipping package through isolated local-feed consumers, including framework builds and Core write/read acceptance.
 

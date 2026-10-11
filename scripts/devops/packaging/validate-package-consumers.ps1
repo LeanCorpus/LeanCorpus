@@ -1,6 +1,9 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+. (Join-Path $PSScriptRoot 'validate-package-archive.ps1')
+. (Join-Path $PSScriptRoot 'validate-compression-package-archive.ps1')
+
 function Get-ConsumerPackageManifest {
     param([string]$PackageDirectory)
 
@@ -466,30 +469,6 @@ function Invoke-ConsumerCommand {
     return $result
 }
 
-function Assert-CompressionPackageDependencyRange {
-    param([object]$PackageIndex, [string]$PackageId)
-    $archive = Get-ConsumerPackageEntry -PackageIndex $PackageIndex -PackageId $PackageId
-    $core = Get-ConsumerPackageEntry -PackageIndex $PackageIndex -PackageId 'LeanCorpus'
-    $majorMatch = [regex]::Match($core.version, '^(?<major>\d+)\.')
-    if (-not $majorMatch.Success) { throw "Cannot derive Core major version from $($core.version)." }
-    $major = [int]$majorMatch.Groups['major'].Value
-    $expectedRange = "[$major.0.0,$($major + 1).0.0)"
-    $archiveInfo = Get-PackageArchiveInfo -Path $archive.path
-    if ($archiveInfo.id -cne $PackageId -or @($archiveInfo.dependencies).Count -ne 2) {
-        throw "Compression package $PackageId must declare both supported framework dependency groups."
-    }
-    foreach ($group in $archiveInfo.dependencies) {
-        $dependencies = @($group.dependencies)
-        $coreDependency = @($dependencies | Where-Object { $_.id -ceq 'LeanCorpus' })
-        if ($coreDependency.Count -ne 1 -or ($coreDependency[0].version -replace '\s', '') -cne $expectedRange) {
-            throw "Compression package $PackageId does not declare Core range $expectedRange in every framework group."
-        }
-        if (@($dependencies | Where-Object { $_.id -ceq 'Rowles.Text' -or $_.id -like 'Rowles.LeanCorpus.*' }).Count -gt 0) {
-            throw "Compression package $PackageId has an unexpected Text or renamed Core dependency."
-        }
-    }
-}
-
 function Invoke-PackageConsumerScenario {
     param(
         [Parameter(Mandatory = $true)][object]$Scenario,
@@ -524,7 +503,10 @@ function Invoke-PackageConsumerScenario {
     }
     try {
         if ($Scenario.Name -like 'compression-*') {
-            Assert-CompressionPackageDependencyRange -PackageIndex $PackageIndex -PackageId $Scenario.PackageId
+            $expectedCompressionFrameworks = @(Get-ConsumerScenarioDefinitions -Scope compression |
+                ForEach-Object { [string]$_.Framework } | Sort-Object -Unique)
+            Assert-CompressionPackageDependencyRange -PackageId $Scenario.PackageId `
+                -PackagePath $primary.path -ExpectedFrameworks $expectedCompressionFrameworks
         }
         $project = Join-Path $scenarioDirectory 'Consumer.csproj'
         $template = Get-ConsumerProjectTemplate
