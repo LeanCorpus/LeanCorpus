@@ -73,7 +73,7 @@ public sealed class SegmentInfoTests : IDisposable
     }
 
     [Theory(DisplayName = "SegmentInfo.ReadFrom: Invalid Descriptor Metadata Is Rejected")]
-    [MemberData(nameof(InvalidMetadataCases))]
+    [MemberData(nameof(InvalidMetadataCases), DisableDiscoveryEnumeration = true)]
     public void ReadFrom_InvalidDescriptorMetadata_ThrowsInvalidDataException(string caseName, SegmentInfo info)
     {
         string path = Path.Combine(_dir, caseName.Replace(' ', '_') + ".seg");

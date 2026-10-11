@@ -22,7 +22,7 @@ public sealed class StableSearchSessionTests : IDisposable
     public void Dispose() => TestDirectoryFixture.TryDeleteDirectory(_path);
 
     [Theory]
-    [MemberData(nameof(Sorts))]
+    [MemberData(nameof(Sorts), DisableDiscoveryEnumeration = true)]
     public void PagesEqualOneShotForEverySupportedSort(SortField[] sorts)
     {
         using var directory = new MMapDirectory(_path);

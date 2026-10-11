@@ -81,6 +81,12 @@
 
 ## Fixed
 
+- Map xUnit/MTP `NotRunnable` TRX results to `NotExecuted` while preserving unfamiliar outcomes and handling empty results safely.
+- Reconcile Rowles.Text compatibility suppressions for the intentional `SlovakStemmer` shareable-interface transition on both target frameworks.
+- Repair CI platform-smoke SDK and managed-test preparation, and install the package-matched Playwright Chromium before Orchard browser tests.
+- Run Orchard provider functional tests once without the explicit performance phases in the normal suite registry.
+- Keep the existing Core and Server Abstractions theory rows while disabling discovery-time enumeration for their non-serialisable data.
+
 - Preserve buffered CommonGrams graph edge lengths and combine only adjacent unit-position tokens; retain graph lengths when ICU and URL/email tokenisers delegate Thai runs.
 
 - Restore Native AOT smoke coverage for complex-phrase rejection, parser reuse and flat alternatives, and select it for affected parser changes.

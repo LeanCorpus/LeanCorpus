@@ -21,7 +21,7 @@ public sealed class SerialisationTests
     };
 
     [Theory]
-    [MemberData(nameof(CommunityQueries))]
+    [MemberData(nameof(CommunityQueries), DisableDiscoveryEnumeration = true)]
     public void EveryCommunityQueryDiscriminatorRoundTrips(QueryDefinition query, Type expectedType)
     {
         SearchRequest request = new(query);

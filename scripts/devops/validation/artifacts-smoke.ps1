@@ -247,6 +247,44 @@ try {
         Assert-Smoke (-not ($mtpArguments -contains '--report-xunit-ctrf-filename')) 'MTP CTRF filename remains configured.'
         Assert-Smoke (-not ($mtpArguments -contains 'results.ctrf.json')) 'CTRF output remains configured.'
 
+        $syntheticTrxPath = Join-Path $Root 'synthetic-outcomes.trx'
+        $syntheticTrx = @'
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <Results>
+    <UnitTestResult testId="passed" testName="PassedCase" outcome="Passed" />
+    <UnitTestResult testId="failed" testName="FailedCase" outcome="Failed" />
+    <UnitTestResult testId="skipped" testName="SkippedCase" outcome="Skipped" />
+    <UnitTestResult testId="notexecuted" testName="NotExecutedCase" outcome="NotExecuted" />
+    <UnitTestResult testId="notrunnable" testName="NotRunnableCase" outcome="NotRunnable" />
+    <UnitTestResult testId="unknown" testName="UnknownCase" outcome="FutureRunnerOutcome" />
+    <UnitTestResult testId="empty" testName="EmptyOutcomeCase" outcome="" />
+    <UnitTestResult testId="missing" testName="MissingOutcomeCase" />
+  </Results>
+</TestRun>
+'@
+        [System.IO.File]::WriteAllText($syntheticTrxPath, $syntheticTrx, [System.Text.UTF8Encoding]::new($false))
+        $parsedTrx = Read-MtpResults -Path $syntheticTrxPath
+        Assert-Smoke ($parsedTrx.Exists -and $parsedTrx.Valid -and $parsedTrx.Status -eq 'Parsed') 'synthetic TRX was not parsed as a valid result.'
+        Assert-Smoke ($parsedTrx.Tests.Count -eq 8) 'synthetic TRX result count changed.'
+        $parsedOutcomes = @{}
+        foreach ($testResult in $parsedTrx.Tests) {
+            $parsedOutcomes[$testResult.TestName] = $testResult.Outcome
+        }
+        foreach ($expectedOutcome in @{
+            PassedCase = 'Passed'
+            FailedCase = 'Failed'
+            SkippedCase = 'Skipped'
+            NotExecutedCase = 'NotExecuted'
+            NotRunnableCase = 'NotExecuted'
+            UnknownCase = 'FutureRunnerOutcome'
+            EmptyOutcomeCase = 'Unknown'
+            MissingOutcomeCase = 'Unknown'
+        }.GetEnumerator()) {
+            Assert-Smoke ($parsedOutcomes[$expectedOutcome.Key] -ceq $expectedOutcome.Value) "TRX outcome '$($expectedOutcome.Key)' was not preserved as '$($expectedOutcome.Value)'."
+        }
+        Assert-Smoke ((ConvertTo-NeutralTestOutcome -Outcome $null) -eq 'Unknown') 'null TRX outcomes were not classified Unknown.'
+
         # H. Telemetry path discovery and workflow mode contracts.
         $telemetryTarget = Join-Path $Root 'telemetry-target'
         foreach ($relative in @(
@@ -275,6 +313,23 @@ try {
         Assert-Smoke ($diagnosticsWorkflow.Contains('name: Test Diagnostics')) 'diagnostics workflow displayed name is incorrect.'
         Assert-Smoke ($diagnosticsWorkflow.Contains("'--diagnostics',") -and $diagnosticsWorkflow.Contains("'--profile',") -and $diagnosticsWorkflow.Contains("'integration',")) 'diagnostics workflow does not pass --diagnostics and --profile integration.'
         Assert-Smoke ($diagnosticsWorkflow.Contains('name: test-diagnostics-linux') -and $diagnosticsWorkflow.Contains('name: test-diagnostics-windows')) 'diagnostics workflow artefact names are incorrect.'
+
+        # I. Orchard functional and explicit performance suite separation.
+        $testSuites = Get-TestSuiteRegistry
+        $functionalProject = 'src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests.csproj'
+        $functionalProjectSuites = @($testSuites.Keys | Where-Object { [string]$testSuites[$_].Project -ceq $functionalProject })
+        Assert-Smoke ($functionalProjectSuites.Count -eq 1 -and $functionalProjectSuites[0] -ceq 'server-orchard-functional') 'the Orchard functional project is registered more than once or under another suite.'
+        Assert-Smoke (-not $testSuites.ContainsKey('server-orchard-performance')) 'the duplicate Orchard performance suite remains registered.'
+        $functionalArguments = @($testSuites['server-orchard-functional'].AdditionalArguments)
+        Assert-Smoke ($functionalArguments.Count -eq 2 -and
+            $functionalArguments[0] -ceq '--filter-not-class' -and
+            $functionalArguments[1] -ceq 'Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests.ProviderPerformanceTests') 'the functional suite does not exclude the explicit performance class.'
+        $codeAreas = Import-PowerShellDataFile -LiteralPath (Join-Path $RepositoryRoot 'scripts/devops/config/code-areas.psd1')
+        foreach ($areaName in $codeAreas.Keys) {
+            foreach ($targetName in @($codeAreas[$areaName].Targets)) {
+                Assert-Smoke (-not ([string]$targetName).StartsWith('server-orchard-performance:', [StringComparison]::Ordinal)) "affected-test area '$areaName' still references the removed Orchard performance suite."
+            }
+        }
 
         Write-Host 'Artefact infrastructure smoke validation passed.'
     } $temporaryRoot $generatorPath (Resolve-Path (Join-Path $PSScriptRoot '../../..'))

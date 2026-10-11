@@ -40,6 +40,15 @@ jobs:
           name: linux-${{ matrix.framework }}-build-diagnostics
           path: artifacts/build/runs
           if-no-files-found: error
+      - name: Install Playwright Chromium
+        if: matrix.framework == 'net11.0'
+        shell: pwsh
+        run: |
+          $projectOutputRoot = Join-Path $PWD 'artifacts/bin/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests'
+          $playwrightScripts = @(Get-ChildItem -LiteralPath $projectOutputRoot -Filter 'playwright.ps1' -File -Recurse -ErrorAction SilentlyContinue)
+          if ($playwrightScripts.Count -ne 1) { throw "Expected exactly one generated playwright.ps1 under '$projectOutputRoot'; found $($playwrightScripts.Count)." }
+          pwsh $playwrightScripts[0].FullName install --with-deps chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate DevOps artefact infrastructure
         if: matrix.framework == 'net10.0'
         shell: pwsh
@@ -103,6 +112,14 @@ jobs:
           name: windows-build-diagnostics
           path: artifacts/build/runs
           if-no-files-found: error
+      - name: Install Playwright Chromium
+        shell: pwsh
+        run: |
+          $projectOutputRoot = Join-Path $PWD 'artifacts/bin/Rowles.LeanCorpus.OrchardCore.Search.FunctionalTests'
+          $playwrightScripts = @(Get-ChildItem -LiteralPath $projectOutputRoot -Filter 'playwright.ps1' -File -Recurse -ErrorAction SilentlyContinue)
+          if ($playwrightScripts.Count -ne 1) { throw "Expected exactly one generated playwright.ps1 under '$projectOutputRoot'; found $($playwrightScripts.Count)." }
+          pwsh $playwrightScripts[0].FullName install chromium
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run complete Windows test suite
         shell: pwsh
         env:
@@ -185,11 +202,15 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v5
         with: { dotnet-version: '10.0.x' }
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
       - name: Run platform smoke and Native AOT
         shell: pwsh
         run: |
-          ./devops.ps1 test architecture --ci --framework net10.0
-          ./devops.ps1 test core --ci --framework net10.0 --Filter 'Scope=PlatformSmoke' --HangTimeout 100s
+          ./devops.ps1 test architecture --framework net10.0
+          ./devops.ps1 test core --framework net10.0 --Filter 'Scope=PlatformSmoke' --HangTimeout 100s
           ./devops.ps1 aot --ci --framework net10.0 --RuntimeIdentifier '${{ matrix.rid }}'
       - name: Upload test run artefacts
         if: always()

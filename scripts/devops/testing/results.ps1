@@ -37,8 +37,15 @@ function ConvertTo-NeutralTestOutcome {
         'timeout'    { return 'Timeout' }
         'skipped'    { return 'Skipped' }
         'notexecuted' { return 'NotExecuted' }
+        'notrunnable' { return 'NotExecuted' }
         'inconclusive' { return 'Inconclusive' }
-        default      { return if ($Outcome) { $Outcome } else { 'Unknown' } }
+        default {
+            if ([string]::IsNullOrWhiteSpace($Outcome)) {
+                return 'Unknown'
+            }
+
+            return $Outcome
+        }
     }
 }
 
