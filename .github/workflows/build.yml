@@ -136,6 +136,30 @@ jobs:
           path: artifacts/package
           if-no-files-found: error
 
+  package-consumer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with: { dotnet-version: '10.0.x' }
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '11.0.x'
+          dotnet-quality: preview
+      - name: Validate generated package consumers
+        shell: pwsh
+        run: ./devops.ps1 pack -Clean -ValidatePackages
+      - name: Upload package consumer artefacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: package-consumer-artefacts
+          path: |
+            artifacts/package
+            artifacts/test/runs
+          if-no-files-found: error
+
   arm64-smoke:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30

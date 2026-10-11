@@ -32,6 +32,8 @@
 
 - Make normal package packing policy-driven, validate pinned API baselines and package archive contents, and add an independent package-validation CI gate.
 
+- Validate every shipping package through isolated local-feed consumers, including framework builds and Core write/read acceptance.
+
 - Advance LZ4, Snappy and Zstandard optional packages to 2.0.0, require LeanCorpus `[4.0.0,5.0.0)`, publish matching symbol packages and add local-package consumer acceptance to DevOps packing.
 
 - Define `ComplexPhraseQueryParser.InOrder` as controlling ordering only for multi-slot flat-alternative phrases; ordinary analysed phrases remain graph-aware and ordered.

@@ -13,9 +13,9 @@ using Rowles.LeanCorpus.Store;
 REGISTRATION.Register();
 var core = typeof(IndexWriter).Assembly;
 var optional = typeof(REGISTRATION).Assembly;
-if (core.GetName().Version != new Version(4, 0, 0, 0) ||
-    optional.GetName().Version != new Version(2, 0, 0, 0) ||
-    FileVersionInfo.GetVersionInfo(optional.Location).FileVersion != "2.0.0.0")
+if (core.GetName().Version != new Version("CORE_ASSEMBLY_VERSION") ||
+    optional.GetName().Version != new Version("OPTIONAL_ASSEMBLY_VERSION") ||
+    FileVersionInfo.GetVersionInfo(optional.Location).FileVersion != "OPTIONAL_ASSEMBLY_VERSION")
     throw new InvalidDataException("Unexpected packed assembly or file version.");
 
 string content = string.Concat(Enumerable.Repeat("café 東京 \U0001f600 stored content\n", 4096));

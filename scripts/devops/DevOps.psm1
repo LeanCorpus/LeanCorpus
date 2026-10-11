@@ -197,6 +197,7 @@ function Invoke-DevOpsHelp {
     Write-Host '    pack                 Build NuGet packages under artifacts/package/release'
     Write-Host '      -CompressionOnly   Pack only Core and the three optional codecs'
     Write-Host '      -ValidateCompression Inspect optional packages and run clean-consumer acceptance'
+    Write-Host '      -ValidatePackages  Run isolated consumers for every shipping package'
     Write-Host '      -NoBuild           Pack existing builds'
     Write-Host '      -Clean             Remove previous package output before packing'
     Write-Host '    report               Repository health report'

@@ -58,6 +58,10 @@ function Invoke-DevOpsPack {
             @($allEntries | Where-Object { @($_.packageGroups) -contains 'compression' })
         } else { $allEntries }
         if ($selectedEntries.Count -eq 0) { throw 'Package policy selection produced no projects.' }
+        if ($parsed.Has('ValidatePackages') -and $parsed.Has('CompressionOnly')) {
+            throw '-ValidatePackages requires the complete shipping package set and cannot be combined with -CompressionOnly.'
+        }
+
         if ($parsed.Has('Clean') -and (Test-Path -LiteralPath $outputDirectory)) {
             Remove-OwnedArtifactPath -Path $outputDirectory -ArtifactRoot (Get-ArtifactRoot -RepoRoot $repoRoot)
         }
@@ -169,7 +173,10 @@ function Invoke-DevOpsPack {
             packages = @($entries)
         })
 
-        if ($parsed.Has('ValidateCompression')) {
+        if ($parsed.Has('ValidatePackages')) {
+            . (Join-Path $packagingDirectory 'validate-package-consumers.ps1')
+            Test-PackageConsumerSet -PackageDirectory $outputDirectory -RepoRoot $repoRoot -Scope all
+        } elseif ($parsed.Has('ValidateCompression')) {
             . (Join-Path $packagingDirectory 'validate-compression.ps1')
             Test-CompressionPackages -PackageDirectory $outputDirectory -RepoRoot $repoRoot
         }
