@@ -149,7 +149,7 @@ public sealed class PackedBkdWriterTests
         {
             ShouldListenTo = static source => source.Name is "Rowles.LeanCorpus" or "Rowles.LeanCorpus.Tests.PackedBkd",
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = activity => captured.Add(activity)
+            ActivityStarted = activity => captured.Add(activity)
         };
         ActivitySource.AddActivityListener(listener);
         try
@@ -186,7 +186,7 @@ public sealed class PackedBkdWriterTests
         {
             ShouldListenTo = static source => source.Name is "Rowles.LeanCorpus" or "Rowles.LeanCorpus.Tests.PackedBkd.Preflight",
             Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
-            ActivityStopped = activity => captured.Add(activity)
+            ActivityStarted = activity => captured.Add(activity)
         };
         ActivitySource.AddActivityListener(listener);
         try
@@ -374,18 +374,28 @@ public sealed class PackedBkdWriterTests
             string path = Path.Combine(directory, forceSpill ? "active-spill-cancelled.pbkd" : "active-memory-cancelled.pbkd");
             using var buffer = CreateLargeBuffer(pointCount);
             using var cancellation = new CancellationTokenSource();
-            var buildStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var scope = new Activity("packed-bkd-active-cancellation").Start();
+            var boundsScanStarted = new TaskCompletionSource<(string BuildPath, int PointCount, long SpillBytes, bool LeafExists)>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
             using var listener = new ActivityListener
             {
                 ShouldListenTo = static source => source.Name == "Rowles.LeanCorpus",
                 Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
                 ActivityStarted = activity =>
                 {
-                    if (activity.OperationName != LeanCorpusActivitySource.PackedBkdBuild)
+                    if (activity.OperationName != LeanCorpusActivitySource.PackedBkdBoundsScan
+                        || activity.TraceId != scope.TraceId
+                        || activity.GetTagItem("packed_bkd.points_scanned") is not 1)
                         return;
 
-                    buildStarted.TrySetResult();
+                    string? spillPath = Directory.EnumerateFiles(directory, "*.spill").SingleOrDefault();
+                    var observed = (
+                        (string)activity.GetTagItem("packed_bkd.build_path")!,
+                        (int)activity.GetTagItem("packed_bkd.point_count")!,
+                        spillPath is null ? 0L : new FileInfo(spillPath).Length,
+                        Directory.EnumerateFiles(directory, "*.leaf").Any());
                     cancellation.Cancel();
+                    boundsScanStarted.TrySetResult(observed);
                 }
             };
             ActivitySource.AddActivityListener(listener);
@@ -399,7 +409,11 @@ public sealed class PackedBkdWriterTests
                     ForceSpill: forceSpill,
                     CancellationToken: cancellation.Token)));
 
-            await buildStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            var observed = await boundsScanStarted.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            Assert.Equal(forceSpill ? "spill" : "memory", observed.BuildPath);
+            Assert.Equal(pointCount, observed.PointCount);
+            Assert.Equal(forceSpill ? (long)pointCount * buffer.Config.RecordBytes : 0L, observed.SpillBytes);
+            Assert.Equal(forceSpill, observed.LeafExists);
             await Assert.ThrowsAsync<OperationCanceledException>(async () =>
                 await write.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
 

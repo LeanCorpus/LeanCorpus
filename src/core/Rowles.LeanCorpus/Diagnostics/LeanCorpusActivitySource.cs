@@ -26,6 +26,7 @@ internal static class LeanCorpusActivitySource
     internal const string DeleteQueue = "leancorpus.index.delete_queue";
     internal const string DeleteApply = "leancorpus.index.delete_apply";
     internal const string PackedBkdBuild = "leancorpus.index.packed_bkd.build";
+    internal const string PackedBkdBoundsScan = "leancorpus.index.packed_bkd.bounds_scan";
     internal const string PackedBkdIntersect = "leancorpus.index.packed_bkd.intersect";
     internal const string PackedBkdBestFirst = "leancorpus.search.packed_bkd.best_first";
 

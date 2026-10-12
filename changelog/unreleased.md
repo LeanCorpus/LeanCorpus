@@ -81,6 +81,8 @@
 
 ## Fixed
 
+- Restore active Packed BKD cancellation coverage after bounds scanning begins, with memory/spill phase diagnostics and verification of live spill artefacts before cleanup.
+
 - Correct Slovak API compatibility suppressions, preserve frozen release fixture bytes across platforms, and make background-refresh, cancellation and Orchard lifecycle/setup tests deterministic under hosted Windows load.
 
 - Map xUnit/MTP `NotRunnable` TRX results to `NotExecuted` while preserving unfamiliar outcomes and handling empty results safely.

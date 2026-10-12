@@ -628,6 +628,18 @@ internal static class PackedBkdBuilder
             records.Slice(firstRecord + offset, config.BytesPerDimension).CopyTo(minimum.AsSpan(offset, config.BytesPerDimension));
             records.Slice(firstRecord + offset, config.BytesPerDimension).CopyTo(maximum.AsSpan(offset, config.BytesPerDimension));
         }
+        using var scan = Diagnostics.LeanCorpusActivitySource.Source.HasListeners()
+            ? Diagnostics.LeanCorpusActivitySource.Source.StartActivity(
+                Diagnostics.LeanCorpusActivitySource.PackedBkdBoundsScan,
+                System.Diagnostics.ActivityKind.Internal,
+                parentContext: default(System.Diagnostics.ActivityContext),
+                tags: new System.Diagnostics.ActivityTagsCollection
+                {
+                    { "packed_bkd.build_path", "memory" },
+                    { "packed_bkd.point_count", count },
+                    { "packed_bkd.points_scanned", 1 },
+                })
+            : null;
         for (int point = 1; point < count; point++)
         {
             if ((point & 0x3ff) == 0)
@@ -635,6 +647,7 @@ internal static class PackedBkdBuilder
             int recordOffset = checked((start + point) * config.RecordBytes);
             UpdateBounds(records.Slice(recordOffset), config, minimum, maximum);
         }
+        scan?.SetTag("packed_bkd.points_scanned", count);
     }
 
     private static void ComputeBounds(
@@ -680,6 +693,18 @@ internal static class PackedBkdBuilder
             record.Slice(offset, config.BytesPerDimension).CopyTo(minimum.AsSpan(offset, config.BytesPerDimension));
             record.Slice(offset, config.BytesPerDimension).CopyTo(maximum.AsSpan(offset, config.BytesPerDimension));
         }
+        using var scan = Diagnostics.LeanCorpusActivitySource.Source.HasListeners()
+            ? Diagnostics.LeanCorpusActivitySource.Source.StartActivity(
+                Diagnostics.LeanCorpusActivitySource.PackedBkdBoundsScan,
+                System.Diagnostics.ActivityKind.Internal,
+                parentContext: default(System.Diagnostics.ActivityContext),
+                tags: new System.Diagnostics.ActivityTagsCollection
+                {
+                    { "packed_bkd.build_path", "spill" },
+                    { "packed_bkd.point_count", count },
+                    { "packed_bkd.points_scanned", 1 },
+                })
+            : null;
         for (int i = 1; i < count; i++)
         {
             if ((i & 0x3ff) == 0)
@@ -687,6 +712,7 @@ internal static class PackedBkdBuilder
             records.Read(start + i, record);
             UpdateBounds(record, config, minimum, maximum);
         }
+        scan?.SetTag("packed_bkd.points_scanned", count);
     }
 
     private static void UpdateBounds(
