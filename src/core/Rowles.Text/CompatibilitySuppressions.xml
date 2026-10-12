@@ -52,7 +52,7 @@
     <IsBaselineSuppression>true</IsBaselineSuppression>
   </Suppression>
   <Suppression>
-    <DiagnosticId>CP0008</DiagnosticId>
+    <DiagnosticId>CP0001</DiagnosticId>
     <Target>T:Rowles.LeanCorpus.Analysis.Stemmers.SlovakStemmer</Target>
     <Left>lib/net10.0/Rowles.Text.dll</Left>
     <Right>lib/net10.0/Rowles.Text.dll</Right>
@@ -136,7 +136,7 @@
     <IsBaselineSuppression>true</IsBaselineSuppression>
   </Suppression>
   <Suppression>
-    <DiagnosticId>CP0008</DiagnosticId>
+    <DiagnosticId>CP0001</DiagnosticId>
     <Target>T:Rowles.LeanCorpus.Analysis.Stemmers.SlovakStemmer</Target>
     <Left>lib/net11.0/Rowles.Text.dll</Left>
     <Right>lib/net11.0/Rowles.Text.dll</Right>
@@ -1223,6 +1223,21 @@
   <Suppression>
     <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Rowles.LeanCorpus.Analysis.Tokenisers.WhitespaceTokeniser</Target>
+    <Left>lib/net11.0/Rowles.Text.dll</Left>
+    <Right>lib/net11.0/Rowles.Text.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <!-- Intentional Slovak analysis additions absent from the Rowles.Text 1.0.0 baseline. -->
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>F:Rowles.LeanCorpus.Analysis.StopWords.Slovak</Target>
+    <Left>lib/net10.0/Rowles.Text.dll</Left>
+    <Right>lib/net10.0/Rowles.Text.dll</Right>
+    <IsBaselineSuppression>true</IsBaselineSuppression>
+  </Suppression>
+  <Suppression>
+    <DiagnosticId>CP0002</DiagnosticId>
+    <Target>F:Rowles.LeanCorpus.Analysis.StopWords.Slovak</Target>
     <Left>lib/net11.0/Rowles.Text.dll</Left>
     <Right>lib/net11.0/Rowles.Text.dll</Right>
     <IsBaselineSuppression>true</IsBaselineSuppression>

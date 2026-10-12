@@ -21,6 +21,24 @@ public sealed class WorkbenchCommandsTests : IClassFixture<TestDirectoryFixture>
 
     public WorkbenchCommandsTests(TestDirectoryFixture fixture) => _fixture = fixture;
 
+    [Fact(DisplayName = "Workbench: inspection does not create missing directories")]
+    public void Inspector_MissingDirectory_IsNotCreated()
+    {
+        string path = Path.Combine(_fixture.Path, "missing-inspection-directory");
+        Assert.Throws<ArgumentException>(() => new IndexInspector(path));
+        Assert.False(Directory.Exists(path));
+    }
+
+    [Fact(DisplayName = "Workbench: physical inspection reports file count and bytes")]
+    public void Inspector_PhysicalStatistics_MatchDirectoryFiles()
+    {
+        string path = CreateSimpleIndex("inspection-statistics");
+        using var inspector = new IndexInspector(path);
+        var files = Directory.EnumerateFiles(path).Select(static file => new FileInfo(file)).ToArray();
+        Assert.Equal(files.Length, inspector.Overview.FileCount);
+        Assert.Equal(files.Sum(static file => file.Length), inspector.Overview.TotalSizeBytes);
+    }
+
     [Theory(DisplayName = "Workbench: invalid browser input returns to the menu")]
     [InlineData(4, "-1")]
     [InlineData(5, "(")]

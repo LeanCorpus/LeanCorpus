@@ -41,3 +41,29 @@ function Write-TestProgressEvent {
             -Name $Name -Data $Data
     }
 }
+
+function New-TestProgressCallback {
+    param(
+        [Parameter(Mandatory = $true)][object]$Context,
+        [Parameter(Mandatory = $true)][object]$Target,
+        [int]$Iteration,
+        [int]$ExecutionNumber,
+        [int]$ExecutionCount
+    )
+
+    # GetNewClosure creates a dynamic module. Keep the event writer bound to
+    # its owning module so its private helpers remain available to the callback.
+    $eventWriter = Get-Command Write-TestProgressEvent -CommandType Function
+    return {
+        param($process, $elapsed)
+        $elapsedText = ([TimeSpan]$elapsed).ToString('hh\:mm\:ss')
+        & $eventWriter -Context $Context -Name 'TargetProgress' -Data @{
+            target = $Target.Key
+            iteration = $Iteration
+            execution = $ExecutionNumber
+            elapsed = $elapsedText
+            elapsedMs = ([TimeSpan]$elapsed).TotalMilliseconds
+        }
+        Write-Host "  [$ExecutionNumber/$ExecutionCount] $($Target.Key) still running ($elapsedText elapsed)..." -ForegroundColor DarkGray
+    }.GetNewClosure()
+}

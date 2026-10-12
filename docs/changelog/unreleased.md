@@ -87,6 +87,11 @@
 
 ## Fixed
 
+- Preserve DevOps progress callback module scope so long-running tests finish with or without UI telemetry; exercise the callback in Linux and Windows CI.
+- Stop platform smoke validation at the first failed command so later successes cannot mask failures.
+- Wake the ordered async writer consumer directly during admission and shutdown, retain writer resources after a consumer timeout, and replay the Windows lifecycle failure seed.
+- Keep workbench physical file inspection inside Store and declare the intentional inspection and standalone Slovak analysis API additions against the existing package baselines.
+
 - Fix DevOps workbench callbacks, literal and blank output rendering, profile discovery and timeout units; add visible DevOps and CLI identities, group test flags on one screen and make execution confirmations opt in.
 - Release the CLI compact writer before verifying logical equivalence so successful compaction returns success.
 - Keep the CLI browser open after invalid document identifiers or search syntax and display the error in a panel.

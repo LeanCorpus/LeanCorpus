@@ -28,9 +28,7 @@ public sealed class IndexInspector : IDisposable
     public IndexInspector(string directoryPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
-        string fullPath = Path.GetFullPath(directoryPath);
-        if (!Directory.Exists(fullPath))
-            throw new ArgumentException($"Index path '{fullPath}' does not exist.", nameof(directoryPath));
+        string fullPath = MMapDirectory.ResolveExistingDirectory(directoryPath);
 
         _directory = new MMapDirectory(fullPath);
         try
@@ -65,9 +63,7 @@ public sealed class IndexInspector : IDisposable
         get
         {
             ThrowIfDisposed();
-            FileInfo[] files = Directory.EnumerateFiles(_directory.DirectoryPath, "*", SearchOption.TopDirectoryOnly)
-                .Select(static path => new FileInfo(path))
-                .ToArray();
+            var files = _directory.GetPhysicalFileStatistics();
             bool HasDocValues(bool ordinalOnly)
                 => _readers.Any(reader => reader.Info.FieldNames.Any(fieldName => ordinalOnly
                     ? reader.HasSortedDocValues(fieldName) || reader.HasSortedSetDocValues(fieldName)
@@ -83,8 +79,8 @@ public sealed class IndexInspector : IDisposable
                 _infos.Sum(static info => info.DocCount),
                 _infos.Sum(static info => info.LiveDocCount),
                 _infos.Length,
-                files.Length,
-                files.Sum(static file => file.Length),
+                files.Count,
+                files.Bytes,
                 _infos.Any(static info => info.VectorFields.Count > 0),
                 _infos.Any(static info => info.VectorFields.Any(static vectorInfo => vectorInfo.HasHnsw)),
                 HasDocValues(ordinalOnly: true),

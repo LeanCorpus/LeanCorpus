@@ -57,6 +57,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh ./scripts/devops/validation/runtime-identifier-smoke.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pwsh ./scripts/devops/validation/test-progress-smoke.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           pwsh ./scripts/devops/validation/affected-selection-smoke.ps1
       - name: Test deterministic suites
         shell: pwsh
@@ -124,7 +126,10 @@ jobs:
         shell: pwsh
         env:
           CHAOS_ITERATIONS: 25
-        run: ./devops.ps1 test all --ci --HangTimeout 100s
+        run: |
+          pwsh ./scripts/devops/validation/test-progress-smoke.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./devops.ps1 test all --ci --HangTimeout 100s
       - name: Upload test run artefacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -210,8 +215,11 @@ jobs:
         shell: pwsh
         run: |
           ./devops.ps1 test architecture --framework net10.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./devops.ps1 test core --framework net10.0 --Filter 'Scope=PlatformSmoke' --HangTimeout 100s
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./devops.ps1 aot --ci --framework net10.0 --RuntimeIdentifier '${{ matrix.rid }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload test run artefacts
         if: always()
         uses: actions/upload-artifact@v7

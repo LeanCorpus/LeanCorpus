@@ -47,6 +47,28 @@ public class IndexSmokeTests : IClassFixture<IndexSmokeFixture>
         _fixture = fixture;
     }
 
+    [Fact]
+    public async Task AsyncWriter_ShutdownAndReopen_PreservesCommittedDocuments()
+    {
+        string path = Path.Combine(_fixture.RootPath, "async-shutdown");
+        using var directory = new MMapDirectory(path);
+        for (int i = 0; i < 10; i++)
+        {
+            using var writer = new IndexWriter(directory,
+                new IndexWriterConfig { MaxQueuedDocs = 1, MaxBufferedDocs = 2, DurableCommits = false });
+            var document = new LeanDocument();
+            document.Add(new StringField("id", i.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+            document.Add(new TextField("body", "async shutdown"));
+            await writer.AddDocumentAsync(document, TestContext.Current.CancellationToken);
+            writer.Commit();
+            writer.Dispose();
+            Assert.False(File.Exists(Path.Combine(path, "write.lock")));
+        }
+        using var searcher = new IndexSearcher(directory);
+        Assert.Equal(10, searcher.Search(new TermQuery("body", "async"), 10,
+            TestContext.Current.CancellationToken).TotalHits);
+    }
+
     [Theory]
     [InlineData(FieldCompressionPolicy.None)]
     [InlineData(FieldCompressionPolicy.Deflate)]

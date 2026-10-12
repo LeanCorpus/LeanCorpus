@@ -67,6 +67,21 @@ An indexing call does not imply a commit. On exception:
 
 Do not blindly retry a batch unless the source operation is idempotent or documents have stable update keys.
 
+## Writer shutdown
+
+`Dispose()` closes admission, completes the command channel, drains admitted
+operations and joins the ordered consumer before releasing writer resources.
+The dedicated consumer uses a direct wake signal when commands arrive or the
+channel closes, so waking an idle consumer does not require a ThreadPool
+continuation. Async producer backpressure remains channel-based.
+
+The operation drain and consumer join each retain their 30-second deadline.
+If either times out, the writer remains Closing, rejects new writes and keeps
+its exclusive write lock and synchronisation resources. After the blocked work
+exits, a later `Dispose()` can complete teardown. Timeout messages include active
+operation count, queued command count and consumer state; consumer-join failures
+also report whether the channel has completed.
+
 ## Parallel producers
 
 Multiple producers may call the writer, but increasing caller parallelism beyond flush and storage capacity only increases queue pressure. Start with a small number of producers and observe `MaxQueuedDocs`, `MaxQueuedBytes`, flush latency, and pending merge bytes.

@@ -302,6 +302,63 @@ public sealed class IndexWriterDisposeTests : IClassFixture<TestDirectoryFixture
         return doc;
     }
 
+    [Fact(DisplayName = "Dispose: idle async consumer exits during repeated reopen", Timeout = 30_000)]
+    public async Task Dispose_IdleAsyncConsumer_RepeatedReopen()
+    {
+        string path = SubDir("dispose_idle_async_reopen");
+        for (int i = 0; i < 10; i++)
+        {
+            using var directory = new MMapDirectory(path);
+            using var writer = new IndexWriter(directory,
+                new IndexWriterConfig { DurableCommits = false, MaxBufferedDocs = 3 },
+                TimeSpan.FromSeconds(2));
+            await writer.AddDocumentAsync(CreateDocument($"idle-{i}"), TestContext.Current.CancellationToken);
+            writer.Commit();
+            writer.Dispose();
+            Assert.False(File.Exists(Path.Combine(path, "write.lock")));
+        }
+    }
+
+    [Fact(DisplayName = "Dispose: consumer timeout retains resources until retry", Timeout = 30_000)]
+    public async Task Dispose_ConsumerTimeout_RetainsWriteLockUntilRetry()
+    {
+        string path = SubDir("dispose_consumer_timeout");
+        using var directory = new MMapDirectory(path);
+        using var atExit = new ManualResetEventSlim();
+        using var releaseExit = new ManualResetEventSlim();
+        var writer = new IndexWriter(directory,
+            new IndexWriterConfig { DurableCommits = false }, TimeSpan.FromMilliseconds(100),
+            beforeAsyncConsumerExit: () =>
+            {
+                atExit.Set();
+                releaseExit.Wait();
+            });
+        try
+        {
+            await writer.AddDocumentAsync(CreateDocument("timeout"), TestContext.Current.CancellationToken);
+            var failure = Assert.Throws<TimeoutException>(writer.Dispose);
+            Assert.True(atExit.Wait(TimeSpan.FromSeconds(5)), "Consumer did not reach the exit barrier.");
+            Assert.Contains("activeOperations=0", failure.Message, StringComparison.Ordinal);
+            Assert.Contains("queuedCommands=0", failure.Message, StringComparison.Ordinal);
+            Assert.Contains("channelCompleted=True", failure.Message, StringComparison.Ordinal);
+            Assert.True(writer.IsClosing);
+            Assert.NotNull(writer.BackpressureSemaphoreForTests);
+            Assert.Throws<WriteLockException>(() => new IndexWriter(directory, new IndexWriterConfig()));
+            Assert.Throws<ObjectDisposedException>(() => writer.AddDocument(CreateDocument("rejected")));
+
+            releaseExit.Set();
+            writer.Dispose();
+            writer.Dispose();
+            Assert.False(File.Exists(Path.Combine(path, "write.lock")));
+            using var reopened = new IndexWriter(directory, new IndexWriterConfig { DurableCommits = false });
+        }
+        finally
+        {
+            releaseExit.Set();
+            writer.Dispose();
+        }
+    }
+
     /// <summary>
     /// Verifies the Dispose: Is Idempotent Never Throws scenario.
     /// </summary>

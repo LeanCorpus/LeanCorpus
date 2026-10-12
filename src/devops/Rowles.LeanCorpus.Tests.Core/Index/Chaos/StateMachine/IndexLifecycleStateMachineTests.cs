@@ -20,6 +20,20 @@ public sealed class IndexLifecycleStateMachineTests
     public Property Lifecycle_operations_match_the_model() =>
         FsCheckStateMachine.ToProperty(new IndexLifecycleMachine());
 
+    [Property(
+        DisplayName = "Index lifecycle replays the Windows async shutdown seed",
+        Replay = "14854304604442296793,3998140771831394483",
+        MaxTest = 30, StartSize = 1, EndSize = 30, Parallelism = 1)]
+    public Property Lifecycle_windows_shutdown_seed_matches_the_model() =>
+        FsCheckStateMachine.ToProperty(new IndexLifecycleMachine());
+
+    [Property(
+        DisplayName = "Index lifecycle replays the Windows async shutdown trace",
+        Replay = "8975672135200172821,11911021477277951487,6",
+        MaxTest = 1, StartSize = 1, EndSize = 30, Parallelism = 1)]
+    public Property Lifecycle_windows_shutdown_trace_matches_the_model() =>
+        FsCheckStateMachine.ToProperty(new IndexLifecycleMachine());
+
     [Fact(DisplayName = "Index lifecycle operations preserve commit visibility")]
     public void Lifecycle_operations_preserve_commit_visibility()
     {

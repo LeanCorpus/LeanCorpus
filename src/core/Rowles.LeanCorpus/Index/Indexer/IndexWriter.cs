@@ -76,6 +76,8 @@ public sealed partial class IndexWriter : IDisposable
     private readonly Lock _asyncWriteLock = new();
     private Channel<AsyncWriteCommand>? _asyncWriteChannel;
     private Task? _asyncWriteConsumer;
+    private AutoResetEvent? _asyncWriteAvailable;
+    private readonly Action? _beforeAsyncConsumerExit;
     private int _queuedAsyncWrites;
 
     private readonly Lock _writeLock = new();
@@ -100,7 +102,8 @@ public sealed partial class IndexWriter : IDisposable
     {
     }
 
-    internal IndexWriter(MMapDirectory directory, IndexWriterConfig config, TimeSpan disposeTimeout)
+    internal IndexWriter(MMapDirectory directory, IndexWriterConfig config, TimeSpan disposeTimeout,
+        Action? beforeAsyncConsumerExit = null)
     {
         ArgumentNullException.ThrowIfNull(directory);
         ArgumentNullException.ThrowIfNull(config);
@@ -114,6 +117,7 @@ public sealed partial class IndexWriter : IDisposable
             ? Math.Max(1, Environment.ProcessorCount)
             : config.IndexingConcurrency;
         _disposeTimeout = disposeTimeout;
+        _beforeAsyncConsumerExit = beforeAsyncConsumerExit;
         _shutdownToken = _shutdownCts.Token;
         _flushCoordinator = new FlushCoordinator(this);
 
@@ -588,8 +592,9 @@ public sealed partial class IndexWriter : IDisposable
             // A timed-out drain leaves every owned synchronisation primitive intact.
             // Live operations can therefore unwind safely after Dispose reports failure.
             DrainIndexingOperations(_disposeTimeout);
-
-            Exception? failure = null;
+            // An idle consumer still owns the channel and its wake handle. A
+            // failed join must leave Closing retryable and retain the write lock.
+            Exception? failure = WaitForAsyncWriteConsumer();
             try
             {
                 // Drain any pending detached flushes and publish their segments.
@@ -598,7 +603,7 @@ public sealed partial class IndexWriter : IDisposable
             }
             catch (Exception ex)
             {
-                failure = ex;
+                failure ??= ex;
             }
             finally
             {
@@ -636,7 +641,7 @@ public sealed partial class IndexWriter : IDisposable
         catch (TaskSchedulerException) { /* Task was rejected by scheduler during shutdown */ }
         CaptureDisposeFailure(ref failure, _mergeCts.Dispose, "dispose-merge-cancellation");
 
-        CaptureDisposeFailure(ref failure, WaitForAsyncWriteConsumer, "dispose-async-write-consumer");
+        CaptureDisposeFailure(ref failure, () => _asyncWriteAvailable?.Dispose(), "dispose-async-write-wake");
 
         CaptureDisposeFailure(ref failure, () => DwptManager.DisposeDwptPool(this), "dispose-dwpt-pool");
 
@@ -649,18 +654,36 @@ public sealed partial class IndexWriter : IDisposable
         catch (Exception ex) { Diagnostics.LeanCorpusActivitySource.TraceSwallowed(ex, "write-lock file delete"); }
     }
 
-    private void WaitForAsyncWriteConsumer()
+    private Exception? WaitForAsyncWriteConsumer()
     {
         Task? consumer;
         lock (_asyncWriteLock)
             consumer = _asyncWriteConsumer;
 
-        if (consumer is not null && !consumer.Wait(_disposeTimeout, CancellationToken.None))
+        if (consumer is null)
+            return null;
+
+        bool stopped;
+        try
+        {
+            stopped = consumer.Wait(_disposeTimeout, CancellationToken.None);
+        }
+        catch (AggregateException ex) when (consumer.IsCompleted)
+        {
+            // The consumer has relinquished its resources even when faulted.
+            // Shutdown must still release the writer's exclusive file lock.
+            return ex;
+        }
+        if (!stopped)
         {
             throw new TimeoutException(
                 $"IndexWriter.Dispose timed out after {_disposeTimeout.TotalSeconds:0.###} seconds " +
-                "waiting for the asynchronous write consumer to stop.");
+                "waiting for the asynchronous write consumer to stop; " +
+                $"state=Closing, activeOperations={_indexingOperations.ActiveCount}, " +
+                $"queuedCommands={GetQueuedAsyncWriteCount()}, consumer={GetAsyncConsumerState()}, " +
+                $"channelCompleted={_asyncWriteChannel?.Reader.Completion.IsCompleted}.");
         }
+        return null;
     }
 
     private static void CaptureDisposeFailure(ref Exception? failure, Action action, string operation)
@@ -923,6 +946,7 @@ public sealed partial class IndexWriter : IDisposable
                 SingleWriter = false, SingleReader = true, FullMode = BoundedChannelFullMode.Wait
             });
             _asyncWriteChannel = channel;
+            _asyncWriteAvailable = new AutoResetEvent(false);
             _asyncWriteConsumer = Task.Factory.StartNew(
                 RunAsyncWriteLoop,
                 CancellationToken.None,
@@ -935,7 +959,10 @@ public sealed partial class IndexWriter : IDisposable
     private void CompleteAsyncWrites()
     {
         lock (_asyncWriteLock)
+        {
             _asyncWriteChannel?.Writer.TryComplete();
+            _asyncWriteAvailable?.Set();
+        }
     }
 
     private async ValueTask EnqueueAsyncWrite(AsyncWriteCommand command, CancellationToken cancellationToken)
@@ -944,6 +971,7 @@ public sealed partial class IndexWriter : IDisposable
         {
             await EnsureAsyncWriteChannel().Writer.WriteAsync(command, cancellationToken).ConfigureAwait(false);
             Interlocked.Increment(ref _queuedAsyncWrites);
+            _asyncWriteAvailable!.Set();
         }
         catch (ChannelClosedException) when (IsClosing)
         {
@@ -958,7 +986,10 @@ public sealed partial class IndexWriter : IDisposable
             channel = _asyncWriteChannel ?? throw new InvalidOperationException("Async write channel was not initialised.");
 
         var reader = channel.Reader;
-        while (reader.WaitToReadAsync(CancellationToken.None).AsTask().GetAwaiter().GetResult())
+        // This dedicated thread must be able to wake without a ThreadPool
+        // continuation completing a ValueTask-to-Task bridge. Producers retain
+        // asynchronous bounded-channel admission and command completion.
+        while (true)
         {
             while (reader.TryRead(out var cmd))
             {
@@ -978,7 +1009,11 @@ public sealed partial class IndexWriter : IDisposable
                     cmd.Tcs.TrySetException(ex);
                 }
             }
+            if (reader.Completion.IsCompleted)
+                break;
+            _asyncWriteAvailable!.WaitOne();
         }
+        _beforeAsyncConsumerExit?.Invoke();
     }
 
     private int GetQueuedAsyncWriteCount() => Math.Max(0, Volatile.Read(ref _queuedAsyncWrites));

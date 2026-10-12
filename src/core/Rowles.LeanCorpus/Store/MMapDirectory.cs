@@ -96,6 +96,31 @@ public sealed class MMapDirectory : LeanDirectory, IDisposable
             .ToArray()!;
     }
 
+    /// <summary>Resolves an existing index path without creating a directory.</summary>
+    internal static string ResolveExistingDirectory(string directoryPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
+        string fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directoryPath));
+        if (!Directory.Exists(fullPath))
+            throw new ArgumentException($"Index path '{fullPath}' does not exist.", nameof(directoryPath));
+        return fullPath;
+    }
+
+    /// <summary>Gets physical file count and bytes under the directory operation lifetime.</summary>
+    internal (int Count, long Bytes) GetPhysicalFileStatistics()
+    {
+        using var operation = _operations.Enter(this);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        int count = 0;
+        long bytes = 0;
+        foreach (string path in Directory.EnumerateFiles(DirectoryPath, "*", SearchOption.TopDirectoryOnly))
+        {
+            count++;
+            bytes = checked(bytes + new FileInfo(path).Length);
+        }
+        return (count, bytes);
+    }
+
     /// <summary>
     /// Disposes this directory. Disposal waits for active reader and retained input
     /// operations, then closes every tracked <see cref="IndexInput"/>.

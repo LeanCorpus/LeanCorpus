@@ -249,18 +249,8 @@ function Invoke-TestTarget {
         throw "Unsupported runner kind '$($target.RunnerKind)' for target '$($target.Key)'."
     }
 
-    $progressCallback = {
-        param($process, $elapsed)
-        $elapsedText = ([TimeSpan]$elapsed).ToString('hh\:mm\:ss')
-        Write-TestProgressEvent -Context $Context -Name 'TargetProgress' -Data @{
-            target = $target.Key
-            iteration = $Iteration
-            execution = $ExecutionNumber
-            elapsed = $elapsedText
-            elapsedMs = ([TimeSpan]$elapsed).TotalMilliseconds
-        }
-        Write-Host "  [$ExecutionNumber/$ExecutionCount] $($target.Key) still running ($elapsedText elapsed)..." -ForegroundColor DarkGray
-    }.GetNewClosure()
+    $progressCallback = New-TestProgressCallback -Context $Context -Target $target `
+        -Iteration $Iteration -ExecutionNumber $ExecutionNumber -ExecutionCount $ExecutionCount
 
     $env:LEANCORPUS_TELEMETRY = Get-TestTelemetryMode -Options $Context.Options
     if ($Context.ArtifactsEnabled) {
