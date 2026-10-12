@@ -1,6 +1,59 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Write-DevOpsUiMarkup {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text)
+    if ($Text.Length -eq 0) { Write-Host ''; return }
+    Write-SpectreHost $Text | Out-Host
+}
+
+function ConvertTo-DevOpsUiLiteralText {
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    return [Spectre.Console.Markup]::Escape([string]$Text)
+}
+
+function ConvertTo-DevOpsUiTimeout {
+    param([string]$Value)
+    $value = $Value.Trim().ToLowerInvariant()
+    if ($value -eq 'off') { return 'off' }
+    if ($value -match '^\d+(?:\.\d+)?$') { $value += 's' }
+    $duration = ConvertTo-ProcessTimeout -Value $value
+    if ($duration -le [TimeSpan]::Zero) { throw 'Use a positive timeout, or off to disable it.' }
+    return $value
+}
+
+function Read-DevOpsUiTimeout {
+    param([string]$Message, [string]$DefaultAnswer)
+    while ($true) {
+        $value = Read-DevOpsUiText -Message "$Message (seconds, e.g. 120s or 2m; off disables)" -DefaultAnswer $DefaultAnswer
+        try { return ConvertTo-DevOpsUiTimeout $value }
+        catch { Write-DevOpsUiMarkup '[yellow]Enter positive seconds, a duration such as 120s or 2m, or off.[/]' }
+    }
+}
+
+function Get-DevOpsUiPromptTitle {
+    param([string]$Message)
+    return "[bold cyan]LeanCorpus DevOps[/] [grey]| Workbench[/]`n$(ConvertTo-DevOpsUiLiteralText $Message)"
+}
+
+function Read-DevOpsUiSelection {
+    param([string]$Message, [object[]]$Choices, [string]$ChoiceLabelProperty = '', [int]$PageSize = 12, [switch]$EnableSearch)
+    $parameters = @{ Message = (Get-DevOpsUiPromptTitle $Message); Choices = $Choices; PageSize = $PageSize; EnableSearch = $EnableSearch }
+    if ($ChoiceLabelProperty) { $parameters.ChoiceLabelProperty = $ChoiceLabelProperty }
+    return Read-SpectreSelection @parameters
+}
+
+function Read-DevOpsUiGroupedSelection {
+    param([string]$Message, [object[]]$Choices, [string]$ChoiceLabelProperty = '', [int]$PageSize = 12)
+    return @(Read-SpectreMultiSelectionGrouped -Message (Get-DevOpsUiPromptTitle $Message) -Choices $Choices -ChoiceLabelProperty $ChoiceLabelProperty -PageSize $PageSize -AllowEmpty)
+}
+
+function Show-DevOpsUiHeader {
+    param([string]$Page = 'Choose a workflow', [string]$Description = 'Build, validate and inspect your repository.')
+    $text = "[bold white]$(ConvertTo-DevOpsUiLiteralText $Page)[/]`n[grey]$(ConvertTo-DevOpsUiLiteralText $Description)[/]"
+    Format-SpectrePanel -Data $text -Header '[bold cyan]LeanCorpus DevOps[/]' -Border Rounded | Out-SpectreHost | Out-Host
+}
+
 function Get-DevOpsUiShellPath {
     $command = Get-Command pwsh -ErrorAction Stop
     return $command.Source
@@ -16,8 +69,7 @@ function Show-DevOpsUiCommandPreview {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $command = New-DevOpsUiCommandPreview -Arguments $Arguments
-    Write-SpectreRule -Title 'Command preview' | Out-SpectreHost
-    Write-SpectreHost (Get-SpectreEscapedText $command)
+    Format-SpectrePanel -Data (ConvertTo-DevOpsUiLiteralText $command) -Header '[bold cyan]Review command[/]' -Border Rounded | Out-SpectreHost | Out-Host
     Write-Host ''
     return $command
 }
@@ -30,14 +82,14 @@ function Read-DevOpsUiText {
     )
 
     if ($AllowEmpty) {
-        return [string](Read-SpectreText -Message $Message -DefaultAnswer $DefaultAnswer -AllowEmpty)
+        return [string](Read-SpectreText -Message (Get-DevOpsUiPromptTitle $Message) -DefaultAnswer $DefaultAnswer -AllowEmpty)
     }
-    return [string](Read-SpectreText -Message $Message -DefaultAnswer $DefaultAnswer)
+    return [string](Read-SpectreText -Message (Get-DevOpsUiPromptTitle $Message) -DefaultAnswer $DefaultAnswer)
 }
 
 function Read-DevOpsUiSwitch {
     param([Parameter(Mandatory = $true)][string]$Message)
-    return [bool](Read-SpectreConfirm -Message $Message)
+    return [bool](Read-SpectreConfirm -Message (Get-DevOpsUiPromptTitle $Message) -DefaultAnswer n)
 }
 
 function ConvertFrom-DevOpsUiArgumentText {
@@ -90,7 +142,7 @@ function Read-DevOpsUiMultiSelection {
     )
 
     if ($Choices.Count -eq 0) { return @() }
-    return @(Read-SpectreMultiSelection -Message $Message -Choices $Choices -PageSize $PageSize -AllowEmpty)
+    return @(Read-SpectreMultiSelection -Message (Get-DevOpsUiPromptTitle $Message) -Choices $Choices -PageSize $PageSize -AllowEmpty)
 }
 
 function ConvertTo-DevOpsUiDisplayArguments {
@@ -175,12 +227,12 @@ function Invoke-DevOpsUiProcess {
                     $eventLineCount++
                     try {
                         $event = ConvertFrom-Json -InputObject $eventLine -Depth 32 -ErrorAction Stop
-                        if ($null -ne $OnTick) { & $OnTick -Event $event }
                     } catch {
                         # A writer may still be appending the final event line.
                         $eventLineCount--
                         break
                     }
+                    if ($null -ne $OnTick) { & $OnTick -Event $event }
                 }
             }
             if ($null -ne $OnTick) { & $OnTick -Event $null }
@@ -211,17 +263,17 @@ function Write-DevOpsUiProcessResult {
     $lines = @($Result.StdOut) + @($Result.StdErr)
     if ($lines.Count -gt 0) {
         Write-Host ''
-        Write-SpectreRule -Title 'Recent command output' | Out-SpectreHost
+        Write-SpectreRule -PassThru -Title 'Recent command output' | Out-SpectreHost | Out-Host
         foreach ($line in @($lines | Select-Object -Last $TailLines)) {
-            Write-SpectreHost (Get-SpectreEscapedText ([string]$line))
+            Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText ([string]$line))
         }
     }
     if ([int]$Result.ExitCode -eq 0) {
-        Write-SpectreHost '[green]DevOps command completed successfully.[/]'
+        Write-DevOpsUiMarkup '[green]DevOps command completed successfully.[/]'
     } elseif ([int]$Result.ExitCode -eq 130) {
-        Write-SpectreHost '[yellow]DevOps command was cancelled (130).[/]'
+        Write-DevOpsUiMarkup '[yellow]DevOps command was cancelled (130).[/]'
     } else {
-        Write-SpectreHost "[red]DevOps command failed with exit code $($Result.ExitCode).[/]"
+        Write-DevOpsUiMarkup "[red]DevOps command failed with exit code $($Result.ExitCode).[/]"
     }
 }
 
@@ -235,15 +287,16 @@ function Invoke-DevOpsUiCommand {
 
     if (-not $Confirmed) {
         $preview = Show-DevOpsUiCommandPreview -Arguments $Arguments
-        if (-not (Read-SpectreConfirm -Message "Execute: $preview ?")) { return 130 }
-        if ($Destructive -and -not (Read-SpectreConfirm -Message 'This action removes or overwrites data. Confirm explicitly to continue.')) {
+        if (-not (Read-DevOpsUiSwitch -Message "Execute: $preview ?")) { return 130 }
+        if ($Destructive -and -not (Read-DevOpsUiSwitch -Message 'This action removes or overwrites data. Confirm explicitly to continue.')) {
             return 130
         }
     } elseif ($Destructive) {
-        if (-not (Read-SpectreConfirm -Message 'This action removes or overwrites data. Confirm explicitly to continue.')) { return 130 }
+        if (-not (Read-DevOpsUiSwitch -Message 'This action removes or overwrites data. Confirm explicitly to continue.')) { return 130 }
     }
 
-    $action = { Invoke-DevOpsUiProcess -Arguments $Arguments }.GetNewClosure()
+    $processInvoker = Get-Command Invoke-DevOpsUiProcess
+    $action = { & $processInvoker -Arguments $Arguments }.GetNewClosure()
     $result = Invoke-SpectreCommandWithStatus -Title $Title -ScriptBlock $action
     Write-DevOpsUiProcessResult -Result $result
     return [int]$result.ExitCode
@@ -256,8 +309,9 @@ function Invoke-DevOpsUiCaptureCommand {
     )
 
     $preview = Show-DevOpsUiCommandPreview -Arguments $Arguments
-    if (-not (Read-SpectreConfirm -Message "Execute: $preview ?")) { return $null }
-    $action = { Invoke-DevOpsUiProcess -Arguments $Arguments }.GetNewClosure()
+    if (-not (Read-DevOpsUiSwitch -Message "Execute: $preview ?")) { return $null }
+    $processInvoker = Get-Command Invoke-DevOpsUiProcess
+    $action = { & $processInvoker -Arguments $Arguments }.GetNewClosure()
     return Invoke-SpectreCommandWithStatus -Title $Title -ScriptBlock $action
 }
 
@@ -326,6 +380,6 @@ function Get-DevOpsUiProjectFrameworkChoices {
 function Show-DevOpsUiSummaryTable {
     param([Parameter(Mandatory = $true)][object[]]$Rows)
     if ($Rows.Count -gt 0) {
-        Format-SpectreTable -Data $Rows | Out-SpectreHost
+        Format-SpectreTable -Data $Rows | Out-SpectreHost | Out-Host
     }
 }

@@ -42,6 +42,15 @@ leancorpus-cli document get ./index 12 --json
 
 `browse` opens a prompt-driven explorer only when stdin and stdout are interactive. With redirected streams it prints an index overview and exits.
 
+The browser displays **LeanCorpus CLI Workbench** with the index path, live document count and segment count. Invalid queries or document selections show an error panel and return to the view menu.
+
+From a repository checkout, build and start it with:
+
+```bash
+./devops build -Project src/devops/Rowles.LeanCorpus.Cli/Rowles.LeanCorpus.Cli.csproj -Framework net10.0
+./artifacts/bin/Rowles.LeanCorpus.Cli/release_net10.0/leancorpus-cli browse /path/to/index
+```
+
 ## Search and inspection
 
 ```bash

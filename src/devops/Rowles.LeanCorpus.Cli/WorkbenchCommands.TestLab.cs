@@ -256,10 +256,12 @@ internal static partial class WorkbenchCommands
         if (segmentCount < 1)
             throw new ArgumentOutOfRangeException(nameof(segmentCount), "Target segment count must be positive.");
         CopyDirectory(source, destination);
-        using var directory = new MMapDirectory(destination);
-        using var writer = new IndexWriter(directory, new IndexWriterConfig());
-        writer.ForceMerge(segmentCount);
-        writer.Commit();
+        using (var directory = new MMapDirectory(destination))
+        using (var writer = new IndexWriter(directory, new IndexWriterConfig()))
+        {
+            writer.ForceMerge(segmentCount);
+            writer.Commit();
+        }
         IndexDiffResult diff = IndexFingerprinter.Diff(source, destination, logicalOnly: true);
         output.WriteLine($"Compacted index into {destination}; logical equivalence: {diff.LogicalEquivalent}.");
         return diff.LogicalEquivalent ? CliExitCodes.Success : CliExitCodes.ValidationErrors;

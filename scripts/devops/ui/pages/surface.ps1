@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 function Invoke-DevOpsUiBuildMenu {
     while ($true) {
-        $item = [string](Read-SpectreSelection -Message 'Build and distribution' -Choices @('Build', 'Pack NuGet packages', 'Documentation', 'Back') -EnableSearch)
+        $item = [string](Read-DevOpsUiSelection -Message 'Build and distribution' -Choices @('Build', 'Pack NuGet packages', 'Documentation', 'Back') -EnableSearch)
         switch ($item) {
             'Build' { Invoke-DevOpsUiBuild }
             'Pack NuGet packages' { Invoke-DevOpsUiPack }
@@ -14,21 +14,21 @@ function Invoke-DevOpsUiBuildMenu {
 }
 
 function Invoke-DevOpsUiBuild {
-    $target = [string](Read-SpectreSelection -Message 'Build target' -Choices @('Complete solution', 'Select a project') -EnableSearch)
+    $target = [string](Read-DevOpsUiSelection -Message 'Build target' -Choices @('Complete solution', 'Select a project') -EnableSearch)
     $arguments = [System.Collections.Generic.List[string]]::new()
     [void]$arguments.Add('build')
-    $configuration = [string](Read-SpectreSelection -Message 'Build configuration' -Choices @('Release', 'Debug'))
+    $configuration = [string](Read-DevOpsUiSelection -Message 'Build configuration' -Choices @('Release', 'Debug'))
     [void]$arguments.Add('-Configuration'); [void]$arguments.Add($configuration)
     if ($target -eq 'Select a project') {
         $repoRoot = Get-RepoRoot
         $projects = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src') -Filter '*.csproj' -File -Recurse |
             ForEach-Object { [IO.Path]::GetRelativePath($repoRoot, $_.FullName).Replace('\', '/') } | Sort-Object)
-        $project = [string](Read-SpectreSelection -Message 'Project path' -Choices $projects -EnableSearch -PageSize 16)
+        $project = [string](Read-DevOpsUiSelection -Message 'Project path' -Choices $projects -EnableSearch -PageSize 16)
         if (-not $project) { return }
         $frameworks = @(Get-DevOpsUiProjectFrameworkChoices -ProjectPath $project)
         [void]$arguments.Add('-Project'); [void]$arguments.Add($project)
         [void]$arguments.Add('-Framework')
-        [void]$arguments.Add([string](Read-SpectreSelection -Message 'Project framework' -Choices $frameworks))
+        [void]$arguments.Add([string](Read-DevOpsUiSelection -Message 'Project framework' -Choices $frameworks))
     }
     $null = Invoke-DevOpsUiCommand -Arguments $arguments.ToArray() -Title 'Building LeanCorpus'
 }
@@ -36,16 +36,16 @@ function Invoke-DevOpsUiBuild {
 function Invoke-DevOpsUiPack {
     $arguments = [System.Collections.Generic.List[string]]::new()
     [void]$arguments.Add('pack')
-    $configuration = [string](Read-SpectreSelection -Message 'Package configuration' -Choices @('Release', 'Debug'))
+    $configuration = [string](Read-DevOpsUiSelection -Message 'Package configuration' -Choices @('Release', 'Debug'))
     [void]$arguments.Add('-Configuration'); [void]$arguments.Add($configuration)
-    $packageSet = [string](Read-SpectreSelection -Message 'Shipping package set' -Choices @('All shipping packages', 'Compression packages only'))
+    $packageSet = [string](Read-DevOpsUiSelection -Message 'Shipping package set' -Choices @('All shipping packages', 'Compression packages only'))
     if ($packageSet -eq 'Compression packages only') { [void]$arguments.Add('-CompressionOnly') }
     $validation = if ($packageSet -eq 'Compression packages only') {
         @('None', 'Validate compression packages')
     } else {
         @('None', 'Validate compression packages', 'Validate every shipping package')
     }
-    $validationChoice = [string](Read-SpectreSelection -Message 'Package validation' -Choices $validation)
+    $validationChoice = [string](Read-DevOpsUiSelection -Message 'Package validation' -Choices $validation)
     if ($validationChoice -eq 'Validate compression packages') { [void]$arguments.Add('-ValidateCompression') }
     if ($validationChoice -eq 'Validate every shipping package') { [void]$arguments.Add('-ValidatePackages') }
     if (Read-DevOpsUiSwitch -Message 'Skip build and pack existing outputs?') {
@@ -57,7 +57,7 @@ function Invoke-DevOpsUiPack {
 }
 
 function Invoke-DevOpsUiDocs {
-    $subcommand = [string](Read-SpectreSelection -Message 'Documentation action' -Choices @('Build site', 'Generate API metadata', 'Serve documentation', 'Publish benchmark result pages') -EnableSearch)
+    $subcommand = [string](Read-DevOpsUiSelection -Message 'Documentation action' -Choices @('Build site', 'Generate API metadata', 'Serve documentation', 'Publish benchmark result pages') -EnableSearch)
     $arguments = switch ($subcommand) {
         'Build site' { @('docs', 'build') }
         'Generate API metadata' { @('docs', 'metadata') }
@@ -72,7 +72,7 @@ function Invoke-DevOpsUiDocs {
 }
 
 function Invoke-DevOpsUiServerMenu {
-    $configuration = [string](Read-SpectreSelection -Message 'Community Server configuration' -Choices @('Debug', 'Release'))
+    $configuration = [string](Read-DevOpsUiSelection -Message 'Community Server configuration' -Choices @('Debug', 'Release'))
     $arguments = @('server', 'start', '-Configuration', $configuration)
     if (Read-DevOpsUiSwitch -Message 'Skip build?') { $arguments += '-NoBuild' }
     if (Read-DevOpsUiSwitch -Message 'Skip restore?') { $arguments += '-NoRestore' }
@@ -84,7 +84,7 @@ function Invoke-DevOpsUiServerMenu {
 
 function Invoke-DevOpsUiMaintenanceMenu {
     while ($true) {
-        $item = [string](Read-SpectreSelection -Message 'Maintenance' -Choices @('Setup and dependency', 'Clean owned artefacts', 'Back') -EnableSearch)
+        $item = [string](Read-DevOpsUiSelection -Message 'Maintenance' -Choices @('Setup and dependency', 'Clean owned artefacts', 'Back') -EnableSearch)
         switch ($item) {
             'Setup and dependency' {
                 if (Read-DevOpsUiSwitch -Message "Install PwshSpectreConsole $(Get-DevOpsUiDependencyVersion) for the interactive UI?") {
@@ -94,7 +94,7 @@ function Invoke-DevOpsUiMaintenanceMenu {
                 }
             }
             'Clean owned artefacts' {
-                $target = [string](Read-SpectreSelection -Message 'Artefact clean target' -Choices @('default', 'build', 'test', 'coverage', 'docs', 'diagnostics', 'benchmark', 'package', 'cache', 'all'))
+                $target = [string](Read-DevOpsUiSelection -Message 'Artefact clean target' -Choices @('default', 'build', 'test', 'coverage', 'docs', 'diagnostics', 'benchmark', 'package', 'cache', 'all'))
                 $null = Invoke-DevOpsUiCommand -Arguments @('clean', $target) -Title "Cleaning $target artefacts" -Destructive
             }
             default { return }

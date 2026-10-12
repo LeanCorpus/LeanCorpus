@@ -30,6 +30,7 @@ function Invoke-DevOpsUi {
 
     try {
         Import-DevOpsUiDependency | Out-Null
+        Set-SpectreColors -AccentColor Cyan1 -DefaultValueColor Grey -DefaultTableHeaderColor Cyan1
         return Invoke-DevOpsUiHome
     } catch {
         $message = $_.Exception.Message
@@ -48,22 +49,22 @@ function Invoke-DevOpsUi {
 
 function Invoke-DevOpsUiHome {
     $choices = @(
-        'Run & Validate',
-        'Observe',
-        'Data',
-        'Build & Distribution',
-        'Server',
-        'Maintenance',
-        'Exit'
+        [pscustomobject]@{ Key = 'Run & Validate'; Label = 'Run & Validate       Tests, coverage, AOT and benchmarks' },
+        [pscustomobject]@{ Key = 'Observe'; Label = 'Observe              Runs, artefacts, diagnostics and repository health' },
+        [pscustomobject]@{ Key = 'Data'; Label = 'Data                 DataForge profiles, datasets and migration fixtures' },
+        [pscustomobject]@{ Key = 'Build & Distribution'; Label = 'Build & Distribution Builds, NuGet packages and documentation' },
+        [pscustomobject]@{ Key = 'Server'; Label = 'Server               Start the Community Server' },
+        [pscustomobject]@{ Key = 'Maintenance'; Label = 'Maintenance          Setup, dependencies and artefact cleanup' },
+        [pscustomobject]@{ Key = 'Exit'; Label = 'Exit                 Return to your shell' }
     )
 
     while ($true) {
-        Write-SpectreRule -Title 'LeanCorpus DevOps' | Out-SpectreHost
-        $category = Read-SpectreSelection -Message 'Choose a workflow' -Choices $choices -PageSize 10
-        if ([string]$category -eq 'Exit' -or $null -eq $category) {
+        Show-DevOpsUiHeader -Description 'Choose a workflow. Use arrow keys to move and Enter to select.'
+        $category = Read-DevOpsUiSelection -Message 'Choose a workflow' -Choices $choices -ChoiceLabelProperty Label -PageSize 10
+        if ($null -eq $category -or $category.Key -eq 'Exit') {
             return 0
         }
-        Invoke-DevOpsUiCategory -Category ([string]$category)
+        Invoke-DevOpsUiCategory -Category ([string]$category.Key)
     }
 }
 

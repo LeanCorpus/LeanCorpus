@@ -21,6 +21,52 @@ public sealed class WorkbenchCommandsTests : IClassFixture<TestDirectoryFixture>
 
     public WorkbenchCommandsTests(TestDirectoryFixture fixture) => _fixture = fixture;
 
+    [Theory(DisplayName = "Workbench: invalid browser input returns to the menu")]
+    [InlineData(4, "-1")]
+    [InlineData(5, "(")]
+    public void Browser_InvalidInputCanReturnToMenuAndExit(int viewIndex, string input)
+    {
+        string source = CreateSimpleIndex($"workbench-browser-invalid-{viewIndex}");
+        var console = new TestConsole().Interactive();
+        for (int i = 0; i < viewIndex; i++)
+            console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        if (viewIndex == 5)
+            console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter(input);
+        for (int i = 0; i < 12; i++)
+            console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        using var inspector = new IndexInspector(source);
+
+        Assert.Equal(CliExitCodes.Success, WorkbenchBrowser.Browse(console, inspector));
+        Assert.Contains("Unable to open this view", console.Output);
+        Assert.Contains("LeanCorpus CLI Workbench", console.Output);
+    }
+
+    [Fact(DisplayName = "Workbench: compaction releases its writer before verifying the result")]
+    public void Compact_MergesCopiedIndexAndPreservesSource()
+    {
+        string source = CreateSimpleIndex("workbench-compact-source");
+        string mutated = Path.Combine(_fixture.Path, "workbench-compact-mutated");
+        string destination = Path.Combine(_fixture.Path, "workbench-compact-result");
+        using var output = new StringWriter();
+        using var error = new StringWriter();
+        Assert.Equal(CliExitCodes.Success, IndexCheckerCli.Run(
+            ["testlab", "mutate", source, mutated, "--mode", "many-small-segments", "--count", "4"], output, error));
+        IndexFingerprintResult before = IndexFingerprinter.Calculate(mutated);
+        Assert.True(before.SegmentCount > 1);
+
+        int exitCode = IndexCheckerCli.Run(["transform", "compact", mutated, destination, "--segments", "1"], output, error);
+
+        Assert.Equal(CliExitCodes.Success, exitCode);
+        Assert.Empty(error.ToString());
+        IndexFingerprintResult after = IndexFingerprinter.Calculate(destination);
+        Assert.Equal(1, after.SegmentCount);
+        Assert.Equal(before.LogicalFingerprint, after.LogicalFingerprint);
+        Assert.Equal(before.PhysicalFingerprint, IndexFingerprinter.Calculate(mutated).PhysicalFingerprint);
+    }
+
     [Fact(DisplayName = "Workbench: redirected analysis is stable plain text")]
     public void Analyse_RedirectedOutputUsesPlainFallback()
     {

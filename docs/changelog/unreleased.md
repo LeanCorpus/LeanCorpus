@@ -87,6 +87,10 @@
 
 ## Fixed
 
+- Fix DevOps workbench callbacks, literal and blank output rendering, profile discovery and timeout units; add visible DevOps and CLI identities, group test flags on one screen and make execution confirmations opt in.
+- Release the CLI compact writer before verifying logical equivalence so successful compaction returns success.
+- Keep the CLI browser open after invalid document identifiers or search syntax and display the error in a panel.
+
 - Release SQLite connections left open by Orchard indexing sessions during isolated test-host shutdown, allowing Windows content-root cleanup to complete.
 - Restore active Packed BKD cancellation coverage after bounds scanning begins, with memory/spill phase diagnostics and verification of live spill artefacts before cleanup.
 

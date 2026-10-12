@@ -25,7 +25,7 @@ function Get-DevOpsUiTestSuiteChoices {
 function Read-DevOpsUiTestOptions {
     param([switch]$ForceAffected)
     $scopeChoices = if ($ForceAffected) { @('Affected source changes', 'Back') } else { @('Manual suites', 'Affected source changes', 'All registered suites', 'Back') }
-    $scope = [string](Read-SpectreSelection -Message 'Test selection scope' -Choices $scopeChoices)
+    $scope = [string](Read-DevOpsUiSelection -Message 'Test selection scope' -Choices $scopeChoices)
     if ($scope -eq 'Back' -or -not $scope) { return $null }
     $suiteKeys = @()
     $commit = ''
@@ -33,14 +33,14 @@ function Read-DevOpsUiTestOptions {
     switch ($scope) {
         'Manual suites' {
             $grouped = Get-DevOpsUiTestSuiteChoices
-            $selected = @(Read-SpectreMultiSelectionGrouped -Message 'Select test suites' -Choices $grouped `
+            $selected = @(Read-DevOpsUiGroupedSelection -Message 'Select test suites' -Choices $grouped `
             -ChoiceLabelProperty 'Label' -PageSize 12)
             $suiteKeys = @($selected | ForEach-Object { if ($_.PSObject.Properties['Key']) { [string]$_.Key } else { [string]$_ } })
             if ($suiteKeys.Count -eq 0) { return $null }
         }
         'Affected source changes' {
             $suiteKeys = @('affected')
-            $sourceMode = [string](Read-SpectreSelection -Message 'Affected change source' -Choices @('Working tree', 'Commit', 'Git range'))
+            $sourceMode = [string](Read-DevOpsUiSelection -Message 'Affected change source' -Choices @('Working tree', 'Commit', 'Git range'))
             if ($sourceMode -eq 'Commit') { $commit = Read-DevOpsUiText -Message 'Commit to inspect' -DefaultAnswer 'HEAD' }
             if ($sourceMode -eq 'Git range') { $range = Read-DevOpsUiText -Message 'Git range, for example HEAD~3..HEAD' -DefaultAnswer 'HEAD~1..HEAD' }
         }
@@ -56,10 +56,10 @@ function Read-DevOpsUiTestOptions {
     } else {
         $frameworks = @(Get-DevOpsUiFrameworkChoices -SuiteKeys $commonSuites)
     }
-    $framework = [string](Read-SpectreSelection -Message 'Target framework' -Choices $frameworks)
+    $framework = [string](Read-DevOpsUiSelection -Message 'Target framework' -Choices $frameworks)
     if (-not $framework) { return $null }
     if ($framework -eq 'Automatic suite defaults') { $framework = '' }
-    $configuration = [string](Read-SpectreSelection -Message 'Build configuration' -Choices @('Release', 'Debug'))
+    $configuration = [string](Read-DevOpsUiSelection -Message 'Build configuration' -Choices @('Release', 'Debug'))
 
     $areaValues = Read-DevOpsUiEnumValues -EnumName TestArea
     $categoryValues = Read-DevOpsUiEnumValues -EnumName TestCategory
@@ -69,17 +69,34 @@ function Read-DevOpsUiTestOptions {
     $techniques = @(Read-DevOpsUiMultiSelection -Message 'Techniques (OR within techniques)' -Choices $techniqueValues)
 
     $runnerFilter = Read-DevOpsUiText -Message 'Additional xUnit filter (optional)' -AllowEmpty
-    $countText = Read-DevOpsUiText -Message 'Sequential run count' -DefaultAnswer '1'
-    $isFlaky = Read-DevOpsUiSwitch -Message 'Use flaky stress preset (defaults to 30 runs)?'
-    if ($isFlaky -and $countText -eq '1') { $countText = '30' }
-    $profile = [string](Read-SpectreSelection -Message 'Parallel execution profile' -Choices @('unit', 'integration', 'stress'))
-    $hangTimeout = Read-DevOpsUiText -Message 'Hang detection timeout' -DefaultAnswer '100s'
-    $processTimeout = Read-DevOpsUiText -Message 'Outer process timeout (use off to disable)' -DefaultAnswer 'off'
-    $verbosity = [string](Read-SpectreSelection -Message 'Runner output verbosity' -Choices @('quiet', 'minimal', 'normal', 'detailed'))
+    $runMode = Read-DevOpsUiSelection -Message 'Repetition mode' -Choices @('Standard run', 'Flaky stress preset (30 runs by default)')
+    $isFlaky = $runMode -like 'Flaky*'
+    do {
+        $countText = Read-DevOpsUiText -Message 'Sequential run count' -DefaultAnswer $(if ($isFlaky) { '30' } else { '1' })
+        $countValue = 0
+        $validCount = [int]::TryParse($countText, [ref]$countValue) -and $countValue -gt 0
+        if (-not $validCount) { Write-DevOpsUiMarkup '[yellow]Enter a positive whole number.[/]' }
+    } until ($validCount)
+    $profile = [string](Read-DevOpsUiSelection -Message 'Parallel execution profile' -Choices @('unit', 'integration', 'stress'))
+    $hangTimeout = Read-DevOpsUiTimeout -Message 'Hang detection timeout' -DefaultAnswer '100s'
+    $processTimeout = Read-DevOpsUiTimeout -Message 'Outer process timeout' -DefaultAnswer 'off'
+    $verbosity = [string](Read-DevOpsUiSelection -Message 'Runner output verbosity' -Choices @('quiet', 'minimal', 'normal', 'detailed'))
     $runtimeIdentifier = ''
     if ($suiteKeys -contains 'aot' -or $suiteKeys -contains 'all') {
         $runtimeIdentifier = Read-DevOpsUiText -Message 'Native AOT runtime identifier (blank auto-detects)' -AllowEmpty
     }
+
+    Show-DevOpsUiHeader -Page 'Test options' -Description 'Space toggles an option. Enter continues. Leave all options clear for a normal run.'
+    $flagChoices = @(
+        [pscustomobject]@{ Key = 'Diagnostics'; Label = 'Diagnostics | Capture traces and runner diagnostics' },
+        [pscustomobject]@{ Key = 'CollectCoverage'; Label = 'CollectCoverage | Collect code coverage' },
+        [pscustomobject]@{ Key = 'FailFast'; Label = 'FailFast | Stop after the first failed target' },
+        [pscustomobject]@{ Key = 'CI'; Label = 'CI | Enable continuous integration output' },
+        [pscustomobject]@{ Key = 'FailWarnings'; Label = 'FailWarnings | Treat runner warnings as failures' },
+        [pscustomobject]@{ Key = 'NoRestore'; Label = 'NoRestore | Use packages already restored' }
+    )
+    $selectedFlags = @(Read-SpectreMultiSelection -Message (Get-DevOpsUiPromptTitle 'Optional test flags') -Choices $flagChoices -ChoiceLabelProperty Label -PageSize 10 -AllowEmpty)
+    $explicitMode = Read-DevOpsUiSelection -Message 'Explicit test policy' -Choices @('Exclude explicit tests', 'Include explicit tests', 'Run only explicit tests')
 
     return [pscustomobject]@{
         Scope = $scope; Suites = $suiteKeys; Commit = $commit; Range = $range
@@ -88,6 +105,7 @@ function Read-DevOpsUiTestOptions {
         Count = $countText; Flaky = $isFlaky; Profile = $profile
         HangTimeout = $hangTimeout; Timeout = $processTimeout; Verbosity = $verbosity
         RuntimeIdentifier = $runtimeIdentifier
+        Flags = @($selectedFlags | ForEach-Object { $_.Key }); ExplicitMode = $explicitMode
     }
 }
 
@@ -106,15 +124,13 @@ function New-DevOpsUiTestArguments {
     if ($Options.Filter) { [void]$arguments.Add('-Filter'); [void]$arguments.Add([string]$Options.Filter) }
     [void]$arguments.Add('-Count'); [void]$arguments.Add([string]$Options.Count)
     [void]$arguments.Add('-Profile'); [void]$arguments.Add([string]$Options.Profile)
-    [void]$arguments.Add('-HangTimeout'); [void]$arguments.Add([string]$Options.HangTimeout)
-    [void]$arguments.Add('-Timeout'); [void]$arguments.Add([string]$Options.Timeout)
+    [void]$arguments.Add('-HangTimeout'); [void]$arguments.Add((ConvertTo-DevOpsUiTimeout ([string]$Options.HangTimeout)))
+    [void]$arguments.Add('-Timeout'); [void]$arguments.Add((ConvertTo-DevOpsUiTimeout ([string]$Options.Timeout)))
     [void]$arguments.Add('-Verbosity'); [void]$arguments.Add([string]$Options.Verbosity)
     if ($Options.Flaky) { [void]$arguments.Add('-Flaky') }
     if ($Options.RuntimeIdentifier) { [void]$arguments.Add('-RuntimeIdentifier'); [void]$arguments.Add([string]$Options.RuntimeIdentifier) }
-    foreach ($name in @('Diagnostics', 'CollectCoverage', 'FailFast', 'CI', 'FailWarnings', 'NoRestore')) {
-        if (Read-DevOpsUiSwitch -Message "Enable -${name}?") { [void]$arguments.Add("-$name") }
-    }
-    $explicitMode = [string](Read-SpectreSelection -Message 'Explicit test policy' -Choices @('Exclude explicit tests', 'Include explicit tests', 'Run only explicit tests'))
+    foreach ($name in $Options.Flags) { [void]$arguments.Add("-$name") }
+    $explicitMode = $Options.ExplicitMode
     if ($explicitMode -eq 'Include explicit tests') { [void]$arguments.Add('-Explicit') }
     if ($explicitMode -eq 'Run only explicit tests') { [void]$arguments.Add('-ExplicitOnly') }
     return ,$arguments.ToArray()
@@ -154,32 +170,45 @@ function Invoke-DevOpsUiTestLive {
         (New-SpectreLayout -Name 'summary' -Ratio 1 -Data 'Starting test orchestration...'),
         (New-SpectreLayout -Name 'recent' -Ratio 3 -Data 'Waiting for structured target events...')
     )
-    $events = [System.Collections.Generic.List[object]]::new()
-    $lineTail = [System.Collections.Generic.List[string]]::new()
-    $processResult = $null
+    $liveState = [pscustomobject]@{
+        Events = [System.Collections.Generic.List[object]]::new()
+        Lines = [System.Collections.Generic.List[string]]::new()
+        Layout = $initial
+        Context = $null
+    }
+    $processInvoker = Get-Command Invoke-DevOpsUiProcess
+    $stateReader = Get-Command Get-DevOpsUiRunState
+    $eventReader = {
+        param($Event)
+        if ($null -ne $Event) { [void]$liveState.Events.Add($Event) }
+        $state = & $stateReader -Events $liveState.Events.ToArray()
+        $summaryText = "Test run $($state.RunId)`nTargets: $($state.Completed)/$($state.TargetCount) completed`nCurrent: $($state.CurrentTarget)`nTests: $($state.Passed) passed, $($state.Failed) failed, $($state.Skipped) skipped"
+        if ($state.Affected) {
+            $summaryText += "`nAffected files: $(@($state.Affected.paths).Count) | Targets: $(@($state.Affected.targets) -join ', ')"
+        }
+        $recentText = if ($state.Recent.Count -gt 0) { $state.Recent -join "`n" } else { 'No target has completed.' }
+        if ($liveState.Lines.Count -gt 0) { $recentText += "`n`nRecent output:`n" + (@($liveState.Lines | Select-Object -Last 4) -join "`n") }
+        $summaryPanel = [Spectre.Console.Panel]::new([Spectre.Console.Text]::new($summaryText))
+        $summaryPanel.Header = [Spectre.Console.PanelHeader]::new('LeanCorpus DevOps | Test progress')
+        $summaryPanel.Border = [Spectre.Console.BoxBorder]::Rounded
+        $recentPanel = [Spectre.Console.Panel]::new([Spectre.Console.Text]::new($recentText))
+        $recentPanel.Header = [Spectre.Console.PanelHeader]::new('Targets and recent output')
+        $recentPanel.Border = [Spectre.Console.BoxBorder]::Rounded
+        $liveState.Layout['summary'].Update($summaryPanel) | Out-Null
+        $liveState.Layout['recent'].Update($recentPanel) | Out-Null
+        $liveState.Context.Refresh()
+    }.GetNewClosure()
+    $lineReader = {
+        param($Stream, $Line)
+        [void]$liveState.Lines.Add("$Stream`: $Line")
+        while ($liveState.Lines.Count -gt 100) { $liveState.Lines.RemoveAt(0) }
+    }.GetNewClosure()
     $live = {
         param([Spectre.Console.LiveDisplayContext]$Context)
-        $eventReader = {
-            param($Event)
-            if ($null -ne $Event) { [void]$events.Add($Event) }
-            $state = Get-DevOpsUiRunState -Events $events.ToArray()
-            $summaryText = "Test run $($state.RunId)`nTargets: $($state.Completed)/$($state.TargetCount) completed`nCurrent: $($state.CurrentTarget)`nTests: $($state.Passed) passed, $($state.Failed) failed, $($state.Skipped) skipped"
-            if ($state.Affected) {
-                $summaryText += "`nAffected files: $(@($state.Affected.paths).Count) | Targets: $(@($state.Affected.targets) -join ', ')"
-            }
-            $recentText = if ($state.Recent.Count -gt 0) { $state.Recent -join "`n" } else { 'No target has completed.' }
-            if ($lineTail.Count -gt 0) { $recentText += "`n`nOutput: " + (@($lineTail | Select-Object -Last 4) -join ' | ') }
-            $initial['summary'].Update((Format-SpectrePanel -Data $summaryText -Header 'Structured test progress')) | Out-Null
-            $initial['recent'].Update((Format-SpectrePanel -Data $recentText -Header 'Targets and recent output')) | Out-Null
-            $Context.Refresh()
-        }.GetNewClosure()
-        $result = Invoke-DevOpsUiProcess -Arguments $Arguments -EventPath $EventPath `
-            -OnLine { param($Stream, $Line) [void]$lineTail.Add("$Stream`: $Line"); while ($lineTail.Count -gt 100) { $lineTail.RemoveAt(0) } }.GetNewClosure() `
-            -OnTick $eventReader
-        return $result
+        $liveState.Context = $Context
+        return & $processInvoker -Arguments $Arguments -EventPath $EventPath -OnLine $lineReader -OnTick $eventReader
     }.GetNewClosure()
-    $processResult = Invoke-SpectreLive -Data $initial -ScriptBlock $live
-    return $processResult
+    return Invoke-SpectreLive -Data $initial -ScriptBlock $live
 }
 
 function Invoke-DevOpsUiRunTests {
@@ -205,7 +234,7 @@ function Invoke-DevOpsUiRunTests {
             Write-DevOpsUiAffectedExplanation -EventPath $eventPath -FallbackOutput $explanation.StdOut
         }
         $preview = Show-DevOpsUiCommandPreview -Arguments @($arguments)
-        if (-not (Read-SpectreConfirm -Message "Execute: $preview ?")) { return }
+        if (-not (Read-DevOpsUiSwitch -Message 'Run this test command?')) { return }
         $result = Invoke-DevOpsUiTestLive -Arguments @($arguments) -EventPath $eventPath
         Write-DevOpsUiProcessResult -Result $result
         Show-DevOpsUiTestResult -EventPath $eventPath -ExitCode $result.ExitCode
@@ -223,20 +252,20 @@ function Write-DevOpsUiAffectedExplanation {
             try { $candidate = ConvertFrom-Json $line -Depth 32; if ($candidate.name -eq 'TargetsResolved') { $event = $candidate; break } } catch { }
         }
     }
-    Write-SpectreRule -Title 'Affected test selection' | Out-SpectreHost
+    Write-SpectreRule -PassThru -Title 'Affected test selection' | Out-SpectreHost | Out-Host
     if ($null -eq $event -or $null -eq $event.data.affected) {
-        foreach ($line in $FallbackOutput) { Write-SpectreHost (Get-SpectreEscapedText $line) }
+        foreach ($line in $FallbackOutput) { Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText $line) }
         return
     }
     $affected = $event.data.affected
-    Write-SpectreHost "Source: $($affected.mode) $($affected.suppliedCommit)$($affected.suppliedRange)"
-    $fileNodes = @($affected.paths | ForEach-Object { @{ Value = (Get-SpectreEscapedText ([string]$_)); Children = @() } })
-    $targetNodes = @($affected.targets | ForEach-Object { @{ Value = (Get-SpectreEscapedText ([string]$_)); Children = @() } })
+    Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText "Source: $($affected.mode) $($affected.suppliedCommit)$($affected.suppliedRange)")
+    $fileNodes = @($affected.paths | ForEach-Object { @{ Value = (ConvertTo-DevOpsUiLiteralText ([string]$_)); Children = @() } })
+    $targetNodes = @($affected.targets | ForEach-Object { @{ Value = (ConvertTo-DevOpsUiLiteralText ([string]$_)); Children = @() } })
     $tree = @{ Value = 'Affected test intent'; Children = @(
         @{ Value = 'Changed files'; Children = $fileNodes },
         @{ Value = 'Selected targets'; Children = $targetNodes }
     ) }
-    Format-SpectreTree -Data $tree | Out-SpectreHost
+    Format-SpectreTree -Data $tree | Out-SpectreHost | Out-Host
 }
 
 function Show-DevOpsUiTestResult {
@@ -248,13 +277,10 @@ function Show-DevOpsUiTestResult {
         }
     }
     $state = Get-DevOpsUiRunState -Events $events.ToArray()
-    Write-SpectreRule -Title 'Test result' | Out-SpectreHost
-    Show-DevOpsUiSummaryTable -Rows @([pscustomobject]@{
-        Status = if ($ExitCode -eq 0 -and $state.Succeeded) { 'Passed' } elseif ($ExitCode -eq 130) { 'Cancelled' } else { 'Failed' }
-        Targets = "$($state.Completed)/$($state.TargetCount)"
-        Passed = $state.Passed; Failed = $state.Failed; Skipped = $state.Skipped
-        Run = $state.RunId; Artefacts = $state.RunDirectory
-    })
+    $status = if ($ExitCode -eq 0 -and $state.Succeeded) { 'Passed' } elseif ($ExitCode -eq 130) { 'Cancelled' } else { 'Failed' }
+    $colour = if ($status -eq 'Passed') { 'green' } elseif ($status -eq 'Cancelled') { 'yellow' } else { 'red' }
+    $summary = "[bold $colour]$status[/] | $($state.Completed)/$($state.TargetCount) targets`n$($state.Passed) passed | $($state.Failed) failed | $($state.Skipped) skipped`n`nRun: $(ConvertTo-DevOpsUiLiteralText $state.RunId)`nArtefacts: $(ConvertTo-DevOpsUiLiteralText $state.RunDirectory)"
+    Format-SpectrePanel -Data $summary -Header '[bold cyan]LeanCorpus DevOps | Test result[/]' -Border Rounded | Out-SpectreHost | Out-Host
     $reportPath = if ($state.RunDirectory) { Join-Path $state.RunDirectory 'report.json' } else { '' }
     $report = if ($reportPath -and (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
         Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -Depth 32
@@ -265,14 +291,14 @@ function Show-DevOpsUiTestResult {
             Tests = $_.testCount; Failed = $_.failedTestCount; Iteration = $_.iteration
         } })
     }
-    $failures = if ($null -ne $report) { @($report.tests | Where-Object { [int]$_.failedCount -gt 0 }) } else { @() }
+    $failures = @(if ($null -ne $report) { $report.tests | Where-Object { [int]$_.failedCount -gt 0 } })
     foreach ($failure in @($failures | Select-Object -First 10)) {
-        Write-SpectreHost "[red]$($failure.suite): $($failure.testName) | $($failure.classification)[/]"
+        Write-DevOpsUiMarkup "[red]$(ConvertTo-DevOpsUiLiteralText "$($failure.suite): $($failure.testName) | $($failure.classification)")[/]"
     }
     if ($ExitCode -ne 0) {
         $actions = @('Return', 'Re-run selection with diagnostics', 'Run selection repeatedly', 'Open logs', 'Browse artefacts')
         if ($failures.Count -gt 0) { $actions = @('Re-run selected failures') + $actions }
-        $action = [string](Read-SpectreSelection -Message 'After the failed test run' -Choices $actions)
+        $action = [string](Read-DevOpsUiSelection -Message 'After the failed test run' -Choices $actions)
         if ($action -eq 'Re-run selected failures') {
             $failureChoices = @($failures | ForEach-Object { "{0} | {1}" -f $_.suite, $_.testName })
             $selectedFailures = @(Read-DevOpsUiMultiSelection -Message 'Select failing tests to repeat' -Choices $failureChoices -PageSize 14)
@@ -299,13 +325,13 @@ function Show-DevOpsUiTestResult {
                 $files = @(Get-ChildItem -LiteralPath $state.RunDirectory -File -Recurse | Sort-Object FullName)
                 if ($files.Count -gt 0) {
                     $files | ForEach-Object { $_ | Add-Member -NotePropertyName Label -NotePropertyValue ([IO.Path]::GetRelativePath($state.RunDirectory, $_.FullName)) -Force }
-                    $selectedFile = Read-SpectreSelection -Message 'Run artefact' -Choices $files `
+                    $selectedFile = Read-DevOpsUiSelection -Message 'Run artefact' -Choices $files `
                         -ChoiceLabelProperty Label -EnableSearch
                     if ($null -ne $selectedFile) {
-                        Write-SpectreHost "Artefact: $($selectedFile.FullName)"
+                        Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText "Artefact: $($selectedFile.FullName)")
                         if ($action -eq 'Open logs') {
                             foreach ($line in @(Get-Content -LiteralPath $selectedFile.FullName -Tail 120 -ErrorAction SilentlyContinue)) {
-                                Write-SpectreHost (Get-SpectreEscapedText ([string]$line))
+                                Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText ([string]$line))
                             }
                         }
                     }
@@ -317,7 +343,7 @@ function Show-DevOpsUiTestResult {
 
 function Invoke-DevOpsUiRunMenu {
     while ($true) {
-        $item = [string](Read-SpectreSelection -Message 'Run and validate' -Choices @('Tests', 'Affected tests', 'Coverage', 'Native AOT', 'Benchmarks', 'Remote benchmark', 'Back') -EnableSearch)
+        $item = [string](Read-DevOpsUiSelection -Message 'Run and validate' -Choices @('Tests', 'Affected tests', 'Coverage', 'Native AOT', 'Benchmarks', 'Remote benchmark', 'Back') -EnableSearch)
         switch ($item) {
             'Tests' { Invoke-DevOpsUiRunTests }
             'Affected tests' { Invoke-DevOpsUiRunTests -ForceAffected }
@@ -333,12 +359,12 @@ function Invoke-DevOpsUiRunMenu {
 function Invoke-DevOpsUiCoverage {
     $suiteRegistry = Import-PowerShellDataFile (Join-Path (Get-RepoRoot) 'scripts/devops/config/test-suites.psd1')
     $suites = @($suiteRegistry.Keys | Where-Object { $suiteRegistry[$_].Coverage } | Sort-Object)
-    $suite = [string](Read-SpectreSelection -Message 'Coverage suite' -Choices (@('all') + $suites) -EnableSearch)
+    $suite = [string](Read-DevOpsUiSelection -Message 'Coverage suite' -Choices (@('all') + $suites) -EnableSearch)
     if (-not $suite) { return }
     $frameworks = if ($suite -eq 'all') { @('net10.0', 'net11.0') } else { @(Get-DevOpsUiFrameworkChoices -SuiteKeys @($suite)) }
-    $framework = [string](Read-SpectreSelection -Message 'Coverage framework' -Choices $frameworks)
+    $framework = [string](Read-DevOpsUiSelection -Message 'Coverage framework' -Choices $frameworks)
     $arguments = @('coverage', '-Suite', $suite, '-Framework', $framework)
-    $configuration = [string](Read-SpectreSelection -Message 'Coverage configuration' -Choices @('Release', 'Debug'))
+    $configuration = [string](Read-DevOpsUiSelection -Message 'Coverage configuration' -Choices @('Release', 'Debug'))
     $arguments += @('-Configuration', $configuration)
     if (Read-DevOpsUiSwitch -Message 'Remove previous coverage outputs before running?') { $arguments += '-Clean' }
     if (Read-DevOpsUiSwitch -Message 'Include performance tests excluded by default?') { $arguments += '-IncludePerformance' }
@@ -348,9 +374,9 @@ function Invoke-DevOpsUiCoverage {
 
 function Invoke-DevOpsUiAot {
     $arguments = @('aot')
-    $framework = [string](Read-SpectreSelection -Message 'Native AOT target' -Choices @('Both supported frameworks', 'net10.0', 'net11.0'))
+    $framework = [string](Read-DevOpsUiSelection -Message 'Native AOT target' -Choices @('Both supported frameworks', 'net10.0', 'net11.0'))
     if ($framework -ne 'Both supported frameworks') { $arguments += @('-Framework', $framework) }
-    $configuration = [string](Read-SpectreSelection -Message 'Native AOT configuration' -Choices @('Release', 'Debug'))
+    $configuration = [string](Read-DevOpsUiSelection -Message 'Native AOT configuration' -Choices @('Release', 'Debug'))
     $arguments += @('-Configuration', $configuration)
     $runtimeIdentifier = Read-DevOpsUiText -Message 'Native AOT runtime identifier (blank auto-detects)' -AllowEmpty
     if ($runtimeIdentifier) { $arguments += @('-RuntimeIdentifier', $runtimeIdentifier) }
@@ -372,7 +398,7 @@ function Invoke-DevOpsUiAot {
     }
     $timeout = Read-DevOpsUiText -Message 'Outer process timeout (use off to disable)' -DefaultAnswer 'off'
     if ($timeout -ne 'off') { $arguments += @('-Timeout', $timeout) }
-    $verbosity = [string](Read-SpectreSelection -Message 'Runner output verbosity' -Choices @('quiet', 'minimal', 'normal', 'detailed'))
+    $verbosity = [string](Read-DevOpsUiSelection -Message 'Runner output verbosity' -Choices @('quiet', 'minimal', 'normal', 'detailed'))
     $arguments += @('-Verbosity', $verbosity)
     $null = Invoke-DevOpsUiCommand -Arguments $arguments -Title 'Running Native AOT smoke tests'
 }

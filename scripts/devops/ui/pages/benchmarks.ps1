@@ -2,18 +2,18 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Invoke-DevOpsUiBenchmarks {
-    $mode = [string](Read-SpectreSelection -Message 'Benchmark discovery' -Choices @('Affected source changes', 'Grouped area and group', 'Named benchmark suite', 'Back') -EnableSearch)
+    $mode = [string](Read-DevOpsUiSelection -Message 'Benchmark discovery' -Choices @('Affected source changes', 'Grouped area and group', 'Named benchmark suite', 'Back') -EnableSearch)
     if (-not $mode -or $mode -eq 'Back') { return }
     $argumentsByProject = [System.Collections.Generic.List[object]]::new()
 
     if ($mode -eq 'Affected source changes') {
-        $framework = [string](Read-SpectreSelection -Message 'Benchmark framework' -Choices @('net10.0', 'net11.0'))
+        $framework = [string](Read-DevOpsUiSelection -Message 'Benchmark framework' -Choices @('net10.0', 'net11.0'))
         $arguments = @('benchmark', 'affected', '-Framework', $framework)
         [void]$argumentsByProject.Add([pscustomobject]@{ Arguments = $arguments; Label = 'Affected benchmarks' })
     } else {
         $strategies = Import-PowerShellDataFile (Join-Path (Get-RepoRoot) 'scripts/devops/config/benchmark-strategies.psd1')
-        $strategy = [string](Read-SpectreSelection -Message 'Benchmark strategy' -Choices @($strategies.Keys | Sort-Object) -EnableSearch)
-        $framework = [string](Read-SpectreSelection -Message 'Benchmark framework' -Choices @('net10.0', 'net11.0'))
+        $strategy = [string](Read-DevOpsUiSelection -Message 'Benchmark strategy' -Choices @($strategies.Keys | Sort-Object) -EnableSearch)
+        $framework = [string](Read-DevOpsUiSelection -Message 'Benchmark framework' -Choices @('net10.0', 'net11.0'))
         $benchmarkDotNetText = Read-DevOpsUiText -Message 'Additional BenchmarkDotNet arguments (optional; quote values containing spaces)' -AllowEmpty
         $benchmarkDotNetArguments = @(ConvertFrom-DevOpsUiArgumentText -Text $benchmarkDotNetText)
 
@@ -48,13 +48,13 @@ function Invoke-DevOpsUiBenchmarks {
                 -not $search -or $_.Contains($search, [StringComparison]::OrdinalIgnoreCase) -or
                     ([string]$suiteRegistry[$_]).Contains($search, [StringComparison]::OrdinalIgnoreCase)
             } | Sort-Object)
-            if ($suiteChoices.Count -eq 0) { Write-SpectreHost '[yellow]No benchmark suites matched that search.[/]'; return }
+            if ($suiteChoices.Count -eq 0) { Write-DevOpsUiMarkup '[yellow]No benchmark suites matched that search.[/]'; return }
             $selectedSuites = @(Read-DevOpsUiMultiSelection -Message 'Select benchmark suites from the narrowed catalogue' -Choices $suiteChoices -PageSize 18)
             if ($selectedSuites.Count -eq 0) { return }
             foreach ($suite in $selectedSuites) {
                 $datasets = @('synthetic')
                 if ($suite -in $datasetRegistry.wikipedia) { $datasets += 'wikipedia' }
-                $dataset = [string](Read-SpectreSelection -Message "Dataset for '$suite'" -Choices $datasets)
+                $dataset = [string](Read-DevOpsUiSelection -Message "Dataset for '$suite'" -Choices $datasets)
                 $arguments = @('benchmark', '-Suite', $suite, '-Strat', $strategy, '-Framework', $framework, '-Dataset', $dataset)
                 $docCount = Read-DevOpsUiText -Message "Document count override for '$suite' (0 keeps the selected strategy default)" -DefaultAnswer '0'
                 if ($docCount -ne '0') { $arguments += @('-DocCount', $docCount) }
@@ -82,7 +82,7 @@ function Invoke-DevOpsUiBenchmarks {
         $args = @($entry.Arguments)
         $null = Show-DevOpsUiCommandPreview -Arguments $args
     }
-    if (-not (Read-SpectreConfirm -Message 'Execute all benchmark commands shown above?')) { return }
+    if (-not (Read-DevOpsUiSwitch -Message 'Execute all benchmark commands shown above?')) { return }
     foreach ($entry in $argumentsByProject) {
         $args = @($entry.Arguments)
         $null = Invoke-DevOpsUiCommand -Arguments $args -Title "Running $($entry.Label)" -Confirmed
@@ -98,6 +98,6 @@ function Invoke-DevOpsUiBenchmarkRemote {
     $arguments = @('benchmark', 'remote', '-Remote', $remote, '-RemotePath', $remotePath,
         '-Branch', $branch, '-SessionName', $session, '-BenchmarkArgs', $benchmarkArgs)
     $preview = Show-DevOpsUiCommandPreview -Arguments $arguments
-    if (-not (Read-SpectreConfirm -Message "The remote script fetches, checks out and fast-forward pulls '$branch' on '$remote'. Continue?")) { return }
+    if (-not (Read-DevOpsUiSwitch -Message "The remote script fetches, checks out and fast-forward pulls '$branch' on '$remote'. Continue?")) { return }
     $null = Invoke-DevOpsUiCommand -Arguments $arguments -Title "Starting remote benchmark on $remote" -Confirmed
 }

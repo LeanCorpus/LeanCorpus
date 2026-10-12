@@ -8,25 +8,27 @@ function Get-DevOpsUiDataForgeProfiles {
         return @()
     }
     try {
-        $profiles = @((ConvertFrom-Json -InputObject ($result.StdOut -join [Environment]::NewLine) -Depth 8))
+        $jsonLine = $result.StdOut | Where-Object { $_.TrimStart().StartsWith('[{') } | Select-Object -Last 1
+        if (-not $jsonLine) { throw 'The command did not return profile descriptors.' }
+        $profiles = @((ConvertFrom-Json -InputObject $jsonLine -Depth 8 -ErrorAction Stop))
         foreach ($profile in $profiles) {
             $label = "{0} v{1} | {2} records | {3}" -f $profile.profileId, $profile.profileVersion, $profile.defaultCount, $profile.description
             $profile | Add-Member -NotePropertyName Label -NotePropertyValue $label -Force
         }
         return $profiles
     }
-    catch { Write-SpectreHost "[red]Could not read DataForge profile descriptors: $($_.Exception.Message)[/]"; return @() }
+    catch { Write-DevOpsUiMarkup ("[red]Could not read DataForge profile descriptors: $(ConvertTo-DevOpsUiLiteralText $_.Exception.Message)[/]"); return @() }
 }
 
 function Invoke-DevOpsUiDataForge {
     while ($true) {
-        $action = [string](Read-SpectreSelection -Message 'DataForge workflow' -Choices @('Profiles', 'Generate dataset', 'Inspect generated dataset', 'Verify generated dataset', 'Reproduce generated dataset', 'Reference dataset', 'Release qualification', 'Back') -EnableSearch)
+        $action = [string](Read-DevOpsUiSelection -Message 'DataForge workflow' -Choices @('Profiles', 'Generate dataset', 'Inspect generated dataset', 'Verify generated dataset', 'Reproduce generated dataset', 'Reference dataset', 'Release qualification', 'Back') -EnableSearch)
         switch ($action) {
             'Profiles' {
                 $profiles = @(Get-DevOpsUiDataForgeProfiles)
                 if ($profiles.Count -gt 0) {
                     Show-DevOpsUiSummaryTable -Rows @($profiles | ForEach-Object { [pscustomobject]@{
-                        Profile = $_.profileId; Version = $_.profileVersion; Kind = $_.kind; Seed = $_.defaultSeed; Count = $_.defaultCount; Description = $_.description
+                        Profile = $_.profileId; Version = $_.profileVersion; Records = $_.defaultCount; Seed = $_.defaultSeed
                     } })
                 }
             }
@@ -50,7 +52,7 @@ function Invoke-DevOpsUiDataForge {
 function Invoke-DevOpsUiDataForgeGenerate {
     $profiles = @(Get-DevOpsUiDataForgeProfiles)
     if ($profiles.Count -eq 0) { return }
-    $profile = Read-SpectreSelection -Message 'Generated dataset profile' -Choices $profiles `
+    $profile = Read-DevOpsUiSelection -Message 'Generated dataset profile' -Choices $profiles `
         -ChoiceLabelProperty Label -EnableSearch
     if ($null -eq $profile) { return }
 
@@ -62,7 +64,7 @@ function Invoke-DevOpsUiDataForgeGenerate {
     $defaultCount = [int]$profile.defaultCount
     $stressMode = ''
     if ([string]$profile.profileId -eq 'leancorpus-stress') {
-        $stressMode = [string](Read-SpectreSelection -Message 'Stress workload kind' -Choices @('search', 'vector', 'hybrid'))
+        $stressMode = [string](Read-DevOpsUiSelection -Message 'Stress workload kind' -Choices @('search', 'vector', 'hybrid'))
         $arguments.AddRange([string[]]@('-Mode', $stressMode))
         if ($stressMode -eq 'search') { $defaultCount = 100000 }
         else { $defaultCount = 50000 }
@@ -72,7 +74,7 @@ function Invoke-DevOpsUiDataForgeGenerate {
     $profileId = [string]$profile.profileId
     if ($profileId -eq 'leancorpus-vector') {
         [void]$arguments.Add('-Dimension'); [void]$arguments.Add((Read-DevOpsUiText -Message 'Vector dimension' -DefaultAnswer '64'))
-        $distribution = [string](Read-SpectreSelection -Message 'Vector distribution' -Choices @('Uniform', 'Clustered', 'DenseNeighbourhood', 'NearDuplicate', 'QuantisationFriendly', 'QuantisationHostile'))
+        $distribution = [string](Read-DevOpsUiSelection -Message 'Vector distribution' -Choices @('Uniform', 'Clustered', 'DenseNeighbourhood', 'NearDuplicate', 'QuantisationFriendly', 'QuantisationHostile'))
         [void]$arguments.Add('-VectorDistribution'); [void]$arguments.Add($distribution)
         [void]$arguments.Add('-ClusterCount'); [void]$arguments.Add((Read-DevOpsUiText -Message 'Cluster count' -DefaultAnswer '8'))
         [void]$arguments.Add('-QueryCount'); [void]$arguments.Add((Read-DevOpsUiText -Message 'Query count' -DefaultAnswer '1'))
@@ -89,7 +91,7 @@ function Invoke-DevOpsUiDataForgeGenerate {
             }
             'vector' {
                 [void]$arguments.Add('-Dimension'); [void]$arguments.Add((Read-DevOpsUiText -Message 'Vector dimension' -DefaultAnswer '128'))
-                $distribution = [string](Read-SpectreSelection -Message 'Vector distribution' -Choices @('DenseNeighbourhood', 'Uniform', 'Clustered', 'NearDuplicate', 'QuantisationFriendly', 'QuantisationHostile'))
+                $distribution = [string](Read-DevOpsUiSelection -Message 'Vector distribution' -Choices @('DenseNeighbourhood', 'Uniform', 'Clustered', 'NearDuplicate', 'QuantisationFriendly', 'QuantisationHostile'))
                 [void]$arguments.Add('-VectorDistribution'); [void]$arguments.Add($distribution)
                 $clusterDefault = [string][Math]::Min(8, [int]$count)
                 [void]$arguments.Add('-ClusterCount'); [void]$arguments.Add((Read-DevOpsUiText -Message 'Cluster count' -DefaultAnswer $clusterDefault))
@@ -103,7 +105,7 @@ function Invoke-DevOpsUiDataForgeGenerate {
         }
     }
     if ($profileId -eq 'rowles-text-multilingual') {
-        $language = [string](Read-SpectreSelection -Message 'Multilingual sample language' -Choices @('en', 'fr', 'de', 'es', 'it', 'pt', 'nl', 'ru', 'ar', 'zh', 'ja', 'ko'))
+        $language = [string](Read-DevOpsUiSelection -Message 'Multilingual sample language' -Choices @('en', 'fr', 'de', 'es', 'it', 'pt', 'nl', 'ru', 'ar', 'zh', 'ja', 'ko'))
         [void]$arguments.Add('-Language'); [void]$arguments.Add($language)
     }
     if ($profileId -eq 'leancorpus-stress' -and (Read-DevOpsUiSwitch -Message 'Allow generation beyond standard stress limits?')) { [void]$arguments.Add('-AllowLarge') }
@@ -121,7 +123,7 @@ function Invoke-DevOpsUiDataForgePathAction {
 }
 
 function Invoke-DevOpsUiDataForgeReference {
-    $operation = [string](Read-SpectreSelection -Message 'Frozen reference operation' -Choices @('Download source files', 'Build immutable reference', 'Inspect reference', 'Verify reference', 'Back'))
+    $operation = [string](Read-DevOpsUiSelection -Message 'Frozen reference operation' -Choices @('Download source files', 'Build immutable reference', 'Inspect reference', 'Verify reference', 'Back'))
     if ($operation -eq 'Back' -or -not $operation) { return }
     $subcommand = switch ($operation) { 'Download source files' { 'download' } 'Build immutable reference' { 'build' } 'Inspect reference' { 'inspect' } 'Verify reference' { 'verify' } }
     $arguments = [System.Collections.Generic.List[string]]::new()
@@ -147,7 +149,7 @@ function Invoke-DevOpsUiDataForgeReference {
 
 function Invoke-DevOpsUiDataMenu {
     while ($true) {
-        $item = [string](Read-SpectreSelection -Message 'Data' -Choices @('DataForge', 'Gutenberg benchmark data', 'Migration fixtures for 3.1.1', 'Back') -EnableSearch)
+        $item = [string](Read-DevOpsUiSelection -Message 'Data' -Choices @('DataForge', 'Gutenberg benchmark data', 'Migration fixtures for 3.1.1', 'Back') -EnableSearch)
         switch ($item) {
             'DataForge' { Invoke-DevOpsUiDataForge }
             'Gutenberg benchmark data' {

@@ -2,6 +2,7 @@ using Rowles.LeanCorpus.Analysis.Analysers;
 using Rowles.LeanCorpus.Cli.Rendering;
 using Rowles.LeanCorpus.Index.Inspection;
 using Rowles.LeanCorpus.Search.Searcher;
+using Rowles.LeanCorpus.Search.Parsing;
 using Rowles.LeanCorpus.Store;
 using Spectre.Console;
 
@@ -17,7 +18,9 @@ internal static class WorkbenchBrowser
 
     internal static int Launch(IAnsiConsole console)
     {
-        string path = console.Prompt(new TextPrompt<string>("Index directory:").Validate(static value =>
+        console.Write(new Panel(new Text("Explore committed indexes, documents and search results."))
+            .Header("[bold cyan]LeanCorpus CLI Workbench[/]").Border(BoxBorder.Rounded));
+        string path = console.Prompt(new TextPrompt<string>(PromptTitle("Index directory:")).Validate(static value =>
             Directory.Exists(value) ? ValidationResult.Success() : ValidationResult.Error("Directory does not exist.")));
         using var inspector = new IndexInspector(path);
         return Browse(console, inspector);
@@ -27,54 +30,67 @@ internal static class WorkbenchBrowser
     {
         while (true)
         {
+            string segmentLabel = inspector.Overview.SegmentCount == 1 ? "segment" : "segments";
+            console.Write(new Panel(new Markup($"[bold]Index Explorer[/]\n[grey]{Markup.Escape(inspector.Overview.DirectoryPath)}[/]\n{inspector.Overview.LiveDocumentCount:N0} live documents | {inspector.Overview.SegmentCount:N0} {segmentLabel}"))
+                .Header("[bold cyan]LeanCorpus CLI Workbench[/]").Border(BoxBorder.Rounded));
             string selected = console.Prompt(new SelectionPrompt<string>()
-                .Title("[bold]LeanCorpus Index Explorer[/]")
+                .Title(PromptTitle("Choose a view"))
+                .HighlightStyle(new Style(Color.Cyan1))
                 .PageSize(14)
                 .AddChoices(Views));
-            switch (selected)
+            try
             {
-                case "Overview":
-                    IndexInspectionRenderer.Overview(console, inspector.Overview);
-                    break;
-                case "Segments":
-                    IndexInspectionRenderer.Segments(console, inspector.GetSegments());
-                    break;
-                case "Fields":
-                    IndexInspectionRenderer.Fields(console, inspector.GetFields());
-                    break;
-                case "Terms and postings":
-                    BrowseTerms(console, inspector);
-                    break;
-                case "Document":
-                    BrowseDocument(console, inspector);
-                    break;
-                case "Search":
-                    BrowseSearch(console, inspector.Overview.DirectoryPath);
-                    break;
-                case "Vectors":
-                    IndexInspectionRenderer.Fields(console, inspector.GetFields().Where(static field => field.VectorDimension is not null).ToArray());
-                    break;
-                case "Facets":
-                    IndexInspectionRenderer.Fields(console, inspector.GetFields().Where(static field => field.HasOrdinalDocValues).ToArray());
-                    break;
-                case "Geo":
-                    IndexInspectionRenderer.Fields(console, inspector.GetFields().Where(static field => field.SpatialKind is not null).ToArray());
-                    break;
-                case "Files and codecs":
-                    BrowseFiles(console, inspector);
-                    break;
-                case "Storage":
-                    BrowseStorage(console, inspector);
-                    break;
-                case "Analyse text":
-                    BrowseAnalysis(console);
-                    break;
-                case "Exit":
-                    return 0;
+                switch (selected)
+                {
+                    case "Overview":
+                        IndexInspectionRenderer.Overview(console, inspector.Overview);
+                        break;
+                    case "Segments":
+                        IndexInspectionRenderer.Segments(console, inspector.GetSegments());
+                        break;
+                    case "Fields":
+                        IndexInspectionRenderer.Fields(console, inspector.GetFields());
+                        break;
+                    case "Terms and postings":
+                        BrowseTerms(console, inspector);
+                        break;
+                    case "Document":
+                        BrowseDocument(console, inspector);
+                        break;
+                    case "Search":
+                        BrowseSearch(console, inspector.Overview.DirectoryPath);
+                        break;
+                    case "Vectors":
+                        IndexInspectionRenderer.Fields(console, inspector.GetFields().Where(static field => field.VectorDimension is not null).ToArray());
+                        break;
+                    case "Facets":
+                        IndexInspectionRenderer.Fields(console, inspector.GetFields().Where(static field => field.HasOrdinalDocValues).ToArray());
+                        break;
+                    case "Geo":
+                        IndexInspectionRenderer.Fields(console, inspector.GetFields().Where(static field => field.SpatialKind is not null).ToArray());
+                        break;
+                    case "Files and codecs":
+                        BrowseFiles(console, inspector);
+                        break;
+                    case "Storage":
+                        BrowseStorage(console, inspector);
+                        break;
+                    case "Analyse text":
+                        BrowseAnalysis(console);
+                        break;
+                    case "Exit":
+                        return 0;
+                }
+            }
+            catch (Exception exception) when (exception is ArgumentException or IOException or InvalidOperationException or QueryParseException)
+            {
+                console.Write(new Panel(new Text(exception.Message)).Header("[yellow]Unable to open this view[/]").Border(BoxBorder.Rounded));
             }
             console.WriteLine();
         }
     }
+
+    private static string PromptTitle(string title) => $"[bold cyan]LeanCorpus CLI[/] [grey]| Index Explorer[/]\n{title}";
 
     private static void BrowseTerms(IAnsiConsole console, IndexInspector inspector)
     {
@@ -84,29 +100,29 @@ internal static class WorkbenchBrowser
             console.MarkupLine("[yellow]No indexed fields are available.[/]");
             return;
         }
-        string field = console.Prompt(new SelectionPrompt<string>().Title("Field").AddChoices(indexedFields));
-        string prefix = console.Prompt(new TextPrompt<string>("Term prefix (leave empty for all terms):").AllowEmpty());
+        string field = console.Prompt(new SelectionPrompt<string>().Title(PromptTitle("Field")).AddChoices(indexedFields).UseConverter(Markup.Escape));
+        string prefix = console.Prompt(new TextPrompt<string>(PromptTitle("Term prefix (leave empty for all terms):")).AllowEmpty());
         IndexInspectionTerm[] terms = inspector.GetTerms(field, string.IsNullOrEmpty(prefix) ? null : prefix, 200).ToArray();
         IndexInspectionRenderer.Terms(console, terms);
         if (terms.Length == 0)
             return;
-        bool inspect = console.Prompt(new ConfirmationPrompt("Inspect postings for one of these terms?"));
+        bool inspect = console.Prompt(new ConfirmationPrompt(PromptTitle("Inspect postings for one of these terms?")) { DefaultValue = false });
         if (!inspect)
             return;
-        string term = console.Prompt(new SelectionPrompt<string>().Title("Term").PageSize(15).AddChoices(terms.Select(static value => value.Term)));
+        string term = console.Prompt(new SelectionPrompt<string>().Title(PromptTitle("Term")).PageSize(15).AddChoices(terms.Select(static value => value.Term)).UseConverter(Markup.Escape));
         IndexInspectionRenderer.Postings(console, inspector.GetPostings(field, term, 200));
     }
 
     private static void BrowseDocument(IAnsiConsole console, IndexInspector inspector)
     {
-        int documentId = console.Prompt(new TextPrompt<int>("Global document ID:"));
+        int documentId = console.Prompt(new TextPrompt<int>(PromptTitle("Global document ID:")));
         IndexInspectionRenderer.Document(console, inspector.GetDocument(documentId));
     }
 
     private static void BrowseSearch(IAnsiConsole console, string indexPath)
     {
-        string field = console.Prompt(new TextPrompt<string>("Default field:").DefaultValue("body"));
-        string query = console.Prompt(new TextPrompt<string>("Query:"));
+        string field = console.Prompt(new TextPrompt<string>(PromptTitle("Default field:")).DefaultValue("body"));
+        string query = console.Prompt(new TextPrompt<string>(PromptTitle("Query:")));
         using var directory = new MMapDirectory(indexPath);
         using var searcher = new IndexSearcher(directory);
         var results = searcher.Search(query, field, 20, new StandardAnalyser());
@@ -143,7 +159,7 @@ internal static class WorkbenchBrowser
 
     private static void BrowseAnalysis(IAnsiConsole console)
     {
-        string text = console.Prompt(new TextPrompt<string>("Text to analyse:"));
+        string text = console.Prompt(new TextPrompt<string>(PromptTitle("Text to analyse:")));
         var sink = new BrowserTokenSink();
         new StandardAnalyser().Analyse(text.AsSpan(), sink);
         var table = new Table().Border(TableBorder.Rounded).AddColumn("Token").AddColumn("Offsets").AddColumn("Type");

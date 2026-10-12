@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 function Invoke-DevOpsUiObserveMenu {
     while ($true) {
-        $item = [string](Read-SpectreSelection -Message 'Observe' -Choices @('Runs and artefacts', 'Diagnostics', 'Repository health', 'Back') -EnableSearch)
+        $item = [string](Read-DevOpsUiSelection -Message 'Observe' -Choices @('Runs and artefacts', 'Diagnostics', 'Repository health', 'Back') -EnableSearch)
         switch ($item) {
             'Runs and artefacts' { Invoke-DevOpsUiRuns }
             'Diagnostics' { Invoke-DevOpsUiDiagnostics }
@@ -39,23 +39,23 @@ function Get-DevOpsUiRecentRuns {
 
 function Invoke-DevOpsUiRuns {
     $runs = @(Get-DevOpsUiRecentRuns)
-    if ($runs.Count -eq 0) { Write-SpectreHost '[yellow]No structured test, coverage, diagnostics or benchmark runs were found.[/]'; return }
+    if ($runs.Count -eq 0) { Write-DevOpsUiMarkup '[yellow]No structured test, coverage, diagnostics or benchmark runs were found.[/]'; return }
     $rows = @($runs | ForEach-Object { [pscustomobject]@{
         Status = $_.Status; Kind = $_.Kind; Started = if ($_.Started -eq [DateTimeOffset]::MinValue) { 'unknown' } else { $_.Started.ToLocalTime().ToString('HH:mm dd MMM') }
         Target = $_.Target; Framework = $_.Framework; Run = $_.RunId
     } })
     Show-DevOpsUiSummaryTable -Rows $rows
-    $selectedId = [string](Read-SpectreSelection -Message 'Select a run to inspect' -Choices @($runs | ForEach-Object { $_.RunId }) -EnableSearch)
+    $selectedId = [string](Read-DevOpsUiSelection -Message 'Select a run to inspect' -Choices @($runs | ForEach-Object { $_.RunId }) -EnableSearch)
     if (-not $selectedId) { return }
     $run = @($runs | Where-Object RunId -eq $selectedId | Select-Object -First 1)[0]
     $manifest = $run.Manifest
-    Write-SpectreRule -Title "$($run.Kind) $($run.Status): $($run.RunId)" | Out-SpectreHost
+    Write-SpectreRule -PassThru -Title "$($run.Kind) $($run.Status): $($run.RunId)" | Out-SpectreHost | Out-Host
     foreach ($property in @('branch', 'commit', 'dirty', 'os', 'architecture', 'machine', 'framework', 'configuration', 'target', 'commandLine', 'startedAtUtc', 'completedAtUtc', 'durationMs', 'error')) {
-        if ($manifest.PSObject.Properties[$property] -and $null -ne $manifest.$property) { Write-SpectreHost ("{0}: {1}" -f $property, $manifest.$property) }
+        if ($manifest.PSObject.Properties[$property] -and $null -ne $manifest.$property) { Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText ("{0}: {1}" -f $property, $manifest.$property)) }
     }
     foreach ($name in @('summary', 'report', 'projects', 'outputs', 'warnings', 'failures')) {
         if ($manifest.PSObject.Properties[$name] -and $null -ne $manifest.$name) {
-            Write-SpectreHost "$name`:`n$($manifest.$name | ConvertTo-Json -Depth 8)"
+            Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText "$name`:`n$($manifest.$name | ConvertTo-Json -Depth 8)")
         }
     }
     $testReportPath = Join-Path $run.Directory 'report.json'
@@ -79,12 +79,12 @@ function Invoke-DevOpsUiRuns {
             } })
         }
         foreach ($failure in @($testReport.tests | Where-Object { [int]$_.failedCount -gt 0 } | Select-Object -First 20)) {
-            Write-SpectreHost (Get-SpectreEscapedText ("Failure: {0} | {1} | {2}" -f $failure.suite, $failure.testName, $failure.classification))
+            Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText ("Failure: {0} | {1} | {2}" -f $failure.suite, $failure.testName, $failure.classification))
         }
     }
-    Write-SpectreRule -Title 'Artefact tree' | Out-SpectreHost
-    Format-SpectreTree -Data (New-DevOpsUiArtifactTreeNode -Path $run.Directory -RootPath $run.Directory) | Out-SpectreHost
-    Write-SpectreHost (Get-SpectreEscapedText "Run directory: $($run.Directory)")
+    Write-SpectreRule -PassThru -Title 'Artefact tree' | Out-SpectreHost | Out-Host
+    Format-SpectreTree -Data (New-DevOpsUiArtifactTreeNode -Path $run.Directory -RootPath $run.Directory) | Out-SpectreHost | Out-Host
+    Write-DevOpsUiMarkup (ConvertTo-DevOpsUiLiteralText "Run directory: $($run.Directory)")
 }
 
 function New-DevOpsUiArtifactTreeNode {
@@ -96,10 +96,10 @@ function New-DevOpsUiArtifactTreeNode {
     }
     foreach ($file in @(Get-ChildItem -LiteralPath $Path -File -Force -ErrorAction SilentlyContinue | Sort-Object Name)) {
         $name = [IO.Path]::GetRelativePath($RootPath, $file.FullName)
-        [void]$children.Add(@{ Value = (Get-SpectreEscapedText ("{0} ({1} bytes)" -f $name, $file.Length)); Children = @() })
+        [void]$children.Add(@{ Value = (ConvertTo-DevOpsUiLiteralText ("{0} ({1} bytes)" -f $name, $file.Length)); Children = @() })
     }
     $label = if ([string]::Equals($Path, $RootPath, [StringComparison]::OrdinalIgnoreCase)) { $item.Name } else { $item.Name }
-    return @{ Value = (Get-SpectreEscapedText $label); Children = @($children.ToArray()) }
+    return @{ Value = (ConvertTo-DevOpsUiLiteralText $label); Children = @($children.ToArray()) }
 }
 
 function Get-DevOpsUiDotNetProcesses {
@@ -120,7 +120,7 @@ function Get-DevOpsUiDotNetProcesses {
 }
 
 function Invoke-DevOpsUiDiagnostics {
-    $workflow = [string](Read-SpectreSelection -Message 'Diagnostics workflow' -Choices @('Attach to a running .NET process', 'Download symbols for an artifact', 'Back'))
+    $workflow = [string](Read-DevOpsUiSelection -Message 'Diagnostics workflow' -Choices @('Attach to a running .NET process', 'Download symbols for an artifact', 'Back'))
     if ($workflow -eq 'Back' -or -not $workflow) { return }
     if ($workflow -eq 'Download symbols for an artifact') {
         $artifact = Read-DevOpsUiText -Message 'Artifact path or URL'
@@ -128,16 +128,16 @@ function Invoke-DevOpsUiDiagnostics {
         return
     }
     $processes = @(Get-DevOpsUiDotNetProcesses)
-    if ($processes.Count -eq 0) { Write-SpectreHost '[yellow]No running .NET processes were discovered.[/]'; return }
-    $process = Read-SpectreSelection -Message 'Select a running .NET process' -Choices $processes -ChoiceLabelProperty Label -EnableSearch
+    if ($processes.Count -eq 0) { Write-DevOpsUiMarkup '[yellow]No running .NET processes were discovered.[/]'; return }
+    $process = Read-DevOpsUiSelection -Message 'Select a running .NET process' -Choices $processes -ChoiceLabelProperty Label -EnableSearch
     if ($null -eq $process) { return }
-    $action = [string](Read-SpectreSelection -Message "Diagnostics action for $($process.Name) ($($process.Id))" -Choices @('Counters', 'Trace', 'GC dump', 'Dump', 'Capture', 'Back'))
+    $action = [string](Read-DevOpsUiSelection -Message "Diagnostics action for $($process.Name) ($($process.Id))" -Choices @('Counters', 'Trace', 'GC dump', 'Dump', 'Capture', 'Back'))
     if ($action -eq 'Back' -or -not $action) { return }
     $subcommand = switch ($action) { 'Counters' { 'counters' } 'Trace' { 'trace' } 'GC dump' { 'gcdump' } 'Dump' { 'dump' } 'Capture' { 'capture' } }
     $arguments = @('diagnostics', $subcommand, '--pid', [string]$process.Id)
     if ($action -eq 'Dump') {
-        Write-SpectreHost '[yellow]A dump may contain sensitive application memory.[/]'
-        $dumpType = [string](Read-SpectreSelection -Message 'Dump type' -Choices @('Mini', 'Heap', 'Full', 'Triage'))
+        Write-DevOpsUiMarkup '[yellow]A dump may contain sensitive application memory.[/]'
+        $dumpType = [string](Read-DevOpsUiSelection -Message 'Dump type' -Choices @('Mini', 'Heap', 'Full', 'Triage'))
         $arguments += @('--type', $dumpType)
     }
     if ($action -eq 'Capture') { $arguments += @('--duration', (Read-DevOpsUiText -Message 'Capture duration' -DefaultAnswer '5s')) }
@@ -145,7 +145,7 @@ function Invoke-DevOpsUiDiagnostics {
 }
 
 function Invoke-DevOpsUiReport {
-    $group = [string](Read-SpectreSelection -Message 'Repository health report' -Choices @('all', 'git', 'files', 'code'))
+    $group = [string](Read-DevOpsUiSelection -Message 'Repository health report' -Choices @('all', 'git', 'files', 'code'))
     $top = Read-DevOpsUiText -Message 'Entries per report list' -DefaultAnswer '10'
     $arguments = @('report', $group, '-Top', $top)
     if ($group -ne 'git') {
