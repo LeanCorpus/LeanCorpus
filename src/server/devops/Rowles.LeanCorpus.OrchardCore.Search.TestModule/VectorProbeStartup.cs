@@ -11,6 +11,21 @@ public sealed class VectorProbeStartup : StartupBase
 {
     public override void ConfigureServices(IServiceCollection services)
     {
+        services.AddSingleton<IsolatedConnectionLifetime>();
+        services.Initialize(provider =>
+        {
+            var store = provider.GetService<YesSql.IStore>();
+            if (store is null)
+                return ValueTask.CompletedTask;
+
+            var lifetime = provider.GetRequiredService<IsolatedConnectionLifetime>();
+            if (ReferenceEquals(store.Configuration.ConnectionFactory, lifetime))
+                return ValueTask.CompletedTask;
+
+            lifetime.Attach(store.Configuration.ConnectionFactory);
+            store.Configuration.ConnectionFactory = lifetime;
+            return ValueTask.CompletedTask;
+        });
         services.AddScoped<IContentPartIndexHandler, VectorProbeIndexHandler>();
         services.AddScoped<IContentPartIndexHandler, DifferentialFieldsIndexHandler>();
         services.AddSingleton<OrchardTestFailureInjector>();

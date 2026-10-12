@@ -81,6 +81,7 @@
 
 ## Fixed
 
+- Release SQLite connections left open by Orchard indexing sessions during isolated test-host shutdown, allowing Windows content-root cleanup to complete.
 - Restore active Packed BKD cancellation coverage after bounds scanning begins, with memory/spill phase diagnostics and verification of live spill artefacts before cleanup.
 
 - Correct Slovak API compatibility suppressions, preserve frozen release fixture bytes across platforms, and make background-refresh, cancellation and Orchard lifecycle/setup tests deterministic under hosted Windows load.
