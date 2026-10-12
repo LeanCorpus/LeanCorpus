@@ -381,8 +381,11 @@ public sealed class PackedBkdWriterTests
                 Sample = static (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
                 ActivityStarted = activity =>
                 {
-                    if (activity.OperationName == LeanCorpusActivitySource.PackedBkdBuild)
-                        buildStarted.TrySetResult();
+                    if (activity.OperationName != LeanCorpusActivitySource.PackedBkdBuild)
+                        return;
+
+                    buildStarted.TrySetResult();
+                    cancellation.Cancel();
                 }
             };
             ActivitySource.AddActivityListener(listener);
@@ -397,15 +400,13 @@ public sealed class PackedBkdWriterTests
                     CancellationToken: cancellation.Token)));
 
             await buildStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-            await Task.Delay(TimeSpan.FromMilliseconds(25), TestContext.Current.CancellationToken);
-            Assert.False(write.IsCompleted, "The cancellation test did not reach an active build.");
-            cancellation.Cancel();
             await Assert.ThrowsAsync<OperationCanceledException>(async () =>
                 await write.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
 
             Assert.False(File.Exists(path));
             Assert.Empty(Directory.EnumerateFiles(directory, "*.spill"));
             Assert.Empty(Directory.EnumerateFiles(directory, "*.leaf"));
+            Assert.Empty(Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories));
             Assert.Equal(pointCount, buffer.Count);
             PackedBkdTestSupport.AppendPoint(buffer, 0, 0, pointCount);
             Assert.Equal(pointCount + 1, buffer.Count);

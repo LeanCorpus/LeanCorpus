@@ -52,7 +52,7 @@
     <IsBaselineSuppression>true</IsBaselineSuppression>
   </Suppression>
   <Suppression>
-    <DiagnosticId>CP0001</DiagnosticId>
+    <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Rowles.LeanCorpus.Analysis.Stemmers.SlovakStemmer</Target>
     <Left>lib/net10.0/Rowles.Text.dll</Left>
     <Right>lib/net10.0/Rowles.Text.dll</Right>
@@ -136,7 +136,7 @@
     <IsBaselineSuppression>true</IsBaselineSuppression>
   </Suppression>
   <Suppression>
-    <DiagnosticId>CP0001</DiagnosticId>
+    <DiagnosticId>CP0008</DiagnosticId>
     <Target>T:Rowles.LeanCorpus.Analysis.Stemmers.SlovakStemmer</Target>
     <Left>lib/net11.0/Rowles.Text.dll</Left>
     <Right>lib/net11.0/Rowles.Text.dll</Right>
@@ -168,13 +168,6 @@
     <Target>T:Rowles.LeanCorpus.Analysis.Tokenisers.UrlEmailTokeniser</Target>
     <Left>lib/net11.0/Rowles.Text.dll</Left>
     <Right>lib/net11.0/Rowles.Text.dll</Right>
-    <IsBaselineSuppression>true</IsBaselineSuppression>
-  </Suppression>
-  <Suppression>
-    <DiagnosticId>CP0002</DiagnosticId>
-    <Target>F:Rowles.LeanCorpus.Analysis.StopWords.Slovak</Target>
-    <Left>lib/net10.0/Rowles.Text.dll</Left>
-    <Right>lib/net10.0/Rowles.Text.dll</Right>
     <IsBaselineSuppression>true</IsBaselineSuppression>
   </Suppression>
   <Suppression>
@@ -413,13 +406,6 @@
     <Target>M:Rowles.LeanCorpus.Analysis.Tokenisers.Uax29UrlEmailTokeniser.CreateThreadLocalTokeniser</Target>
     <Left>lib/net10.0/Rowles.Text.dll</Left>
     <Right>lib/net10.0/Rowles.Text.dll</Right>
-    <IsBaselineSuppression>true</IsBaselineSuppression>
-  </Suppression>
-  <Suppression>
-    <DiagnosticId>CP0002</DiagnosticId>
-    <Target>F:Rowles.LeanCorpus.Analysis.StopWords.Slovak</Target>
-    <Left>lib/net11.0/Rowles.Text.dll</Left>
-    <Right>lib/net11.0/Rowles.Text.dll</Right>
     <IsBaselineSuppression>true</IsBaselineSuppression>
   </Suppression>
   <Suppression>

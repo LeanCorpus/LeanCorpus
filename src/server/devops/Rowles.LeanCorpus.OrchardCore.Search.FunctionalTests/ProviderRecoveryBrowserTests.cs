@@ -160,12 +160,11 @@ public sealed class ProviderRecoveryBrowserTests
             http?.Dispose();
             if (app is not null)
             {
-                await app.StopAsync(cancellationToken);
-                await app.DisposeAsync();
+                await OrchardSearchTestHost.StopIsolatedAsync(app);
             }
 
             if (completed && Directory.Exists(root))
-                Directory.Delete(root, recursive: true);
+                await OrchardSearchTestHost.DeleteContentRootAsync(root);
             else if (Directory.Exists(root))
                 Console.WriteLine($"Orchard recovery content root retained at {root}");
         }
@@ -178,8 +177,7 @@ public sealed class ProviderRecoveryBrowserTests
         CancellationToken cancellationToken)
     {
         client.Dispose();
-        await app.StopAsync(cancellationToken);
-        await app.DisposeAsync();
+        await OrchardSearchTestHost.StopIsolatedAsync(app);
         (WebApplication restarted, Uri address) = await OrchardSearchTestHost.StartIsolatedAsync(root);
         return (restarted, address, new HttpClient { BaseAddress = address, Timeout = TimeSpan.FromSeconds(30) });
     }

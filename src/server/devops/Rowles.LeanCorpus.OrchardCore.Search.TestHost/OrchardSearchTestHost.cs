@@ -68,6 +68,33 @@ public static class OrchardSearchTestHost
         return (app, new Uri(address));
     }
 
+    public static async Task StopIsolatedAsync(WebApplication app)
+    {
+        await app.StopAsync().ConfigureAwait(false);
+        await app.DisposeAsync().ConfigureAwait(false);
+        Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+    }
+
+    public static async Task DeleteContentRootAsync(string path)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 20)
+            {
+                await Task.Delay(100).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 20)
+            {
+                await Task.Delay(100).ConfigureAwait(false);
+            }
+        }
+    }
+
     private static void Configure(WebApplicationBuilder builder)
     {
         builder.Logging.SetMinimumLevel(LogLevel.Warning);

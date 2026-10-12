@@ -220,8 +220,8 @@ public sealed class ProviderPerformanceTests
             long hostStarted = Stopwatch.GetTimestamp();
             (WebApplication restartedApp, Uri restartedAddress) = await OrchardSearchTestHost.StartIsolatedAsync(state.ContentRoot);
             double hostStartupMilliseconds = Stopwatch.GetElapsedTime(hostStarted).TotalMilliseconds;
-            using (restartedApp)
-            using (HttpClient restartedHttp = CreateClient(restartedAddress))
+            using HttpClient restartedHttp = CreateClient(restartedAddress);
+            try
             {
                 foreach (string provider in Providers)
                 {
@@ -235,7 +235,10 @@ public sealed class ProviderPerformanceTests
                     Assert.True(opened.Exists, $"The {provider} index did not reopen after host restart.");
                     state.Report.StartupRuns.Add(new StartupRun(provider, hostStartupMilliseconds, opened.ElapsedMilliseconds, opened.Exists));
                 }
-                await restartedApp.StopAsync();
+            }
+            finally
+            {
+                await OrchardSearchTestHost.StopIsolatedAsync(restartedApp);
             }
         }, complete: true);
     }
@@ -300,7 +303,7 @@ public sealed class ProviderPerformanceTests
             if (state.Report.Status == "passed")
             {
                 if (Directory.Exists(state.ContentRoot))
-                    Directory.Delete(state.ContentRoot, recursive: true);
+                    await OrchardSearchTestHost.DeleteContentRootAsync(state.ContentRoot);
                 if (File.Exists(state.StatePath))
                     File.Delete(state.StatePath);
             }
@@ -319,8 +322,7 @@ public sealed class ProviderPerformanceTests
         }
         finally
         {
-            await app.StopAsync();
-            await app.DisposeAsync();
+            await OrchardSearchTestHost.StopIsolatedAsync(app);
         }
     }
 

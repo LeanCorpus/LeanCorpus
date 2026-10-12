@@ -96,10 +96,9 @@ public sealed class SearchLifecycleBrowserTests
         }
         finally
         {
-            await app.StopAsync();
-            await app.DisposeAsync();
+            await OrchardSearchTestHost.StopIsolatedAsync(app);
             if (completed && Directory.Exists(root))
-                Directory.Delete(root, recursive: true);
+                await OrchardSearchTestHost.DeleteContentRootAsync(root);
             else if (Directory.Exists(root))
                 Console.WriteLine($"Orchard diagnostic content root retained at {root}");
         }
@@ -108,6 +107,10 @@ public sealed class SearchLifecycleBrowserTests
     internal static async Task InstallTestSiteAsync(IPage page, Uri address)
     {
         await page.GotoAsync(new Uri(address, "/").ToString(), new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded });
+        var setupButton = page.Locator("#SubmitButton");
+        if (await setupButton.CountAsync() == 0)
+            return;
+
         await page.Locator("#SiteName").FillAsync("LeanCorpus Orchard Search Test Site");
         await page.Locator("#recipeButton").ClickAsync();
         await page.Locator("#recipes a[data-recipe-name='LeanCorpusSearchTest']").ClickAsync();
@@ -116,9 +119,15 @@ public sealed class SearchLifecycleBrowserTests
         await page.Locator("#Email").FillAsync("admin@example.test");
         await page.Locator("#Password").FillAsync("OrchardTestPassword!39");
         await page.Locator("#PasswordConfirmation").FillAsync("OrchardTestPassword!39");
-        await page.Locator("#SubmitButton").ClickAsync();
-        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-        Assert.True(await page.Locator("#SubmitButton").CountAsync() == 0, await page.Locator("body").InnerTextAsync());
+        await setupButton.ClickAsync(new LocatorClickOptions { NoWaitAfter = true });
+        await setupButton.WaitForAsync(new LocatorWaitForOptions
+        {
+            State = WaitForSelectorState.Detached,
+            Timeout = 120_000,
+        });
+        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded,
+            new PageWaitForLoadStateOptions { Timeout = 120_000 });
+        Assert.Equal(0, await page.Locator("#SubmitButton").CountAsync());
     }
 
     private static async Task SignInAsync(IPage page, Uri address)

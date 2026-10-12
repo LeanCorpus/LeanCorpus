@@ -81,6 +81,8 @@
 
 ## Fixed
 
+- Correct Slovak API compatibility suppressions, preserve frozen release fixture bytes across platforms, and make background-refresh, cancellation and Orchard lifecycle/setup tests deterministic under hosted Windows load.
+
 - Map xUnit/MTP `NotRunnable` TRX results to `NotExecuted` while preserving unfamiliar outcomes and handling empty results safely.
 - Reconcile Rowles.Text compatibility suppressions for the intentional `SlovakStemmer` shareable-interface transition on both target frameworks.
 - Repair CI platform-smoke SDK and managed-test preparation, and install the package-matched Playwright Chromium before Orchard browser tests.

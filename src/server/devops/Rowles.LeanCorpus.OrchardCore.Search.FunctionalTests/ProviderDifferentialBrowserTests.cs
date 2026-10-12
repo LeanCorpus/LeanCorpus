@@ -215,10 +215,9 @@ public sealed class ProviderDifferentialBrowserTests
         }
         finally
         {
-            await app.StopAsync(TestContext.Current.CancellationToken);
-            await app.DisposeAsync();
+            await OrchardSearchTestHost.StopIsolatedAsync(app);
             if (completed && Directory.Exists(root))
-                Directory.Delete(root, recursive: true);
+                await OrchardSearchTestHost.DeleteContentRootAsync(root);
             else if (Directory.Exists(root))
                 Console.WriteLine($"Orchard differential content root retained at {root}");
         }

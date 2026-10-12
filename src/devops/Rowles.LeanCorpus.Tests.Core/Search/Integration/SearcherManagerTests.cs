@@ -246,18 +246,23 @@ public sealed class SearcherManagerTests : IDisposable
         writer.AddDocument(Doc("first"));
         writer.Commit();
 
-        using var mgr = new SearcherManager(dir, new SearcherManagerConfig
+        var config = new SearcherManagerConfig
         {
             RefreshInterval = TimeSpan.FromMilliseconds(10)
-        });
+        };
+        using var mgr = new SearcherManager(dir, config);
         writer.AddDocument(Doc("second"));
         writer.Commit();
 
-        var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 5;
+        var deadline = Stopwatch.GetTimestamp() + Stopwatch.Frequency * 30;
         while (mgr.GetDiagnostics().Refreshes == 0 && Stopwatch.GetTimestamp() < deadline)
-            await Task.Delay(TimeSpan.FromMilliseconds(10), TestContext.Current.CancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(25), TestContext.Current.CancellationToken);
 
-        Assert.True(mgr.GetDiagnostics().Refreshes > 0);
+        var diagnostics = mgr.GetDiagnostics();
+        Assert.True(diagnostics.Refreshes > 0,
+            $"Background refresh timed out after 30 seconds. Interval: {config.RefreshInterval}; " +
+            $"refreshes: {diagnostics.Refreshes}; failures: {diagnostics.RefreshFailures}; " +
+            $"last refresh error at: {mgr.LastRefreshErrorAt:O}; last refresh error: {mgr.LastRefreshError}");
         Assert.True(await mgr.MaybeRefreshAsync(TestContext.Current.CancellationToken));
     }
 

@@ -3,3 +3,7 @@
 
 # Normalise all other text files
 * text=auto
+
+# Frozen release fixtures retain their exact committed bytes on every platform.
+/src/devops/Rowles.LeanCorpus.Tests.Shared/Fixtures/Indexes/*.manifest.json -text
+/src/devops/Rowles.LeanCorpus.Tests.Shared/Fixtures/Indexes/*.fixture.b64 -text

@@ -47,10 +47,9 @@ public sealed class ProviderVectorProbeTests
         }
         finally
         {
-            await app.StopAsync(TestContext.Current.CancellationToken);
-            await app.DisposeAsync();
+            await OrchardSearchTestHost.StopIsolatedAsync(app);
             if (completed && Directory.Exists(contentRoot))
-                Directory.Delete(contentRoot, recursive: true);
+                await OrchardSearchTestHost.DeleteContentRootAsync(contentRoot);
             else if (Directory.Exists(contentRoot))
                 Console.WriteLine($"Orchard vector probe content root retained at {contentRoot}");
         }
