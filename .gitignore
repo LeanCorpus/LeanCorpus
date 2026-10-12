@@ -83,6 +83,9 @@ project.lock.json
 project.fragment.lock.json
 /artifacts/
 
+# OrchardCore localization package content restored into the test host project
+/src/server/devops/Rowles.LeanCorpus.OrchardCore.Search.TestHost/Localization/
+
 # Tye
 .tye/
 
