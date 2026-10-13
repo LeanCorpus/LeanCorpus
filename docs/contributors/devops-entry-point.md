@@ -153,7 +153,7 @@ When changing routing, inspect both local callers and workflow callers before re
 
 ## Validate optional compression packages for release
 
-The 4.0 release matrix is LeanCorpus 4.0.0, Rowles.Text 3.0.0 and
+The 4.0 release matrix is LeanCorpus 4.0.0, Rowles.Text 2.0.0 and
 LeanCorpus.Compression.LZ4, Snappy and Zstandard 2.0.0. The optional packages
 require Core `[4.0.0,5.0.0)` and do not directly depend on Rowles.Text.
 

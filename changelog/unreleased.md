@@ -1,17 +1,52 @@
-# Unreleased: LeanCorpus 4.0.0 and Rowles.Text 3.0.0
+# LeanCorpus 4.0.0 and Rowles.Text 2.0.0
+
+LeanCorpus 4.0 is the first major release after the 3.1.x line and rolls the 4.x audit into a broad storage, indexing, search and API hardening pass. It adds the Geo and XY stack, concurrent indexing and index-inspection tooling, strengthens codec, recovery and lifetime behaviour, and deliberately reshapes a small number of public APIs where the previous contracts could not safely support the new behaviour. Rowles.Text also advances independently from 1.0.0 to 2.0.0, publishing both analysis improvements that were already bundled into LeanCorpus 3.1.1 and genuinely new analysis APIs added during the 4.0 work.
+
+### Package versions
+
+Packages advancing with this release:
+
+- LeanCorpus: `3.1.1` to `4.0.0`
+- Rowles.Text: `1.0.0` to `2.0.0`
+- LeanCorpus.Compression.LZ4: `1.0.1` to `2.0.0`
+- LeanCorpus.Compression.Snappy: `1.0.1` to `2.0.0`
+- LeanCorpus.Compression.Zstandard: `1.0.1` to `2.0.0`
+
+`LeanCorpus.SourceGen` remains at `1.1.0` and its package project is unchanged from the 3.1.1 freeze, so it is not part of this release's package-version changes.
+
+### Server packages currently in development
+
+These are versioned in the repository but are not part of the LeanCorpus 4.0 release set:
+
+- `Rowles.LeanCorpus.OrchardCore.Search`: `0.1.0-alpha.1`
+- `Rowles.LeanCorpus.Server.Abstractions`: `0.1.0-alpha.1`
+- `Rowles.LeanCorpus.Server.Core`: `0.1.0-alpha.1`
+- `Rowles.LeanCorpus.Server.AspNetCore`: `0.1.0-alpha.1`
+- `Rowles.LeanCorpus.Server.Grpc`: `0.1.0-alpha.1`
+- `Rowles.LeanCorpus.Server.Local`: `0.1.0-alpha.1`
+- `Rowles.LeanCorpus.Studio`: `0.1.0-alpha.1`
+
+### Working towards
+
+- LeanCorpus Orchard Search (`Rowles.LeanCorpus.OrchardCore.Search`): `0.1.0`
+- LeanCorpus Community Server / CE (`Rowles.LeanCorpus.Server.Abstractions`, `.Core`, `.AspNetCore`, `.Grpc` and `.Local`): `0.1.0`
+- LeanCorpus Server Studio (`Rowles.LeanCorpus.Studio`): `0.1.0`
+
+### Notes
+
+- .NET 11 includes inbox Zstandard support through `System.IO.Compression`. `LeanCorpus.Compression.Zstandard` still uses `ZstdSharp.Port` on both target frameworks in the current 4.0 code. A follow-up should use the inbox .NET 11 Zstandard implementation on `net11.0` while retaining `ZstdSharp.Port` for `net10.0`, with cross-runtime compression/decompression and index-compatibility coverage. This is planned follow-up work, not an implemented 4.0 change. ([dotnet/runtime #59591](https://github.com/dotnet/runtime/issues/59591))
+
+> **Rowles.Text release boundary:** LeanCorpus 3.1.1 compiled the Rowles.Text analysis sources directly into the Core package while the standalone Rowles.Text package remained at 1.0.0. A few Rowles.Text 2.0 notes therefore describe functionality that LeanCorpus users already received in 3.1.1; those entries are called out explicitly below.
 
 ## Added
 
-- Add an optional PwshSpectreConsole-backed DevOps workbench with registry-driven test and benchmark selectors, structured test progress, run inspection, diagnostics, DataForge generation parameters and repository workflows.
-- Add `dataforge profiles -Json` for machine-readable profile descriptors used by automation and the DevOps workbench.
-- Add a Spectre.Console CLI Workbench for index browsing, search and analysis, supported Core inspection models, deterministic DataForge presets and schema creation, recipe reproduction, fingerprints, Test Lab fixtures, and workload replay.
-
-- Select affected tests from an isolated commit or explicit Git range with `-Commit` and `-Range`, retaining dirty-state selection by default and recording selection provenance in test artefacts.
-
-- Expose ordered multi-document replacement on `IndexWriter` for integrations that need one delete pass per batch.
-- Add frozen, hash-verified LeanCorpus 3.1.1 release migration acceptance for loose and compound indexes, including sparse vectors, committed deletions, merge and publication recovery, with a pinned fixture regeneration command.
+- Add a Spectre.Console CLI Workbench for interactive index browsing, search, analysis, Core-backed inspection, deterministic index creation, fingerprints and workload replay. ([49cfcd898](https://github.com/jordansrowles/LeanCorpus/commit/49cfcd8980793b428469c1df503196637cf1d834))
+- Add public read-only `IndexInspector` and typed inspection models for committed-index overviews, segments, fields, terms and postings, documents, vector and spatial metadata, and format and size inspection. ([49cfcd898](https://github.com/jordansrowles/LeanCorpus/commit/49cfcd8980793b428469c1df503196637cf1d834))
+- Expose ordered multi-document replacement through `IndexWriter.UpdateDocuments`, applying one delete pass before ordered replacements in a batch. ([d158f0507](https://github.com/jordansrowles/LeanCorpus/commit/d158f0507c56a38ac149dd043215359c8d6d1d70))
 - Add construction-time `IndexingConcurrency` configuration and explicit concurrent async bulk ingestion for the Core writer, and make concurrent bulk ingestion use bounded producers through the normal DWPT pipeline. ([3c43b0726](https://github.com/jordansrowles/LeanCorpus/commit/3c43b0726976b2842dfe6512860f17a7d5929845), [4d0432e27](https://github.com/jordansrowles/LeanCorpus/commit/4d0432e27fb3027e6987009cde2fad5b41e2c1f0))
+- Publish Slovak (`sk`) analysis with built-in stop words, `SlovakStemmer` and analyser-factory registration in standalone Rowles.Text; this functionality was already included in LeanCorpus 3.1.1. ([57d7d29a0](https://github.com/jordansrowles/LeanCorpus/commit/57d7d29a03c78a2dba09e15df30a21a649f19a72))
 - Add `UrlEmailTokeniser` for URL, email, hashtag and mention heuristics. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Add explicit concurrent-analysis ownership contracts through `IThreadLocalAnalyser`, `IShareableSpanTokeniser` and `IThreadLocalSpanTokeniser`. ([603dffc68](https://github.com/jordansrowles/LeanCorpus/commit/603dffc68a6e0f073126a95479ac7b1ce37e74e3), [ababe3844](https://github.com/jordansrowles/LeanCorpus/commit/ababe384421fc94dff5251b464944b1e7375c4ba))
 - Add public disposable `JapaneseDictionary` ownership and `AnalyserFactory.CreateOwnedJapaneseAnalyser` for custom `.jlc` dictionaries. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Support flat `(a OR b)` alternative groups in `ComplexPhraseQueryParser` quoted phrases, with deterministic rejection of malformed and nested groups. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Add a 256 MiB default retained-resource budget for heavy segment-reader states, an override through process-wide searcher defaults, and public per-component cache metrics. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
@@ -32,29 +67,14 @@
 
 ## Changed
 
-- Replace the nightly benchmark workflow with configurable manual runs for suite, strategy, framework, runner OS, document count, selection filters, corpus-only mode and command previews.
-
-- Keep package API baseline validation enabled while defaulting baseline comparisons to backwards compatibility; exact API equality remains an explicit per-package policy.
-
-- Extend `./devops test` to accept multiple explicit suites and filter by test technique; expose affected-target explanations and structured UI events. Grouped benchmarks now honour strategy and run options instead of dropping them.
-
-- Decompose segment merging into internal planning and codec writers while preserving document ordering, retention and persisted formats.
-
-- Make normal package packing policy-driven, validate pinned API baselines and package archive contents including the explicit compression-to-Core dependency range, and add an independent package-validation CI gate.
-
-- Validate every shipping package through isolated local-feed consumers, including framework builds and Core write/read acceptance.
-
-- Advance LZ4, Snappy and Zstandard optional packages to 2.0.0, require LeanCorpus `[4.0.0,5.0.0)`, publish matching symbol packages and add local-package consumer acceptance to DevOps packing.
-
-- Add the `Scope=PlatformSmoke` trait and compact index, filesystem-handle and concurrent-search tests; select Native AOT RIDs from the current OS and process architecture, and run the smoke and AOT gates on Linux x64, Linux ARM64, Windows x64 and macOS ARM64.
-
-- Define `ComplexPhraseQueryParser.InOrder` as controlling ordering only for multi-slot flat-alternative phrases; ordinary analysed phrases remain graph-aware and ordered.
+- Bring standalone Rowles.Text up to the graph-aware token API already included in LeanCorpus 3.1.1: `Token`, span sinks and span filters carry positive position lengths so shingles, synonyms and quoted analysis retain complete graph edges, and graph-producing indexing pipelines must flatten non-unit edges before postings. This adds `Token.PositionLength` and the corresponding constructor/API surface to the standalone package. ([6b702a035](https://github.com/jordansrowles/LeanCorpus/commit/6b702a035c035d587f81c161a8d6dd0aff81cb15))
+- Advance the LZ4, Snappy and Zstandard optional packages to 2.0.0, require LeanCorpus `[4.0.0,5.0.0)`, and publish matching symbol packages. ([7f7427d93](https://github.com/jordansrowles/LeanCorpus/commit/7f7427d93c9fc0210cbf11b423a3ab4e102b6993), [5608a1859](https://github.com/jordansrowles/LeanCorpus/commit/5608a18593c55f8c902f31bbfe0c66b9687f3505))
+- Define `ComplexPhraseQueryParser.InOrder` as controlling ordering only for multi-slot flat-alternative phrases; ordinary analysed phrases remain graph-aware and ordered. ([e93bc0e66](https://github.com/jordansrowles/LeanCorpus/commit/e93bc0e663c1761033dd79ddf01f695aaaa798c8))
 - Close Geo and XY geometry collections to built-in types and clarify the Packed BKD namespace boundary. ([ed255b3d4](https://github.com/jordansrowles/LeanCorpus/commit/ed255b3d4875e5ee67b69a8a2f6b2dd50b6a7800))
 - Stream vector segment merges through mapped destination files and bounded quantisation passes, avoiding a second managed float corpus during HNSW rebuilds. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Reduce retained Packed BKD build metadata to one contiguous leaf-data stream and stack-based recursive validation scratch. ([d61a418e4](https://github.com/jordansrowles/LeanCorpus/commit/d61a418e48614d04458d21df3aa929a75cfb1652))
-- Core advances to 4.0.0 and Rowles.Text to 3.0.0 for the public API changes listed below. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Clarify that concurrent bulk indexing does not preserve input document-ID order and tracked sequence ranges describe flush generations. ([bcdcbc8ea](https://github.com/jordansrowles/LeanCorpus/commit/bcdcbc8ea72e7d921a5826ad743825268bcf8194))
-- Keep field-length bodies in the existing v2 VarInt format, validate encoded values before allocation, and accept only verified legacy zero padding.
+- Keep field-length bodies in the existing v2 VarInt format, validate encoded values before allocation, and accept only verified legacy zero padding. ([af6aacfa7](https://github.com/jordansrowles/LeanCorpus/commit/af6aacfa7d1128e0f8876ab1c6d1511cb62f7c25), [53b537956](https://github.com/jordansrowles/LeanCorpus/commit/53b53795698144c29ff52299d7c02d4141d06826))
 - Advance float and quantised vector bodies to v2 with per-document presence; migrate reconstructable v1 fields using persisted HNSW membership without changing vector payload bytes, and reject migration without authoritative presence. HNSW remains v1. ([2228d0d52](https://github.com/jordansrowles/LeanCorpus/commit/2228d0d5291cade5c00d9de5115a56c6e7658a23))
 - Replace path-owning `JapaneseTokeniser` construction with explicit `JapaneseDictionary` ownership; tokenisers borrow supplied dictionaries, and disposal waits for active tokenisation. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Replace repeated Thai and Chinese lexicon prefix hash probes with an allocation-free radix trie, reducing tokenisation time for long unknown runs. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
@@ -85,52 +105,23 @@
 - Make Packed BKD open read only its tail directory, select raw leaves on exact prefix-size ties, account actual rented build capacity, and add observer-only build and traversal telemetry. ([574f19063](https://github.com/jordansrowles/LeanCorpus/commit/574f19063ffe5413b6f593181d1ae27d84c6fbf4))
 - Rename spatial configuration and longitude-normalisation APIs to `Point2D()`, `Shape7D4Indexed()` and `NormaliseLongitude()` while preserving the Packed BKD v1 file format. ([d84cb3347](https://github.com/jordansrowles/LeanCorpus/commit/d84cb3347c3fe2952961815a1209b6bd3698d8f7))
 - `QueryParser.AnalyseTerm` now returns the complete token stream to subclasses; wildcard and range literals reject analyser output that cannot be represented as one term. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Segment ordinals now use one atomic allocator across detached flush, merge, force-merge, and imported-index paths. Detached flushing also sorts compact term IDs directly against its owned UTF-8 pool rather than allocating per-term byte arrays. ([84ba35bf4](https://github.com/jordansrowles/LeanCorpus/commit/84ba35bf4370132c0ffffc06edd6945c4e11ff90))
+- Segment ordinals now use one atomic allocator across detached flush, merge, force-merge and imported-index paths. Detached flushing also sorts compact term IDs directly against its owned UTF-8 pool rather than allocating per-term byte arrays. ([84ba35bf4](https://github.com/jordansrowles/LeanCorpus/commit/84ba35bf4370132c0ffffc06edd6945c4e11ff90))
 - Write stored-fields v5 with segment-level field-name tables and byte-bounded blocks: target 1 MiB raw blocks, isolate larger documents up to 256 MiB, and retain v1-v4 reads. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Return `CharFilterResult` from `ICharFilter` with composable UTF-16 offset corrections, mapping indexed token offsets back to original input across chained transformations. This breaks the previous character-filter API in Rowles.Text and source-included Core analysis. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Return `CharFilterResult` from `ICharFilter` with public `OffsetCorrectionMap` support for composable UTF-16 offset corrections, mapping indexed token offsets back to original input across chained transformations. This breaks the previous character-filter API in Rowles.Text and source-included Core analysis. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 
 ## Fixed
 
-- Preserve deletion snapshots across repeated uncommitted updates and rollback, and isolate background merges from concurrent segment-state changes.
-- Reject queued Orchard index operations after cache disposal so shutdown cannot reopen writer handles.
-- Release Orchard tenant writers independently during shutdown while retaining handle sharing across replacement shells for the same tenant.
-
-- Preserve the frozen CLI migration fixture bytes across Git checkouts and report intentionally excluded explicit tests as skipped while retaining incomplete status for missing or mixed execution evidence.
-- Reconcile package compatibility exceptions with normal baseline validation, removing obsolete strict-equality exceptions and covering the documented character-filter API transition on both frameworks.
-
-- Preserve DevOps progress callback module scope so long-running tests finish with or without UI telemetry; exercise the callback in Linux and Windows CI.
-- Stop platform smoke validation at the first failed command so later successes cannot mask failures.
-- Wake the ordered async writer consumer directly during admission and shutdown, retain writer resources after a consumer timeout, and replay the Windows lifecycle failure seed.
-- Keep workbench physical file inspection inside Store and declare the intentional inspection and standalone Slovak analysis API additions against the existing package baselines.
-
-- Fix DevOps workbench callbacks, literal and blank output rendering, profile discovery and timeout units; add visible DevOps and CLI identities, group test flags on one screen and make execution confirmations opt in.
-- Release the CLI compact writer before verifying logical equivalence so successful compaction returns success.
-- Keep the CLI browser open after invalid document identifiers or search syntax and display the error in a panel.
-
-- Release SQLite connections left open by Orchard indexing sessions during isolated test-host shutdown, allowing Windows content-root cleanup to complete.
-- Restore active Packed BKD cancellation coverage after bounds scanning begins, with memory/spill phase diagnostics and verification of live spill artefacts before cleanup.
-
-- Correct Slovak API compatibility suppressions, preserve frozen release fixture bytes across platforms, and make background-refresh, cancellation and Orchard lifecycle/setup tests deterministic under hosted Windows load.
-
-- Map xUnit/MTP `NotRunnable` TRX results to `NotExecuted` while preserving unfamiliar outcomes and handling empty results safely.
-- Reconcile Rowles.Text compatibility suppressions for the intentional `SlovakStemmer` shareable-interface transition on both target frameworks.
-- Repair CI platform-smoke SDK and managed-test preparation, and install the package-matched Playwright Chromium before Orchard browser tests.
-- Run Orchard provider functional tests once without the explicit performance phases in the normal suite registry.
-- Keep the existing Core and Server Abstractions theory rows while disabling discovery-time enumeration for their non-serialisable data.
-- Forward the documented `data gutenberg -BookCount` value to the downloader instead of silently using its default count.
-
-- Preserve buffered CommonGrams graph edge lengths and combine only adjacent unit-position tokens; retain graph lengths when ICU and URL/email tokenisers delegate Thai runs.
-
-- Restore Native AOT smoke coverage for complex-phrase rejection, parser reuse and flat alternatives, and select it for affected parser changes.
-
-- Separate stored-fields v5 raw/decompressed (256 MiB) and encoded (320 MiB) ceilings so legal raw blocks can expand during compression. Preserve v1-v4 encoded limits, the v5 body layout and the existing 3.1.1 v3-to-v5 coordinated migration, with no additional migration.
-
-- Complete frozen 3.1.1 migration acceptance with colon-containing physical index sorting through migration and merge, and exact migration action checks.
-
-- Make text analysis Unicode-scalar correct while retaining UTF-16 source offsets, including supplementary letters, grams, digits, case boundaries, punctuation and accent marks. Truncation preserves original source offsets; reversal preserves scalar encodings. Span accent normalisation safely handles isolated surrogates. Affected existing analyser configurations may require reindexing, with no codec change or postings migration.
-
-- Bound single-field, multi-field and index-sort result collection to top-N candidates, with shared timeout and cancellation checks across ordinary sorting and best-first spatial search.
-- Enforce Geo/XY point kinds in queries, distance sorting and merge preflight; preserve legacy Geo fallback and keep wrong-kind sort results as missing values. ([work item 20](https://gitlab.com/jordansrowles/leancorpus/-/work_items/20))
+- Publish the `LowercaseFilter` non-ASCII uppercase correction in standalone Rowles.Text; this fix was already included in LeanCorpus 3.1.1. ([a717abcce](https://github.com/jordansrowles/LeanCorpus/commit/a717abccea6c726c0862400c6f21aee35d52d36b))
+- Publish recoverable per-call token-budget accounting in standalone Rowles.Text so a rejected input does not poison later reuse of the same tokeniser; this fix was already included in LeanCorpus 3.1.1. ([2783e3720](https://github.com/jordansrowles/LeanCorpus/commit/2783e3720084117a2b283794159afe93f75f288f))
+- Preserve deletion snapshots across repeated uncommitted updates and rollback, and isolate background merges from concurrent segment-state changes. ([793d1b49f](https://github.com/jordansrowles/LeanCorpus/commit/793d1b49f1bacf00c2bbc47d8998a7edf70d3b5a))
+- Wake the ordered async writer consumer directly during admission and shutdown, and retain writer resources after a consumer timeout so a later `Dispose()` can complete teardown safely. ([617916e2f](https://github.com/jordansrowles/LeanCorpus/commit/617916e2fd325b7beb81cb8aab1b47d1936d801a))
+- Release the CLI compact writer before verifying logical equivalence so successful compaction returns success. ([852f14097](https://github.com/jordansrowles/LeanCorpus/commit/852f14097d8f430e6b323d408bc76396cf0f4aef))
+- Keep the CLI browser open after invalid document identifiers or search syntax and display the error in a panel. ([852f14097](https://github.com/jordansrowles/LeanCorpus/commit/852f14097d8f430e6b323d408bc76396cf0f4aef))
+- Preserve buffered CommonGrams graph edge lengths and combine only adjacent unit-position tokens; retain graph lengths when ICU and URL/email tokenisers delegate Thai runs. ([c84d729ca](https://github.com/jordansrowles/LeanCorpus/commit/c84d729cac40d99fabc99e14f50bfdd2a8f21c05))
+- Separate stored-fields v5 raw/decompressed (256 MiB) and encoded (320 MiB) ceilings so legal raw blocks can expand during compression. Preserve v1-v4 encoded limits, the v5 body layout and the existing 3.1.1 v3-to-v5 coordinated migration, with no additional migration. ([61580229f](https://github.com/jordansrowles/LeanCorpus/commit/61580229fc01131d626bda1040e58ebdfbde7168))
+- Make text analysis Unicode-scalar correct while retaining UTF-16 source offsets, including supplementary letters, grams, digits, case boundaries, punctuation and accent marks. Truncation preserves original source offsets; reversal preserves scalar encodings. Span accent normalisation safely handles isolated surrogates. Affected existing analyser configurations may require reindexing, with no codec change or postings migration. ([1e194acad](https://github.com/jordansrowles/LeanCorpus/commit/1e194acadc77c8ca92b1934d41b3eda5cf89b89f))
+- Bound single-field, multi-field and index-sort result collection to top-N candidates, with shared timeout and cancellation checks across ordinary sorting and best-first spatial search. ([36f3a3535](https://github.com/jordansrowles/LeanCorpus/commit/36f3a3535404545591cf3de1a82eb24fefcf8f9d))
+- Enforce Geo/XY point kinds in queries, distance sorting and merge preflight; preserve legacy Geo fallback and keep wrong-kind sort results as missing values. ([c5c202701](https://github.com/jordansrowles/LeanCorpus/commit/c5c202701417b40ce11e755d0d072c102291328f))
 - Reject duplicate compound-file inputs before changing the destination or deleting source files. ([eb24531ea](https://github.com/jordansrowles/LeanCorpus/commit/eb24531eae6487d5f9a42666b3d65338d629d435))
 - Reject corrupt field-length counts, names, values and trailing data before allocating document arrays or exposing a segment reader. ([af6aacfa7](https://github.com/jordansrowles/LeanCorpus/commit/af6aacfa7d1128e0f8876ab1c6d1511cb62f7c25))
 - Make repeated LZ4, Snappy and Zstandard registration calls safe after automatic registration, while retaining duplicate-policy checks for custom codecs. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
@@ -150,15 +141,15 @@
 - Reject parent bitsets with mismatched word counts or set bits outside the declared document range, and validate `Set` document IDs. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Return defensive copies from public SegmentReader DocValues getters, including nested binary payloads and field lengths, while keeping internal query access read-only and lease-scoped. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Keep query reader state in a scoped LIFO stack, restore outer readers after nested calls, and reject lease disposal on another thread. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Validate the stored-field block document-count limit consistently in writer configuration, direct and stream writers, readers, and index inspection. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Validate the stored-field block document-count limit consistently in writer configuration, direct and stream writers, readers and index inspection. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Reject Binary DocValues field payloads above 2,147,483,646 bytes before writing offsets or publishing the `.dvb` file, using checked 64-bit size accounting while preserving the current 32-bit offset format. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Validate DocValues frame lengths, field and document counts, offsets, and presence payloads before allocating; reject malformed counts and body overruns as codec corruption. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Validate DocValues frame lengths, field and document counts, offsets and presence payloads before allocating; reject malformed counts and body overruns as codec corruption. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Keep missing sorted DocValues out of the term dictionary while preserving explicit empty terms; write the corrected semantics as v3 and retain v1-v2 reads. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Accept stored-field codec output larger than twice its raw size while retaining independent block-size and file-bound checks. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Reject malformed stored-field document metadata with bounded document spans, validated block offsets and consistent corruption errors across retrieval and field checks. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Ignore deleted children and parents in block-join search, and drop a whole block during merge when its parent is not retained. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Keep per-segment deletion generations, live-document counts and soft-delete cutoffs in each commit, so commit publication atomically selects visibility for recovery, snapshots and historical backups. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Fail closed when selected deletion state is missing, malformed, or inconsistent with segment metadata. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Fail closed when selected deletion state is missing, malformed or inconsistent with segment metadata. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Expose immutable `SegmentDescriptor` metadata from `SegmentReader.Info` and return deep copies from `GetNrtSegments()`, so later commits cannot change an existing NRT searcher's deletion view. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Centralise segment file ownership so merge, deletion and recovery cleanup include vector/HNSW and deletion-generation sidecars, while pruning protects active commit and held-snapshot generations. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Apply codec-catalogue temporary-file patterns consistently to searcher snapshot leases, commit syncing, recovery, migration cleanup and validation. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
@@ -169,11 +160,11 @@
 - Parse `~`, `^` and `^=` modifiers atomically, reject non-finite scores, and cap phrase slop at 256. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Treat quoted phrases with no analysed tokens as no-clause results instead of reconstructing raw terms, returning `MatchNoDocsQuery` when no query clauses remain. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Recognise query syntax before analyser lowering and normalise stopword-empty Boolean clauses after analysis. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Reject unsupported embedded operators in complex phrases with precise source offsets, while preserving ordinary in-token punctuation and escaped literals.
-- Preserve query-token escape metadata through wildcard, range, and phrase parsing so escaped metacharacters remain literal. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Reject unsupported embedded operators in complex phrases with precise source offsets, while preserving ordinary in-token punctuation and escaped literals. ([3867c53a3](https://github.com/jordansrowles/LeanCorpus/commit/3867c53a39ee8aee07d775750edb0d98c9b03256))
+- Preserve query-token escape metadata through wildcard, range and phrase parsing so escaped metacharacters remain literal. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Preserve position lengths through legacy filter routing and cached graph replay, with independent cache clones. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Compile phrase token graphs iteratively within explicit traversal and output limits. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Bound phrase graph expansion per parse by path, term, edge, traversal, and Boolean-clause budgets, then compile validated paths incrementally. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
+- Bound phrase graph expansion per parse by path, term, edge, traversal and Boolean-clause budgets, then compile validated paths incrementally. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Compile quoted token-graph paths across positional holes while preserving absolute phrase positions. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Preserve position lengths and absolute graph edges through common-gram generation and replay. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 - Unicode tokenisers recognise supplementary letters and digits while preserving UTF-16 offsets; unpaired surrogates delimit words. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
@@ -200,7 +191,7 @@
 - Treat every document rejection before DWPT mutation as recoverable, release fatal-reconciliation backpressure before admitted peers unwind, and restore sequence numbering from zero for empty committed indexes. ([943ccaf01](https://github.com/jordansrowles/LeanCorpus/commit/943ccaf0192df7d5f6ad89908b113cbd09c3ad70))
 - Preflight vector dimensions before DWPT mutation and copy accepted vector storage so caller-side array mutation cannot alter buffered or persisted vectors. ([fcdf4bf38](https://github.com/jordansrowles/LeanCorpus/commit/fcdf4bf38dae863cbc6988cfda0180290c543a4f))
 - Preflight vector merge dimensions and normalisation contracts before writing output, apply the destination writer's quantisation policy across imports and merges, and reuse HNSW seeds only when their vector contract matches the destination. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
-- Fixed merge validation for Shape DocValues component trees, empty spatial aggregations after shape deletion, and WKT output for degenerate Geo and XY rectangles and Geo rectangles spanning longitude -180 to 180. ([4d0432e27](https://github.com/jordansrowles/LeanCorpus/commit/4d0432e27fb3027e6987009cde2fad5b41e2c1f0))
+- Fix merge validation for Shape DocValues component trees, empty spatial aggregations after shape deletion, and WKT output for degenerate Geo and XY rectangles and Geo rectangles spanning longitude -180 to 180. ([4d0432e27](https://github.com/jordansrowles/LeanCorpus/commit/4d0432e27fb3027e6987009cde2fad5b41e2c1f0))
 
 ## Removed
 

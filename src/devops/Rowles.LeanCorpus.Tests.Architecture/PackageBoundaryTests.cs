@@ -187,7 +187,7 @@ public sealed class PackageBoundaryTests
         XDocument target = XDocument.Load(Path.Combine(RepositoryPaths.Root, "src/core/OptionalCompression.Pack.targets"));
         Assert.Equal("[4.0.0,5.0.0)", Assert.Single(target.Descendants("ProjectVersion")).Value);
         Assert.Equal("4.0.0", GetProperty(LoadProject("src/core/Rowles.LeanCorpus/Rowles.LeanCorpus.csproj"), "Version"));
-        Assert.Equal("3.0.0", GetProperty(LoadProject("src/core/Rowles.Text/Rowles.Text.csproj"), "Version"));
+        Assert.Equal("2.0.0", GetProperty(LoadProject("src/core/Rowles.Text/Rowles.Text.csproj"), "Version"));
     }
 
     [Fact]
