@@ -153,6 +153,7 @@ function New-TestReportDocument {
         tests = @($Summary.Tests | ForEach-Object { ConvertTo-TestReportTestDocument $_ })
         intermittentFailures = @($Summary.IntermittentFailures | ForEach-Object { ConvertTo-TestReportTestDocument $_ })
         alwaysFailingTests = @($Summary.AlwaysFailingTests | ForEach-Object { ConvertTo-TestReportTestDocument $_ })
+        skippedTests = @($Summary.SkippedTests | ForEach-Object { ConvertTo-TestReportTestDocument $_ })
         incompleteTests = @($Summary.IncompleteTests | ForEach-Object { ConvertTo-TestReportTestDocument $_ })
         slowestTests = @($Summary.SlowestTests | ForEach-Object { ConvertTo-TestReportTestDocument $_ })
         crashedTargets = @($Summary.CrashedTargets)
@@ -287,6 +288,17 @@ function New-TestMarkdownReport {
                 }
                 [void]$builder.AppendLine("| $(ConvertTo-MarkdownCell $test.TestName) | $(ConvertTo-MarkdownCell $test.TargetKey) | $(ConvertTo-MarkdownCell $test.Classification) | $(ConvertTo-MarkdownCell $detail) |")
             }
+        }
+        [void]$builder.AppendLine()
+    }
+
+    if (@($Summary.SkippedTests).Count -gt 0) {
+        [void]$builder.AppendLine('## Skipped tests')
+        [void]$builder.AppendLine()
+        [void]$builder.AppendLine('| Test | Target | Classification |')
+        [void]$builder.AppendLine('| --- | --- | --- |')
+        foreach ($test in @($Summary.SkippedTests)) {
+            [void]$builder.AppendLine("| $(ConvertTo-MarkdownCell $test.TestName) | $(ConvertTo-MarkdownCell $test.TargetKey) | Skipped |")
         }
         [void]$builder.AppendLine()
     }

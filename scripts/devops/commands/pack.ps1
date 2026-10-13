@@ -1,6 +1,38 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Assert-PackageBaselinePolicy {
+    param([System.Collections.IDictionary]$Entry)
+
+    if ($Entry.Contains('strictBaseline')) {
+        if ($Entry.strictBaseline -isnot [bool]) {
+            throw "Package $($Entry.packageId) requires a Boolean 'strictBaseline' policy value."
+        }
+        if ($Entry.strictBaseline) {
+            if (-not $Entry.enableApiCompatibility) {
+                throw "Package $($Entry.packageId) requires enableApiCompatibility for strictBaseline."
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$Entry.baselineVersion)) {
+                throw "Package $($Entry.packageId) requires baselineVersion for strictBaseline."
+            }
+        }
+    }
+}
+
+function New-PackageValidationProperties {
+    param([System.Collections.IDictionary]$Entry, [string]$ProjectName)
+
+    $baselineProperty = if ([string]::IsNullOrWhiteSpace([string]$Entry.baselineVersion)) {
+        ''
+    } else {
+        "<PackageValidationBaselineVersion>$($Entry.baselineVersion)</PackageValidationBaselineVersion>"
+    }
+    $strictProperty = if ($Entry.Contains('strictBaseline') -and $Entry.strictBaseline) {
+        '<EnableStrictModeForBaselineValidation>true</EnableStrictModeForBaselineValidation>'
+    } else { '' }
+    return "<Project><PropertyGroup Condition=`"'`$(MSBuildProjectName)' == '$ProjectName'`"><EnablePackageValidation>true</EnablePackageValidation>$strictProperty$baselineProperty</PropertyGroup></Project>"
+}
+
 function Invoke-DevOpsPack {
     param([string[]]$Arguments = @())
 
@@ -41,6 +73,7 @@ function Invoke-DevOpsPack {
             foreach ($property in @('enableApiCompatibility', 'requireXmlDocs', 'requireSymbols')) {
                 if ($entry[$property] -isnot [bool]) { throw "Package $($entry.packageId) requires a Boolean '$property' policy value." }
             }
+            Assert-PackageBaselinePolicy -Entry $entry
             $project = Join-Path $repoRoot ([string]$entry.projectPath)
             if (-not (Test-Path -LiteralPath $project -PathType Leaf)) { throw "Package policy project does not exist: $($entry.projectPath)" }
             $projectMetadata = Get-PackageProjectMetadata -ProjectPath $project
@@ -93,12 +126,7 @@ function Invoke-DevOpsPack {
                 [void][IO.Directory]::CreateDirectory($propsDirectory)
                 $propsPath = Join-Path $propsDirectory ("baseline-" + [Guid]::NewGuid().ToString('N') + '.props')
                 $projectName = [IO.Path]::GetFileNameWithoutExtension($project)
-                $baselineProperty = if ([string]::IsNullOrWhiteSpace([string]$entry.baselineVersion)) {
-                    ''
-                } else {
-                    "<PackageValidationBaselineVersion>$($entry.baselineVersion)</PackageValidationBaselineVersion>"
-                }
-                $props = "<Project><PropertyGroup Condition=`"'`$(MSBuildProjectName)' == '$projectName'`"><EnablePackageValidation>true</EnablePackageValidation><EnableStrictModeForBaselineValidation>true</EnableStrictModeForBaselineValidation>$baselineProperty</PropertyGroup></Project>"
+                $props = New-PackageValidationProperties -Entry $entry -ProjectName $projectName
                 [IO.File]::WriteAllText($propsPath, $props, [Text.UTF8Encoding]::new($false))
                 $packArguments += "-p:CustomAfterMicrosoftCommonProps=$propsPath"
             }

@@ -189,6 +189,46 @@ try {
         Assert-Smoke (Test-Path (Join-Path $outputRoot 'unrelated.md')) 'published baseline page was erased.'
 
         # E. One-shot and repeated test classifications.
+        . (Join-Path $RepositoryRoot 'scripts/devops/commands/pack.ps1')
+        foreach ($case in @(
+            @{ Policy = @{ packageId = 'Smoke'; enableApiCompatibility = $true; baselineVersion = '1.0.0' }; Strict = $false; Baseline = '1.0.0' },
+            @{ Policy = @{ packageId = 'Smoke'; enableApiCompatibility = $true; baselineVersion = '1.0.0'; strictBaseline = $false }; Strict = $false; Baseline = '1.0.0' },
+            @{ Policy = @{ packageId = 'Smoke'; enableApiCompatibility = $true; baselineVersion = '1.0.0'; strictBaseline = $true }; Strict = $true; Baseline = '1.0.0' },
+            @{ Policy = @{ packageId = 'Smoke'; enableApiCompatibility = $true; baselineVersion = $null }; Strict = $false; Baseline = '' }
+        )) {
+            Assert-PackageBaselinePolicy -Entry $case.Policy
+            [xml]$props = New-PackageValidationProperties -Entry $case.Policy -ProjectName 'Smoke.Project'
+            $group = $props.Project.PropertyGroup
+            Assert-Smoke ($group.EnablePackageValidation -ceq 'true') 'SDK package validation was disabled.'
+            $strict = $group.SelectSingleNode('EnableStrictModeForBaselineValidation')
+            if ($case.Strict) {
+                Assert-Smoke ($null -ne $strict -and $strict.InnerText -ceq 'true') 'strict opt-in was not emitted.'
+            } else {
+                Assert-Smoke ($null -eq $strict) 'normal validation emitted a strict-mode property.'
+            }
+            $baseline = $group.SelectSingleNode('PackageValidationBaselineVersion')
+            if ($case.Baseline) {
+                Assert-Smoke ($null -ne $baseline -and $baseline.InnerText -ceq $case.Baseline) 'baseline pin was not retained.'
+            } else {
+                Assert-Smoke ($null -eq $baseline) 'unpublished package emitted a baseline.'
+            }
+            Assert-Smoke ($group.Condition -ceq "'`$(MSBuildProjectName)' == 'Smoke.Project'") 'validation leaked into referenced projects.'
+        }
+        foreach ($invalid in @(
+            @{ strictBaseline = 'false'; enableApiCompatibility = $true; baselineVersion = '1.0.0' },
+            @{ strictBaseline = 0; enableApiCompatibility = $true; baselineVersion = '1.0.0' },
+            @{ strictBaseline = $null; enableApiCompatibility = $true; baselineVersion = '1.0.0' },
+            @{ strictBaseline = $true; enableApiCompatibility = $false; baselineVersion = '1.0.0' },
+            @{ strictBaseline = $true; enableApiCompatibility = $true; baselineVersion = $null },
+            @{ strictBaseline = $true; enableApiCompatibility = $true; baselineVersion = '' },
+            @{ strictBaseline = $true; enableApiCompatibility = $true; baselineVersion = ' ' }
+        )) {
+            $invalid.packageId = 'Invalid.Smoke'
+            $message = ''
+            try { Assert-PackageBaselinePolicy -Entry $invalid } catch { $message = $_.Exception.Message }
+            Assert-Smoke ($message.Contains('Invalid.Smoke')) 'invalid baseline policy was accepted or its package ID was omitted.'
+        }
+
         $pass = [pscustomobject]@{ Outcome = 'Passed' }
         $fail = [pscustomobject]@{ Outcome = 'Failed' }
         Assert-Smoke ((Get-TestObservationClassification @($pass) 1) -eq 'Passed') 'one pass was not classified Passed.'
@@ -196,6 +236,74 @@ try {
         Assert-Smoke ((Get-TestObservationClassification @($pass, $pass) 2) -eq 'Always passes') 'repeated passes were misclassified.'
         Assert-Smoke ((Get-TestObservationClassification @($fail, $fail) 2) -eq 'Always fails') 'repeated failures were misclassified.'
         Assert-Smoke ((Get-TestObservationClassification @($pass, $fail) 2) -eq 'Intermittent failure') 'mixed repeats were misclassified.'
+
+        $skip = [pscustomobject]@{ Outcome = 'Skipped' }
+        $notExecuted = [pscustomobject]@{ Outcome = 'NotExecuted' }
+        $inconclusive = [pscustomobject]@{ Outcome = 'Inconclusive' }
+        foreach ($case in @(
+            @{ Observations = @($skip); Expected = 1; Want = 'Skipped' },
+            @{ Observations = @($skip, $skip); Expected = 2; Want = 'Skipped' },
+            @{ Observations = @($skip); Expected = 2; Want = 'Incomplete' },
+            @{ Observations = @($pass); Expected = 2; Want = 'Incomplete' },
+            @{ Observations = @(); Expected = 1; Want = 'Incomplete' },
+            @{ Observations = @($pass, $skip); Expected = 2; Want = 'Incomplete' },
+            @{ Observations = @($fail, $skip); Expected = 2; Want = 'Incomplete' },
+            @{ Observations = @($pass, $notExecuted); Expected = 2; Want = 'Incomplete' },
+            @{ Observations = @($skip, $notExecuted); Expected = 2; Want = 'Incomplete' },
+            @{ Observations = @($notExecuted); Expected = 1; Want = 'Incomplete' },
+            @{ Observations = @($inconclusive); Expected = 1; Want = 'Incomplete' },
+            @{ Observations = @([pscustomobject]@{ Outcome = 'Error' }); Expected = 1; Want = 'Failed' },
+            @{ Observations = @([pscustomobject]@{ Outcome = 'Timeout' }); Expected = 1; Want = 'Failed' }
+        )) {
+            $actual = Get-TestObservationClassification $case.Observations $case.Expected
+            Assert-Smoke ($actual -ceq $case.Want) "observations '$(@($case.Observations | ForEach-Object { $_.Outcome }) -join ', ')' / expected $($case.Expected) classified as '$actual', wanted '$($case.Want)'."
+        }
+        Assert-Smoke ((ConvertTo-NeutralTestOutcome 'NotRunnable') -ceq 'Skipped') 'explicit NotRunnable outcome was not Skipped.'
+        Assert-Smoke ((ConvertTo-NeutralTestOutcome 'NotExecuted') -ceq 'NotExecuted') 'NotExecuted was collapsed into Skipped.'
+
+        $reportTarget = [pscustomobject]@{
+            Key = 'core/net10.0'; Name = 'Core net10.0'; Suite = 'core'; RunnerKind = 'Mtp'
+            Project = 'Core.csproj'; Framework = 'net10.0'; Configuration = 'Release'
+            RuntimeIdentifier = ''; Filter = ''; Areas = @(); Categories = @()
+            CoverageEligible = $false; Capabilities = @(); AdditionalArguments = @()
+        }
+        $reportOptions = [pscustomobject]@{
+            Count = 1; Configuration = 'Release'; RequestedFramework = 'net10.0'; RuntimeIdentifier = ''
+            Flaky = $false; Diagnostics = $false; FailFast = $false; Ci = $true; CollectCoverage = $false
+        }
+        $reportContext = [pscustomobject]@{
+            Options = $reportOptions; StartTimeUtc = [DateTime]::UtcNow; EndTimeUtc = [DateTime]::UtcNow
+            InfrastructureErrors = @(); ReportErrors = @(); StageTimings = @(); PreparationTimings = @()
+            Targets = @($reportTarget); EnvironmentPath = (Join-Path $Root 'smoke-environment.json'); RunDirectory = ''; RunId = 'skipped-smoke'
+            CommandLine = 'artifacts-smoke explicit exclusion'
+        }
+        Write-AtomicJsonFile -Path $reportContext.EnvironmentPath -Value @{
+            os = 'smoke'; architecture = 'x64'; processArchitecture = 'x64'; processorName = 'smoke'
+            logicalProcessorCount = 1; availableMemoryBytes = 1024; sdkVersion = 'smoke'
+            gitCommit = 'smoke'; gitBranch = 'smoke'; gitDirty = $false; environment = @{}
+        }
+        $reportTest = [pscustomobject]@{
+            Identity = 'case:Smoke|Explicit|Boundary'; IdentityStrength = 'ClassMethodDisplay'
+            TestId = 'explicit'; TestName = 'Stored Fields: explicit boundary'; ClassName = 'Smoke'
+            MethodName = 'Explicit'; Outcome = 'Skipped'; DurationMs = 0
+            ErrorMessage = ''; StackTrace = ''
+        }
+        $reportExecution = [pscustomobject]@{
+            Completed = $true; Outcome = 'Passed'; Iteration = 1; DurationMs = 1
+            Target = $reportTarget; TestResults = @($reportTest); ArtifactDirectory = ''
+            DiagnosticPaths = @(); ProcessId = 1; ExitCode = 0; StartTimeUtc = [DateTime]::UtcNow
+            EndTimeUtc = [DateTime]::UtcNow; TimedOut = $false; WasKilled = $false
+            CancellationRequested = $false; StdOutPath = ''; StdErrPath = ''; TrxPath = ''; Error = ''
+        }
+        $reportSummary = New-TestRunSummary -Context $reportContext -Targets @($reportTarget) -ExecutionResults @($reportExecution)
+        Assert-Smoke ($reportSummary.Succeeded) 'an intentionally skipped explicit test made the passing target unhealthy.'
+        Assert-Smoke ($reportSummary.SkippedTests.Count -eq 1 -and $reportSummary.IncompleteTests.Count -eq 0) 'summary did not separate skipped and incomplete tests.'
+        $report = New-TestReportDocument -Context $reportContext -Summary $reportSummary
+        Assert-Smoke ($report.skippedTests.Count -eq 1 -and $report.skippedTests[0].classification -ceq 'Skipped') 'JSON report did not represent the explicit test as Skipped.'
+        Assert-Smoke ($report.incompleteTests.Count -eq 0) 'JSON report included the explicit test as incomplete.'
+        $markdown = New-TestMarkdownReport -Context $reportContext -Summary $reportSummary
+        Assert-Smoke ($markdown.Contains('## Skipped tests') -and $markdown.Contains('Stored Fields: explicit boundary')) 'Markdown report did not list skipped tests separately.'
+        Assert-Smoke ($markdown.Contains('## Incomplete tests') -and $markdown.Contains('None.')) 'Markdown incomplete section did not remain empty.'
 
         # F. Windows stress-test timeout and cleanup evidence contract.
         $stressTestPath = Join-Path $RepositoryRoot 'src/devops/Rowles.LeanCorpus.Tests.Core/Index/Integration/CommitSearcherRaceReproTests.cs'
@@ -276,7 +384,7 @@ try {
             FailedCase = 'Failed'
             SkippedCase = 'Skipped'
             NotExecutedCase = 'NotExecuted'
-            NotRunnableCase = 'NotExecuted'
+            NotRunnableCase = 'Skipped'
             UnknownCase = 'FutureRunnerOutcome'
             EmptyOutcomeCase = 'Unknown'
             MissingOutcomeCase = 'Unknown'

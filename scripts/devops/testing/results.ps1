@@ -37,7 +37,8 @@ function ConvertTo-NeutralTestOutcome {
         'timeout'    { return 'Timeout' }
         'skipped'    { return 'Skipped' }
         'notexecuted' { return 'NotExecuted' }
-        'notrunnable' { return 'NotExecuted' }
+        # Current MTP/xUnit explicit-test filtering records intentional skips as NotRunnable.
+        'notrunnable' { return 'Skipped' }
         'inconclusive' { return 'Inconclusive' }
         default {
             if ([string]::IsNullOrWhiteSpace($Outcome)) {
@@ -352,10 +353,13 @@ function Get-TestObservationClassification {
     )
 
     $observations = @($Observations)
+    if ($observations.Count -lt $ExpectedObservationCount -or $observations.Count -eq 0) { return 'Incomplete' }
+    if (@($observations | Where-Object { $_.Outcome -ne 'Skipped' }).Count -eq 0) { return 'Skipped' }
+
     $hasNonTerminalOutcome = @($observations | Where-Object {
         $_.Outcome -notin @('Passed', 'Failed', 'Error', 'Timeout')
     }).Count -gt 0
-    if ($observations.Count -lt $ExpectedObservationCount -or $hasNonTerminalOutcome) { return 'Incomplete' }
+    if ($hasNonTerminalOutcome) { return 'Incomplete' }
 
     $failedCount = @($observations | Where-Object { $_.Outcome -in @('Failed', 'Error', 'Timeout') }).Count
     $passedCount = @($observations | Where-Object { $_.Outcome -eq 'Passed' }).Count
@@ -554,6 +558,7 @@ function New-TestRunSummary {
         Tests = $testDocuments
         IntermittentFailures = @($testDocuments | Where-Object { $_.Classification -eq 'Intermittent failure' })
         AlwaysFailingTests = @($testDocuments | Where-Object { $_.Classification -eq 'Always fails' })
+        SkippedTests = @($testDocuments | Where-Object { $_.Classification -eq 'Skipped' })
         IncompleteTests = @($testDocuments | Where-Object { $_.Classification -eq 'Incomplete' })
         SlowestTests = @($testDocuments | Sort-Object MaxDurationMs -Descending | Select-Object -First 10)
         CrashedTargets = @($targetDocuments | Where-Object { $_.outcome -eq 'Crashed' })

@@ -32,6 +32,8 @@
 
 ## Changed
 
+- Keep package API baseline validation enabled while defaulting baseline comparisons to backwards compatibility; exact API equality remains an explicit per-package policy.
+
 - Extend `./devops test` to accept multiple explicit suites and filter by test technique; expose affected-target explanations and structured UI events. Grouped benchmarks now honour strategy and run options instead of dropping them.
 
 - Decompose segment merging into internal planning and codec writers while preserving document ordering, retention and persisted formats.
@@ -86,6 +88,9 @@
 - Return `CharFilterResult` from `ICharFilter` with composable UTF-16 offset corrections, mapping indexed token offsets back to original input across chained transformations. This breaks the previous character-filter API in Rowles.Text and source-included Core analysis. ([f03538876](https://github.com/jordansrowles/LeanCorpus/commit/f035388760fa914e334139962cc288debbf72f76))
 
 ## Fixed
+
+- Preserve the frozen CLI migration fixture bytes across Git checkouts and report intentionally excluded explicit tests as skipped while retaining incomplete status for missing or mixed execution evidence.
+- Reconcile package compatibility exceptions with normal baseline validation, removing obsolete strict-equality exceptions and covering the documented character-filter API transition on both frameworks.
 
 - Preserve DevOps progress callback module scope so long-running tests finish with or without UI telemetry; exercise the callback in Linux and Windows CI.
 - Stop platform smoke validation at the first failed command so later successes cannot mask failures.

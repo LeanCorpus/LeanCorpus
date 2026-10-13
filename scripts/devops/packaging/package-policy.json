@@ -8,6 +8,7 @@
       "expectedFrameworks": ["net10.0", "net11.0"],
       "baselineVersion": "3.1.1",
       "enableApiCompatibility": true,
+      "strictBaseline": false,
       "requireXmlDocs": true,
       "requireSymbols": true,
       "packageGroups": ["compression"]
@@ -19,6 +20,7 @@
       "expectedFrameworks": ["net10.0", "net11.0"],
       "baselineVersion": "1.0.0",
       "enableApiCompatibility": true,
+      "strictBaseline": false,
       "requireXmlDocs": true,
       "requireSymbols": true,
       "packageGroups": []
@@ -42,6 +44,7 @@
       "expectedFrameworks": ["net10.0", "net11.0"],
       "baselineVersion": "1.0.1",
       "enableApiCompatibility": true,
+      "strictBaseline": false,
       "requireXmlDocs": true,
       "requireSymbols": true,
       "packageGroups": ["compression"]
@@ -53,6 +56,7 @@
       "expectedFrameworks": ["net10.0", "net11.0"],
       "baselineVersion": "1.0.1",
       "enableApiCompatibility": true,
+      "strictBaseline": false,
       "requireXmlDocs": true,
       "requireSymbols": true,
       "packageGroups": ["compression"]
@@ -64,6 +68,7 @@
       "expectedFrameworks": ["net10.0", "net11.0"],
       "baselineVersion": "1.0.1",
       "enableApiCompatibility": true,
+      "strictBaseline": false,
       "requireXmlDocs": true,
       "requireSymbols": true,
       "packageGroups": ["compression"]
