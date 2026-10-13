@@ -1,6 +1,8 @@
 using OrchardCore.Indexing;
 using OrchardCore.Locking;
 using OrchardCore.Locking.Distributed;
+using Rowles.LeanCorpus.Index.Indexer;
+using Rowles.LeanCorpus.Store;
 using Rowles.LeanCorpus.OrchardCore.Search.Indexing;
 using Rowles.LeanCorpus.OrchardCore.Search.Search;
 using Rowles.LeanCorpus.OrchardCore.Search.Storage;
@@ -10,6 +12,27 @@ namespace Rowles.LeanCorpus.OrchardCore.Search.Tests;
 [Trait("Area", "Orchard")]
 public sealed class ProviderIntegrationTests
 {
+    [Fact]
+    public async Task DisposingOneTenantReleasesItsWriterWhileAnotherTenantRemainsOpen()
+    {
+        await using var first = new ProviderFixture();
+        await using var second = new ProviderFixture();
+        Assert.True(await first.Indexes.CreateAsync(first.Profile));
+        Assert.True(await second.Indexes.CreateAsync(second.Profile));
+        string firstPath = first.Paths.Resolve(first.Profile.IndexFullName).IndexDirectory;
+
+        await first.Handles.DisposeAsync();
+
+        using (var directory = new MMapDirectory(firstPath))
+        using (var reopened = new IndexWriter(directory, new IndexWriterConfig()))
+            reopened.Commit();
+
+        Assert.True(await second.Documents.AddOrUpdateDocumentsAsync(second.Profile,
+            [Article("remaining-tenant", "still owns its writer")]));
+        Assert.Equal("remaining-tenant", Assert.Single(
+            (await second.Search.SearchAsync(second.Profile, "writer", 0, 10)).ContentItemIds));
+    }
+
     [Fact]
     public async Task LifecycleSupportsCreateIndexUpdateDeleteAllRebuildAndDelete()
     {
@@ -104,7 +127,7 @@ public sealed class ProviderIntegrationTests
     public async Task IndexHandleIsSharedAcrossOrchardShellReplacement()
     {
         await using var fixture = new ProviderFixture();
-        await using var replacementHandles = new LeanCorpusIndexHandleCache();
+        await using var replacementHandles = new LeanCorpusIndexHandleCache(fixture.Paths);
         Assert.True(await fixture.Indexes.CreateAsync(fixture.Profile));
 
         await fixture.Handles.DisposeAsync();

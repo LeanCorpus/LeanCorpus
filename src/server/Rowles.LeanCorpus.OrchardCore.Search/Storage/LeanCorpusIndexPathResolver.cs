@@ -29,12 +29,13 @@ internal sealed class LeanCorpusIndexPathResolver
         _tenantName = tenantName;
     }
 
+    internal string TenantDirectory => Path.Combine(_contentRoot, "App_Data", "Sites", SafeKey(_tenantName), "LeanCorpus");
+
     public LeanCorpusIndexPaths Resolve(string indexFullName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(indexFullName);
-        string tenant = SafeKey(_tenantName);
         string index = SafeKey(indexFullName);
-        string tenantDirectory = Path.Combine(_contentRoot, "App_Data", "Sites", tenant, "LeanCorpus");
+        string tenantDirectory = TenantDirectory;
         return new LeanCorpusIndexPaths(
             indexFullName,
             tenantDirectory,

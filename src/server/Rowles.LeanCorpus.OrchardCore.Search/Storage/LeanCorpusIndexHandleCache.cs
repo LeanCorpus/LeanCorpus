@@ -13,18 +13,26 @@ namespace Rowles.LeanCorpus.OrchardCore.Search.Storage;
 internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
 {
     private static readonly object SharedStateLock = new();
-    private static SharedState? _sharedState;
+    private static readonly Dictionary<string, SharedState> SharedStates = new(
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    private readonly string _tenantDirectory;
     private readonly SharedState _state;
     private int _disposed;
 
-    public LeanCorpusIndexHandleCache()
+    public LeanCorpusIndexHandleCache(LeanCorpusIndexPathResolver paths)
     {
+        _tenantDirectory = paths.TenantDirectory;
         while (true)
         {
             Task? closing = null;
             lock (SharedStateLock)
             {
-                _state = _sharedState ??= new SharedState();
+                if (!SharedStates.TryGetValue(_tenantDirectory, out var state))
+                {
+                    state = new SharedState();
+                    SharedStates.Add(_tenantDirectory, state);
+                }
+                _state = state;
                 if (!_state.IsClosing)
                 {
                     _state.ReferenceCount++;
@@ -148,8 +156,8 @@ internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
         {
             lock (SharedStateLock)
             {
-                if (ReferenceEquals(_sharedState, _state))
-                    _sharedState = null;
+                if (SharedStates.TryGetValue(_tenantDirectory, out var state) && ReferenceEquals(state, _state))
+                    SharedStates.Remove(_tenantDirectory);
                 _state.Closed.TrySetResult();
             }
         }

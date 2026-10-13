@@ -1,4 +1,5 @@
 using Rowles.LeanCorpus.Index.Segment;
+using Rowles.LeanCorpus.Store;
 
 namespace Rowles.LeanCorpus.Index.Indexer;
 
@@ -14,8 +15,9 @@ internal static class MergeScheduler
             while (writer.MergeTasks.Count < writer.Config.MaxConcurrentMerges)
             {
                 SegmentInfo[] sources;
-                MergeSourceState[] sourceStates;
+                FileSnapshotLease sourceFiles;
                 int outputOrdinal;
+                int commitGeneration;
                 lock (writer.WriteLock)
                 {
                     if (writer.PreparedGeneration >= 0)
@@ -34,19 +36,31 @@ internal static class MergeScheduler
                         StringComparer.Ordinal);
                     sources = writer.CommittedSegments
                         .Where(segment => selectedIds.Contains(segment.SegmentId))
+                        .Select(static segment => segment.DeepCopy())
                         .ToArray();
-                    sourceStates = sources.Select(static source => new MergeSourceState(
-                        source.DelGeneration, source.LiveDocCount)).ToArray();
+                    outputOrdinal = writer.ReserveSegmentOrdinalRange(Math.Max(8, sources.Length));
+                    commitGeneration = writer.CommitGeneration;
+                    sourceFiles = writer.Directory.AcquireSnapshot(
+                        name => sources.Any(source => SegmentReader.IsSegmentFile(source.SegmentId, name)), out _);
                     foreach (var source in sources)
                         writer.ReservedMergeSegments.Add(source.SegmentId);
-
-                    outputOrdinal = writer.ReserveSegmentOrdinalRange(Math.Max(8, sources.Length));
                 }
 
-                long pendingBytes = sources.Sum(static segment => segment.TotalBytes);
-                writer.Config.Metrics.RecordMergeBacklog(pendingBytes, TimeSpan.Zero);
-                var task = Task.Run(() => RunMerge(writer, sources, sourceStates, outputOrdinal), writer.MergeCts.Token);
-                writer.MergeTasks.Add(task);
+                try
+                {
+                    long pendingBytes = sources.Sum(static segment => segment.TotalBytes);
+                    writer.Config.Metrics.RecordMergeBacklog(pendingBytes, TimeSpan.Zero);
+                    // RunMerge must release the snapshot even when cancellation precedes execution.
+                    var task = Task.Run(() => RunMerge(writer, sources, sourceFiles, outputOrdinal, commitGeneration));
+                    writer.MergeTasks.Add(task);
+                }
+                catch
+                {
+                    sourceFiles.Dispose();
+                    foreach (var source in sources)
+                        writer.ReservedMergeSegments.Remove(source.SegmentId);
+                    throw;
+                }
             }
 
             writer.MergeTask = writer.MergeTasks.Count == 0
@@ -58,8 +72,9 @@ internal static class MergeScheduler
     private static void RunMerge(
         IndexWriter writer,
         SegmentInfo[] sources,
-        MergeSourceState[] sourceStates,
-        int outputOrdinal)
+        FileSnapshotLease sourceFiles,
+        int outputOrdinal,
+        int commitGeneration)
     {
         try
         {
@@ -74,7 +89,7 @@ internal static class MergeScheduler
             {
                 FileCatalog = writer.Config.CodecCatalog
             };
-            var merged = merger.MergeAll(sources.ToList(), ref nextOrdinal, writer.CommitGeneration);
+            var merged = merger.MergeAll(sources.ToList(), ref nextOrdinal, commitGeneration);
             if (merged is null)
                 return;
 
@@ -83,18 +98,17 @@ internal static class MergeScheduler
                 if (writer.MergeCts.IsCancellationRequested)
                     return;
 
-                var currentIds = new HashSet<string>(
-                    writer.CommittedSegments.Select(static segment => segment.SegmentId),
-                    StringComparer.Ordinal);
-                if (sources.Any(source => !currentIds.Contains(source.SegmentId)))
-                    return;
+                var currentSegments = writer.CommittedSegments.ToDictionary(
+                    static segment => segment.SegmentId, StringComparer.Ordinal);
 
                 // A delete may have committed while this merge was reading the source
                 // segments. Publishing that stale merge would resurrect deleted docs.
                 for (int i = 0; i < sources.Length; i++)
                 {
-                    if (sources[i].DelGeneration != sourceStates[i].DelGeneration ||
-                        sources[i].LiveDocCount != sourceStates[i].LiveDocCount)
+                    if (!currentSegments.TryGetValue(sources[i].SegmentId, out var current) ||
+                        current.DelGeneration != sources[i].DelGeneration ||
+                        current.LiveDocCount != sources[i].LiveDocCount ||
+                        current.EarliestSoftDeleteTimestamp != sources[i].EarliestSoftDeleteTimestamp)
                     {
                         return;
                     }
@@ -116,6 +130,7 @@ internal static class MergeScheduler
         }
         finally
         {
+            sourceFiles.Dispose();
             lock (writer.MergeLock)
             {
                 foreach (var source in sources)
@@ -123,6 +138,4 @@ internal static class MergeScheduler
             }
         }
     }
-
-    private readonly record struct MergeSourceState(int? DelGeneration, int LiveDocCount);
 }

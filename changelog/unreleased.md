@@ -91,6 +91,9 @@
 
 ## Fixed
 
+- Preserve deletion snapshots across repeated uncommitted updates and rollback, and isolate background merges from concurrent segment-state changes.
+- Release Orchard tenant writers independently during shutdown while retaining handle sharing across replacement shells for the same tenant.
+
 - Preserve the frozen CLI migration fixture bytes across Git checkouts and report intentionally excluded explicit tests as skipped while retaining incomplete status for missing or mixed execution evidence.
 - Reconcile package compatibility exceptions with normal baseline validation, removing obsolete strict-equality exceptions and covering the documented character-filter API transition on both frameworks.
 

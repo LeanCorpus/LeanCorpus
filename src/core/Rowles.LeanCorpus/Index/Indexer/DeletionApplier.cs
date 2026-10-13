@@ -51,7 +51,6 @@ internal static class DeletionApplier
         if (softTermsByOrdinal.Count > 0)
             softDeleteTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
-        int pendingGen = commitGeneration + 1;
         var dirPath = directory.DirectoryPath;
 
         foreach (var seg in segments)
@@ -78,7 +77,12 @@ internal static class DeletionApplier
             if (changed)
             {
                 changedSegments++;
+                // A reader or merge can still select an earlier uncommitted delete.
+                // Never overwrite its generation when another update precedes commit.
+                int pendingGen = Math.Max(checked(commitGeneration + 1), checked((seg.DelGeneration ?? -1) + 1));
                 var newDelPath = basePath + $"_gen_{pendingGen}.del";
+                while (FileOpenRetry.FileExists(newDelPath))
+                    newDelPath = basePath + $"_gen_{checked(++pendingGen)}.del";
                 LiveDocs.Serialise(newDelPath, liveDocs, durable: false);
                 seg.DelGeneration = pendingGen;
                 seg.LiveDocCount = liveDocs.LiveCount;

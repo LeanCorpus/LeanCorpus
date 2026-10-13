@@ -35,6 +35,15 @@ update the writer's private in-memory segment state, but it must not rewrite
 publishes the new liveness state atomically. A reader, recovery operation,
 snapshot, or backup resolves the exact segment state from the selected commit.
 
+Deletion generations advance independently of commit generations when several
+delete applications precede publication. Each application writes a new sidecar,
+including after rollback when an older reader still selects the abandoned state.
+An existing generation is never overwritten. Background merges capture deep
+copies of segment state and file snapshot leases while holding the writer lock,
+then compare that captured state with current writer state before installing
+their result. They retain the selected files until the merge completes or is
+cancelled, while commit remains independent of merge execution.
+
 Older commit records without per-segment state remain readable by using the
 legacy liveness fields in `seg_N.seg`. New commit records always include state
 for every referenced segment. Validation rejects duplicate, missing, unknown,

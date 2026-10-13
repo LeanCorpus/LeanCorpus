@@ -42,6 +42,10 @@ Index data, schema manifests, and indexing cursors are kept below:
 
 Tenant and index keys are derived from the Orchard names using a readable prefix and hash, so raw names are not used as filesystem paths. Keep this tenant data with the rest of Orchard's persistent `App_Data` when backing up or moving a site.
 
+Replacement shells for the same tenant directory share index handles. The last
+shell to release that tenant's cache closes its writers and search snapshots;
+other tenants and isolated hosts have independent handle lifetimes.
+
 Each active provider instance assumes exclusive ownership of its tenant's index and cursor files. Do not point multiple active Orchard processes at the same `App_Data` directory. The provider has no cross-process writer lease or distributed cursor coordination. A multi-node deployment needs independent per-node indexes and an explicit rebuild/replay plan after failover; otherwise use a search service that provides shared distributed ownership.
 
 ## Configure generic site search
