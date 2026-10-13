@@ -49,7 +49,15 @@ public sealed class ProviderVectorProbeTests
         {
             await OrchardSearchTestHost.StopIsolatedAsync(app);
             if (completed && Directory.Exists(contentRoot))
+            {
+                foreach (string lockPath in Directory.EnumerateFiles(contentRoot, "write.lock", SearchOption.AllDirectories))
+                {
+                    // Verify every provider released its writer, and retain the full
+                    // index path if Windows reports a sharing violation.
+                    using FileStream releasedLock = File.Open(lockPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                }
                 await OrchardSearchTestHost.DeleteContentRootAsync(contentRoot);
+            }
             else if (Directory.Exists(contentRoot))
                 Console.WriteLine($"Orchard vector probe content root retained at {contentRoot}");
         }

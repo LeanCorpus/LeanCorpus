@@ -48,11 +48,11 @@ internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
 
     public async Task<T> WithExclusiveAsync<T>(LeanCorpusIndexPaths paths, Func<Entry, T> operation)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        var entry = _state.Entries.GetOrAdd(paths.IndexDirectory, _ => new Entry(paths));
+        var entry = GetEntry(paths);
         await entry.Gate.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             return operation(entry);
         }
         finally
@@ -63,11 +63,11 @@ internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
 
     public async Task<T> WithExclusiveAsync<T>(LeanCorpusIndexPaths paths, Func<Entry, Task<T>> operation)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        var entry = _state.Entries.GetOrAdd(paths.IndexDirectory, _ => new Entry(paths));
+        var entry = GetEntry(paths);
         await entry.Gate.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             return await operation(entry).ConfigureAwait(false);
         }
         finally
@@ -81,12 +81,12 @@ internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
         Func<IndexSearcher, T> operation,
         LeanCorpusSchemaManifest? manifest = null)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        var entry = _state.Entries.GetOrAdd(paths.IndexDirectory, _ => new Entry(paths));
+        var entry = GetEntry(paths);
         await entry.Gate.WaitAsync().ConfigureAwait(false);
         SearcherLease lease;
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             lease = entry.Open(createIfMissing: false, manifest).AcquireSearcher();
         }
         finally
@@ -103,13 +103,13 @@ internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
         Func<IndexSearcher, LeanCorpusSchemaManifest, T> operation,
         Func<Entry, Task<LeanCorpusSchemaManifest>> manifestFactory)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-        var entry = _state.Entries.GetOrAdd(paths.IndexDirectory, _ => new Entry(paths));
+        var entry = GetEntry(paths);
         await entry.Gate.WaitAsync().ConfigureAwait(false);
         SearcherLease lease;
         LeanCorpusSchemaManifest manifest;
         try
         {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             manifest = await manifestFactory(entry).ConfigureAwait(false);
             lease = entry.Open(createIfMissing: false, manifest).AcquireSearcher();
         }
@@ -120,6 +120,17 @@ internal sealed class LeanCorpusIndexHandleCache : IDisposable, IAsyncDisposable
 
         using (lease)
             return operation(lease.Searcher, manifest);
+    }
+
+    private Entry GetEntry(LeanCorpusIndexPaths paths)
+    {
+        // Entry registration and last-owner shutdown share the same lock, so
+        // disposal cannot miss an entry admitted by an operation that checked earlier.
+        lock (SharedStateLock)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            return _state.Entries.GetOrAdd(paths.IndexDirectory, _ => new Entry(paths));
+        }
     }
 
     public async ValueTask DisposeAsync()

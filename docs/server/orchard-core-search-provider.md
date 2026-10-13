@@ -44,7 +44,9 @@ Tenant and index keys are derived from the Orchard names using a readable prefix
 
 Replacement shells for the same tenant directory share index handles. The last
 shell to release that tenant's cache closes its writers and search snapshots;
-other tenants and isolated hosts have independent handle lifetimes.
+other tenants and isolated hosts have independent handle lifetimes. Queued operations
+are rejected once their owning cache is disposed, preventing handles from reopening
+during shutdown.
 
 Each active provider instance assumes exclusive ownership of its tenant's index and cursor files. Do not point multiple active Orchard processes at the same `App_Data` directory. The provider has no cross-process writer lease or distributed cursor coordination. A multi-node deployment needs independent per-node indexes and an explicit rebuild/replay plan after failover; otherwise use a search service that provides shared distributed ownership.
 

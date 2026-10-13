@@ -12,6 +12,49 @@ namespace Rowles.LeanCorpus.OrchardCore.Search.Tests;
 [Trait("Area", "Orchard")]
 public sealed class ProviderIntegrationTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task QueuedCacheOperationsCannotOpenHandlesAfterTheirOwnerIsDisposed(int operationKind)
+    {
+        await using var fixture = new ProviderFixture();
+        Assert.True(await fixture.Indexes.CreateAsync(fixture.Profile));
+        LeanCorpusIndexPaths paths = fixture.Paths.Resolve(fixture.Profile.IndexFullName);
+        LeanCorpusSchemaManifest schema = await fixture.Schemas.ReadAsync(paths.SchemaPath);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<bool> holding = fixture.Handles.WithExclusiveAsync(paths, async entry =>
+        {
+            entered.SetResult();
+            await release.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            return true;
+        });
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Task<bool> queued = operationKind switch
+        {
+            0 => fixture.Handles.WithExclusiveAsync(paths, entry => { entry.Open(false, schema); return true; }),
+            1 => fixture.Handles.WithExclusiveAsync(paths, entry => { entry.Open(false, schema); return Task.FromResult(true); }),
+            2 => fixture.Handles.WithSearcherAsync(paths, searcher => true, schema),
+            3 => fixture.Handles.WithSearcherAsync(paths, (searcher, manifest) => true, entry => Task.FromResult(schema)),
+            _ => throw new ArgumentOutOfRangeException(nameof(operationKind))
+        };
+        Task disposing = fixture.Handles.DisposeAsync().AsTask();
+        release.SetResult();
+        try
+        {
+            await Assert.ThrowsAsync<ObjectDisposedException>(async () =>
+                await queued.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            release.TrySetResult();
+            await holding.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+            await disposing.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        }
+    }
+
     [Fact]
     public async Task DisposingOneTenantReleasesItsWriterWhileAnotherTenantRemainsOpen()
     {

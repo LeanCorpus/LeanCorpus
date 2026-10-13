@@ -92,6 +92,7 @@
 ## Fixed
 
 - Preserve deletion snapshots across repeated uncommitted updates and rollback, and isolate background merges from concurrent segment-state changes.
+- Reject queued Orchard index operations after cache disposal so shutdown cannot reopen writer handles.
 - Release Orchard tenant writers independently during shutdown while retaining handle sharing across replacement shells for the same tenant.
 
 - Preserve the frozen CLI migration fixture bytes across Git checkouts and report intentionally excluded explicit tests as skipped while retaining incomplete status for missing or mixed execution evidence.
