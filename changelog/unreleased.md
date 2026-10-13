@@ -32,6 +32,8 @@
 
 ## Changed
 
+- Replace the nightly benchmark workflow with configurable manual runs for suite, strategy, framework, runner OS, document count, selection filters, corpus-only mode and command previews.
+
 - Keep package API baseline validation enabled while defaulting baseline comparisons to backwards compatibility; exact API equality remains an explicit per-package policy.
 
 - Extend `./devops test` to accept multiple explicit suites and filter by test technique; expose affected-target explanations and structured UI events. Grouped benchmarks now honour strategy and run options instead of dropping them.

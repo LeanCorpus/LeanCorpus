@@ -38,6 +38,25 @@ Use a dry run while developing:
 
 Run the repository's normal strategy for evidence intended to support a performance claim.
 
+## Manual GitHub Actions runs
+
+Open the **Benchmark** workflow (`.github/workflows/benchmark.yml`) in GitHub Actions
+and select **Run workflow**. Choose the branch, suite, strategy, framework and
+hosted runner OS. Suites accept `all`, `core`, `text`, `compression` or a named
+suite from `./devops benchmark -List`, such as `query` or `index`.
+
+The defaults run all three benchmark projects on Ubuntu with .NET 10 and the
+`default` strategy. A document count of `0` keeps the strategy's default.
+Optional area and group selections require `core` or `text`; a BenchmarkDotNet
+filter cannot be combined with either selection. Corpus-only mode skips the
+Lucene.NET comparison for Core benchmarks.
+
+Enable **dry_run** to check the resolved commands without executing benchmarks.
+Normal runs upload `artifacts/benchmark/runs` as a result artefact, including
+available output from failed runs. The workflow is manual-only and uses the SDK
+pinned by `global.json` alongside .NET 10. Hosted runner measurements require
+the same workload and environment checks as local comparisons.
+
 ## Correctness before speed
 
 Add or identify a focused correctness test for the path before optimising it. Search optimisation requires matching document IDs, ordering, total hits, and scores where the public contract promises score equivalence.
