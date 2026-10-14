@@ -9,7 +9,7 @@ namespace Rowles.LeanCorpus.Tests.Core.Store.Unit;
 public sealed class FileSystemMeasurementTests
 {
     [Fact]
-    public void Durable_atomic_write_reports_bytes_flush_publication_and_delete()
+    public void Durable_atomic_write_reports_bytes_flush_publication_read_open_and_delete()
     {
         using var fixture = new TestDirectoryFixture();
         using var root = new Activity("filesystem-measurement-test").Start();
@@ -28,6 +28,9 @@ public sealed class FileSystemMeasurementTests
         string path = Path.Combine(fixture.Path, "measured.bin");
         IndexAtomicFileWriter.Write(path, durable: true, stream => stream.Write(new byte[137]));
         DirectoryFsync.SyncFile(path, strict: true);
+        using (var input = FileOpenRetry.OpenReadDelete(path))
+            Assert.Equal(137, input.Length);
+        Assert.True(File.Exists(path));
         FileOpenRetry.Delete(path);
 
         Assert.Contains(events, activity => activity.OperationName == "file.written" &&
@@ -37,6 +40,7 @@ public sealed class FileSystemMeasurementTests
         Assert.Single(events, activity => activity.OperationName == "directory.sync");
         Assert.Single(events, activity => activity.OperationName == "file.atomic_write" &&
             Equals(activity.GetTagItem("durable"), true));
+        Assert.Single(events, activity => activity.OperationName == "file.read_open");
         Assert.Single(events, activity => activity.OperationName == "file.delete");
     }
     [Fact]

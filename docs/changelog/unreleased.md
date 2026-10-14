@@ -40,7 +40,7 @@ These are versioned in the repository but are not part of the LeanCorpus 4.0 rel
 
 ## Added
 
-- Add trace-correlated backup/restore filesystem measurements and a fixed-seed DevOps matrix; honour configured FsCheck iterations without reducing default coverage.
+- Add trace-correlated backup/restore filesystem measurements and a fixed-seed DevOps matrix; honour configured FsCheck iterations without reducing default coverage. Publish the completed diagnostic results and distinguish read-open timings from deletion.
 
 - Add a Spectre.Console CLI Workbench for interactive index browsing, search, analysis, Core-backed inspection, deterministic index creation, fingerprints and workload replay. ([49cfcd898](https://github.com/jordansrowles/LeanCorpus/commit/49cfcd8980793b428469c1df503196637cf1d834))
 - Add public read-only `IndexInspector` and typed inspection models for committed-index overviews, segments, fields, terms and postings, documents, vector and spatial metadata, and format and size inspection. ([49cfcd898](https://github.com/jordansrowles/LeanCorpus/commit/49cfcd8980793b428469c1df503196637cf1d834))

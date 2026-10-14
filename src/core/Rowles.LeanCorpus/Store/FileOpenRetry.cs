@@ -53,7 +53,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static Stream OpenReadDelete(string path)
     {
-        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.delete");
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.read_open");
         int retries = TransientMaxRetries;
         while (true)
         {

@@ -35,7 +35,7 @@ are recorded separately, since platform builds need not have identical binaries.
 The test uses trace-correlated listeners for existing Core maintenance activities
 and the opt-in `Rowles.LeanCorpus.FileSystem` source. Reports retain file/directory
 syncs, stream flushes, atomic writes, physical files created, tracked output bytes,
-physical backup/restore copy bytes, move/delete operations, retry delay, mapping
+physical backup/restore copy bytes, read-open and move/delete operations, retry delay, mapping
 opens and deferred deletion. Harness timers separate source commits, backup,
 validation, restore, reader reopening, searches, reader close and final cleanup.
 Mapping timers cover physical file/view creation and pointer acquisition,
@@ -48,7 +48,9 @@ Timings are inclusive: a restore includes its copies, validation and durable
 writes, and an atomic write includes flush and publication. Do not add nested
 category totals or describe the difference as pure CPU time. Counts include
 failed attempts; bytes include data written or transferred before a rejected
-checksum. Tracked output bytes exclude test sentinel/corruption writes. The
+checksum. Tracked output bytes are final stream lengths, not cumulative writes,
+and exclude test sentinel/corruption writes. Read opens use `file.read_open`;
+`file.delete` measures deletion only. The
 `directory.sync` result distinguishes supported, unsupported and skipped barriers.
 Retries are measured as events and actual elapsed sleeps. A run with no retry
 category recorded observed zero retries, rather than an estimated retry cost.
@@ -59,3 +61,6 @@ mechanism context and cannot replace this workload's evidence. Hand demonstrated
 handle-lifetime evidence to issue #86. Do not remove durable backup/restore,
 change publication semantics or claim a production optimisation from a partial
 matrix. Process-crash recovery and machine-reset durability remain separate claims.
+
+See [the completed diagnostic investigation](backup-restore-results.md) for the
+fixed-seed matrix, measured categories, conclusion and provenance limitations.

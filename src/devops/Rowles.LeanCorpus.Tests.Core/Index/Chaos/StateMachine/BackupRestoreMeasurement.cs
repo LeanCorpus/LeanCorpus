@@ -130,7 +130,7 @@ internal sealed class BackupRestoreMeasurement : IDisposable
             ElapsedMilliseconds = _elapsed.Elapsed.TotalMilliseconds,
             OperationCount = _operations.Count,
             OperationFingerprint = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n', _operations)))),
-            TimingSemantics = "Inclusive nested durations; categories must not be added together. Counts include failed operations. Bytes are actual transferred/written bytes, including failed copies.",
+            TimingSemantics = "Inclusive nested durations; categories must not be added together. Counts include failed operations. Copy bytes are actual transferred bytes, including failed copies; tracked output bytes are final stream lengths.",
             Categories = _categories, Paths = _paths
         };
         Directory.CreateDirectory(Path.GetDirectoryName(_outputPath)!);
