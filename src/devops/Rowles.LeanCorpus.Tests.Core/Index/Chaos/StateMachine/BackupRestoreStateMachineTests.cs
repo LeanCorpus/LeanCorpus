@@ -1,6 +1,7 @@
-using FsCheck;
+﻿using FsCheck;
 using FsCheck.Experimental;
-using FsCheck.Xunit;
+using Microsoft.FSharp.Core;
+using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 using FsCheckStateMachine = FsCheck.Experimental.StateMachine;
 
 namespace Rowles.LeanCorpus.Tests.Core.Index.Chaos.StateMachine;
@@ -11,14 +12,21 @@ namespace Rowles.LeanCorpus.Tests.Core.Index.Chaos.StateMachine;
 [Technique(TestTechnique.StateMachine)]
 public sealed class BackupRestoreStateMachineTests
 {
-    [Property(
-        DisplayName = "Backup and restore preserves committed snapshots and chain integrity",
-        MaxTest = 30,
-        StartSize = 1,
-        EndSize = 30,
-        Parallelism = 1)]
-    public Property Backup_restore_operations_match_the_model() =>
-        FsCheckStateMachine.ToProperty(new BackupRestoreMachine());
+    [Fact(DisplayName = "Backup and restore preserves committed snapshots and chain integrity")]
+    public void Backup_restore_operations_match_the_model()
+    {
+        string? output = Environment.GetEnvironmentVariable("LEANCORPUS_BACKUP_RESTORE_MEASUREMENT");
+        ulong seed = output is null ? (ulong)Random.Shared.NextInt64() : 14854304604442296793UL;
+        const ulong gamma = 3998140771831394483UL;
+        using var measurement = output is null ? null : new BackupRestoreMeasurement(output, seed, gamma);
+        var config = Config.QuickThrowOnFailure
+            .WithMaxTest(ChaosConfig.FsCheckIterations)
+            .WithStartSize(1).WithEndSize(30)
+            .WithReplay(FSharpOption<Replay>.Some(new Replay(new Rnd(seed, gamma), FSharpOption<int>.None)));
+        Check.One(config, FsCheckStateMachine.ToProperty(new BackupRestoreMachine()));
+        if (measurement is not null)
+            measurement.Passed = true;
+    }
 
     [Fact(DisplayName = "Backup and restore preserves a full and incremental chain")]
     public void Full_and_incremental_chain_restores_latest_snapshot()

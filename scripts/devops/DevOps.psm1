@@ -23,6 +23,7 @@ $Script:BenchmarkStrategies = Import-PowerShellDataFile "$PSScriptRoot/config/be
 . "$PSScriptRoot/testing/execution.ps1"
 . "$PSScriptRoot/testing/reports.ps1"
 . "$PSScriptRoot/testing/runner.ps1"
+. "$PSScriptRoot/testing/backup-restore-matrix.ps1"
 
 . "$PSScriptRoot/diagnostics/tools.ps1"
 . "$PSScriptRoot/diagnostics/capture.ps1"
@@ -106,6 +107,11 @@ function Invoke-DevOpsHelp {
     Write-Host '      -Category           Comma-separated test categories'
     Write-Host '      -Technique          Comma-separated test techniques: PropertyBased,StateMachine,Metamorphic'
     Write-Host '      -Count              Sequential repetitions (default: 1)'
+    Write-Host '      backup-restore-matrix  Fixed-seed five-variant filesystem investigation'
+    Write-Host '        -Count            Independent launches per variant (default: 3)'
+    Write-Host '        -Iterations       Explicit FsCheck override (normal default: 100)'
+    Write-Host '        -TempRoot         Alternate source/backup/restore temporary root'
+    Write-Host '        -SourceManifest   Verify exported source against retained manifest'
     Write-Host '      -Flaky              Repeat 30 times by default; use stress parallelism and summary telemetry'
     Write-Host '      -FailFast            Stop scheduling after the first failed target'
     Write-Host '      -Diagnostics        Enable full managed telemetry, MTP logging and bounded raw streams'

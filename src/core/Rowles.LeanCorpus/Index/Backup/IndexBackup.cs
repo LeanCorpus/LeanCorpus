@@ -62,6 +62,8 @@ public static class IndexBackup
                 catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
                 {
                     if (attempt >= maxAttempts) throw;
+                    using var retry = FileSystemMeasurement.Start("retry");
+                    retry?.SetTag("delay_ms", 20 * attempt);
                     Thread.Sleep(20 * attempt);
                 }
                 attempt++;
@@ -928,6 +930,7 @@ public static class IndexBackup
         bool syncDirectory,
         CancellationToken cancellationToken = default)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("backup.file_copy");
         cancellationToken.ThrowIfCancellationRequested();
         FileOpenRetry.CreateDirectory(Path.GetDirectoryName(targetPath) ?? string.Empty);
         long length = 0;
@@ -960,12 +963,15 @@ public static class IndexBackup
         }
         finally
         {
+            measurement?.SetTag("bytes", length);
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
     private static void WaitForRetry(CancellationToken cancellationToken, int milliseconds)
     {
+        using var retry = FileSystemMeasurement.Start("retry");
+        retry?.SetTag("delay_ms", milliseconds);
         cancellationToken.ThrowIfCancellationRequested();
         if (cancellationToken.WaitHandle.WaitOne(milliseconds))
             throw new OperationCanceledException(cancellationToken);

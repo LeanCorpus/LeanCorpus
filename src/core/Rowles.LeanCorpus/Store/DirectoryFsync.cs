@@ -1,4 +1,4 @@
-namespace Rowles.LeanCorpus.Store;
+﻿namespace Rowles.LeanCorpus.Store;
 
 /// <summary>
 /// Cross-platform helper that flushes a directory's metadata (file-entry renames, creations,
@@ -22,6 +22,7 @@ internal static class DirectoryFsync
     public static void Sync(string directoryPath, bool strict = false)
     {
         if (string.IsNullOrEmpty(directoryPath)) return;
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("directory.sync");
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long directoryStartedAt = Diagnostics.FileSystemDiagnostics.StartDirectorySync();
         DirectorySyncResult result = DirectorySyncResult.Failed;
@@ -41,6 +42,7 @@ internal static class DirectoryFsync
         }
         finally
         {
+            measurement?.SetTag("result", result.ToString());
             Diagnostics.FileSystemDiagnostics.RecordDirectorySync(directoryStartedAt, result);
             Diagnostics.FileSystemDiagnostics.RecordSync(startedAt);
         }
@@ -54,6 +56,7 @@ internal static class DirectoryFsync
     public static void SyncFile(string filePath, bool strict = false)
     {
         if (string.IsNullOrEmpty(filePath)) return;
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.sync");
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long fileStartedAt = Diagnostics.FileSystemDiagnostics.StartFileSync();
         try

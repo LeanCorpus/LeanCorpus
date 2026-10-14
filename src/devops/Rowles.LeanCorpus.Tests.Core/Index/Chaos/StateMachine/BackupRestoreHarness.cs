@@ -1,11 +1,11 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Rowles.LeanCorpus.Tests.Core.Infrastructure;
 
 namespace Rowles.LeanCorpus.Tests.Core.Index.Chaos.StateMachine;
 
 internal sealed class BackupRestoreHarness : IDisposable
 {
-    private readonly StateMachineTestDirectory _testDirectory = new();
+    private readonly StateMachineTestDirectory _testDirectory;
     private readonly string _sourcePath;
     private readonly string _backupRoot;
     private readonly string _restoreRoot;
@@ -15,9 +15,12 @@ internal sealed class BackupRestoreHarness : IDisposable
 
     public BackupRestoreHarness()
     {
+        using var measurement = BackupRestoreMeasurement.Time("setup");
+        _testDirectory = new StateMachineTestDirectory(BackupRestoreMeasurement.Current?.TempRoot);
         _sourcePath = _testDirectory.CreateChildPath("source");
         _backupRoot = _testDirectory.CreateChildPath("backups");
         _restoreRoot = _testDirectory.CreateChildPath("restores");
+        BackupRestoreMeasurement.Current?.RecordPaths(_sourcePath, _backupRoot, _restoreRoot);
         _writerDirectory = new MMapDirectory(_sourcePath);
         _writer = new IndexWriter(_writerDirectory, CreateWriterConfig());
         _writer.Commit();
@@ -33,10 +36,15 @@ internal sealed class BackupRestoreHarness : IDisposable
     public void Update(ModelDocument replacement) =>
         _writer.UpdateDocument("id", replacement.Id, replacement.ToLeanDocument());
 
-    public void Commit() => _writer.Commit();
+    public void Commit()
+    {
+        using var measurement = BackupRestoreMeasurement.Time("commit");
+        _writer.Commit();
+    }
 
     public IndexBackupResult CreateFullBackup(int backupId, int generation)
     {
+        using var measurement = BackupRestoreMeasurement.Time("backup");
         string backupPath = GetBackupPath(backupId);
         return IndexBackup.Backup(_sourcePath, backupPath, new IndexBackupOptions
         {
@@ -47,6 +55,7 @@ internal sealed class BackupRestoreHarness : IDisposable
 
     public IndexBackupResult CreateIncrementalBackup(int backupId, int parentId, int generation)
     {
+        using var measurement = BackupRestoreMeasurement.Time("backup");
         string backupPath = GetBackupPath(backupId);
         return IndexBackup.Backup(_sourcePath, backupPath, new IndexBackupOptions
         {
@@ -58,6 +67,7 @@ internal sealed class BackupRestoreHarness : IDisposable
 
     public IndexBackupManifest ValidateBackup(BackupArtifactModel artifact)
     {
+        using var measurement = BackupRestoreMeasurement.Time("validate");
         var paths = artifact.ChainIds.Select(GetBackupPath).ToArray();
         return paths.Length == 1
             ? IndexBackup.ValidateBackup(paths[0])
@@ -66,6 +76,7 @@ internal sealed class BackupRestoreHarness : IDisposable
 
     public void ValidateStandaloneIncremental(BackupArtifactModel artifact)
     {
+        using var measurement = BackupRestoreMeasurement.Time("validate");
         Assert.True(artifact.IsIncremental);
         string backupPath = GetBackupPath(artifact.Id);
         var manifest = IndexBackup.ReadManifest(backupPath);
@@ -77,6 +88,7 @@ internal sealed class BackupRestoreHarness : IDisposable
 
     public IndexRestoreResult Restore(BackupArtifactModel artifact, int restoreId)
     {
+        using var measurement = BackupRestoreMeasurement.Time("restore");
         string targetPath = GetRestorePath(restoreId);
         var paths = artifact.ChainIds.Select(GetBackupPath).ToArray();
         return paths.Length == 1
@@ -86,6 +98,7 @@ internal sealed class BackupRestoreHarness : IDisposable
 
     public void CorruptAndAssertRestoreFails(BackupArtifactModel artifact, int restoreId, bool removeFile)
     {
+        using var measurement = BackupRestoreMeasurement.Time("corrupt_restore");
         string? filePath = FindCorruptibleFile(artifact);
         Assert.NotNull(filePath);
         if (removeFile)
@@ -134,9 +147,16 @@ internal sealed class BackupRestoreHarness : IDisposable
             return;
 
         _disposed = true;
-        _writer.Dispose();
-        _writerDirectory.Dispose();
-        _testDirectory.Dispose();
+        using (BackupRestoreMeasurement.Time("close"))
+        {
+            _writer.Dispose();
+            _writerDirectory.Dispose();
+        }
+        using (var cleanup = BackupRestoreMeasurement.Time("cleanup"))
+        {
+            _testDirectory.Dispose();
+            cleanup?.SetTag("result", Directory.Exists(_testDirectory.Path) ? "remaining" : "removed");
+        }
     }
 
     private string GetBackupPath(int backupId) =>
@@ -166,7 +186,11 @@ internal sealed class BackupRestoreHarness : IDisposable
         IReadOnlyDictionary<string, ModelDocument> expectedDocuments)
     {
         using var directory = new MMapDirectory(indexPath);
-        using var searcher = new IndexSearcher(directory);
+        IndexSearcher searcher;
+        using (BackupRestoreMeasurement.Time("reopen"))
+            searcher = new IndexSearcher(directory);
+        using var close = new SearcherCloseMeasurement(searcher);
+        using var searchMeasurement = BackupRestoreMeasurement.Time("search");
         string[] expectedIds = expectedDocuments.Values
             .Where(search.Matches)
             .Select(static document => document.Id)
@@ -191,10 +215,20 @@ internal sealed class BackupRestoreHarness : IDisposable
         return values![0];
     }
 
+    private sealed class SearcherCloseMeasurement(IndexSearcher searcher) : IDisposable
+    {
+        public void Dispose()
+        {
+            using var measurement = BackupRestoreMeasurement.Time("reader_close");
+            searcher.Dispose();
+        }
+    }
+
     private static IndexWriterConfig CreateWriterConfig() => new()
     {
         MaxBufferedDocs = 3,
-        DurableCommits = true,
+        DurableCommits = BackupRestoreMeasurement.Current?.SourceDurable ?? true,
+        UseCompoundFile = BackupRestoreMeasurement.Current?.Compound ?? false,
         DeletionPolicy = new KeepLastNCommitsPolicy(64),
         MergePolicy = NoMergePolicy.Instance
     };

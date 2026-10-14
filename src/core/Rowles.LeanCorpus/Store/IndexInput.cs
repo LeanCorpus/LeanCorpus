@@ -1,4 +1,4 @@
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -20,6 +20,8 @@ public sealed unsafe class IndexInput : IDisposable
     private readonly long _fileOffset;
     private readonly OperationDrain _operations = new();
     private readonly FileLease? _fileLease;
+    // Trace identity is a value; retaining it never retains the opening activity or reader.
+    private readonly System.Diagnostics.ActivityContext _measurementContext;
     private readonly MemoryMappedFile? _mmf;
     private readonly MemoryMappedViewAccessor? _accessor;
     private readonly IndexInputLifetimeLease? _ownerLease;
@@ -59,6 +61,7 @@ public sealed unsafe class IndexInput : IDisposable
         _fileLease = fileLease;
         _fileOffset = offset;
         _mappingIdentity = new object();
+        _measurementContext = Diagnostics.FileSystemMeasurement.CaptureContext();
         Diagnostics.FileSystemDiagnostics.RecordIndexInputOpen();
         long fileLength = new FileInfo(filePath).Length;
         if (offset > fileLength)
@@ -81,6 +84,8 @@ public sealed unsafe class IndexInput : IDisposable
         // still active. Without this, the merge's CleanupSegmentFiles cannot delete old
         // segment files that are still mapped by a live IndexSearcher, causing orphan
         // files to accumulate on disk and fsync storms that stall the writer.
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("mmap.open");
+        _measurementContext = measurement?.Context ?? default;
         var fs = (FileStream)FileOpenRetry.OpenReadDelete(filePath);
         _mmf = MemoryMappedFile.CreateFromFile(fs, null, 0,
             MemoryMappedFileAccess.Read, HandleInheritability.None, leaveOpen: false);
@@ -108,6 +113,7 @@ public sealed unsafe class IndexInput : IDisposable
         _ptr = owner._ptr + offset;
         _ownerLease = ownerLease;
         _sharedMappingOwner = sharedMappingOwner;
+        _measurementContext = owner._measurementContext;
         _mappingIdentity = owner._mappingIdentity;
         Diagnostics.FileSystemDiagnostics.RecordIndexInputOpen();
     }
@@ -770,13 +776,18 @@ public sealed unsafe class IndexInput : IDisposable
             return;
 
         _disposed = true;
-        _operations.BeginDisposeAndWait();
+        using (Diagnostics.FileSystemMeasurement.Start("input.drain"))
+            _operations.BeginDisposeAndWait();
         ReleaseResources(fromFinaliser: false);
         GC.SuppressFinalize(this);
     }
 
     private void ReleaseResources(bool fromFinaliser)
     {
+        using var finaliserMeasurement = fromFinaliser
+            ? Diagnostics.FileSystemMeasurement.Start("input.finaliser_release", _measurementContext) : null;
+        using var measurement = _mmf is null ? null : Diagnostics.FileSystemMeasurement.Start(
+            fromFinaliser ? "mmap.finaliser_close" : "mmap.close", _measurementContext);
         if (_accessor is not null)
         {
             _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
@@ -786,7 +797,7 @@ public sealed unsafe class IndexInput : IDisposable
         _mmf?.Dispose();
         _ownerLease?.Dispose();
         if (fromFinaliser)
-            _fileLease?.ReleaseFromFinaliser();
+            _fileLease?.ReleaseFromFinaliser(_measurementContext);
         else
             _fileLease?.Dispose();
     }

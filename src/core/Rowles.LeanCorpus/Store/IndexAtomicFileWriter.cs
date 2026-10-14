@@ -27,6 +27,8 @@ internal static class IndexAtomicFileWriter
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(write);
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.atomic_write");
+        measurement?.SetTag("durable", durable);
         if (durable)
             Diagnostics.FileSystemDiagnostics.RecordImmediateDurableAtomicWrite();
 

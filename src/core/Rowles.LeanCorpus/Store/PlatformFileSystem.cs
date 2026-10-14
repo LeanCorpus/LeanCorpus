@@ -1,4 +1,4 @@
-namespace Rowles.LeanCorpus.Store;
+﻿namespace Rowles.LeanCorpus.Store;
 
 /// <summary>Platform-specific durability and transient-error behaviour.</summary>
 internal interface IPlatformFileSystem
@@ -51,6 +51,8 @@ internal static class PlatformFileSystem
             catch (Exception ex) when (retries > 0 && fileSystem.IsTransient(ex))
             {
                 retries--;
+                using var measurement = Diagnostics.FileSystemMeasurement.Start("retry");
+                measurement?.SetTag("delay_ms", SyncRetryDelayMilliseconds);
                 Diagnostics.FileSystemDiagnostics.RecordRetry(SyncRetryDelayMilliseconds);
                 delay(SyncRetryDelayMilliseconds);
             }

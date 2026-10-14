@@ -1,4 +1,4 @@
-namespace Rowles.LeanCorpus.Store;
+﻿namespace Rowles.LeanCorpus.Store;
 
 /// <summary>
 /// Coordinates mapped inputs, search snapshots, and deferred deletion across every
@@ -118,6 +118,7 @@ internal static class FileLifetimeRegistry
             {
                 if (_files.TryGetValue(filePath, out var state) && state.LeaseCount > 0)
                 {
+                    Diagnostics.FileSystemMeasurement.Record("delete.deferred");
                     state.DeletePending = true;
                     return;
                 }
@@ -146,7 +147,7 @@ internal static class FileLifetimeRegistry
             }
         }
 
-        internal void ReleaseFromFinaliser(string filePath)
+        internal void ReleaseFromFinaliser(string filePath, System.Diagnostics.ActivityContext measurementContext = default)
         {
             bool queueDeferredDelete = false;
             lock (_lock)
@@ -172,14 +173,15 @@ internal static class FileLifetimeRegistry
             if (queueDeferredDelete)
             {
                 ThreadPool.UnsafeQueueUserWorkItem(
-                    static state => state.Owner.DeleteDeferredFromFinaliser(state.FilePath),
-                    (Owner: this, FilePath: filePath),
+                    static state => state.Owner.DeleteDeferredFromFinaliser(state.FilePath, state.MeasurementContext),
+                    (Owner: this, FilePath: filePath, MeasurementContext: measurementContext),
                     preferLocal: false);
             }
         }
 
-        private void DeleteDeferredFromFinaliser(string filePath)
+        private void DeleteDeferredFromFinaliser(string filePath, System.Diagnostics.ActivityContext measurementContext)
         {
+            using var measurement = Diagnostics.FileSystemMeasurement.Start("delete.finaliser", measurementContext);
             lock (_lock)
             {
                 if (!_files.TryGetValue(filePath, out var state) ||
@@ -239,7 +241,8 @@ internal sealed class FileLease : IDisposable
 
     public void Dispose() => _token.Dispose();
 
-    internal void ReleaseFromFinaliser() => _token.ReleaseFromFinaliser();
+    internal void ReleaseFromFinaliser(System.Diagnostics.ActivityContext measurementContext = default) =>
+        _token.ReleaseFromFinaliser(measurementContext);
 
     private sealed class ReleaseToken
     {
@@ -259,10 +262,10 @@ internal sealed class FileLease : IDisposable
                 _owner.Release(_filePath);
         }
 
-        internal void ReleaseFromFinaliser()
+        internal void ReleaseFromFinaliser(System.Diagnostics.ActivityContext measurementContext)
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
-                _owner.ReleaseFromFinaliser(_filePath);
+                _owner.ReleaseFromFinaliser(_filePath, measurementContext);
         }
     }
 }

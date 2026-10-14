@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 
@@ -53,6 +53,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static Stream OpenReadDelete(string path)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.delete");
         int retries = TransientMaxRetries;
         while (true)
         {
@@ -134,6 +135,7 @@ internal static class FileOpenRetry
     /// <summary>Flushes a facade-created file stream through to durable storage.</summary>
     internal static void FlushToDisk(Stream stream)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.flush");
         long startedAt = Diagnostics.FileSystemDiagnostics.StartSync();
         long fileStartedAt = Diagnostics.FileSystemDiagnostics.StartFileSync();
         try { ((FileStream)stream).Flush(flushToDisk: true); }
@@ -151,6 +153,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static void Delete(string path)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.delete");
         int retries = TransientMaxRetries;
         long startedAt = Stopwatch.GetTimestamp();
         while (true)
@@ -178,6 +181,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static DirtyFileTracker.DirtyFile Move(string sourcePath, string destPath, bool overwrite = false)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.move");
         int retries = TransientMaxRetries;
         long startedAt = Stopwatch.GetTimestamp();
         while (true)
@@ -202,6 +206,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static void MoveDirectory(string sourcePath, string destPath)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("directory.move");
         int retries = TransientMaxRetries;
         while (true)
         {
@@ -219,6 +224,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static void Copy(string sourcePath, string destPath, bool overwrite = false)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("file.copy");
         int retries = TransientMaxRetries;
         while (true)
         {
@@ -287,6 +293,7 @@ internal static class FileOpenRetry
     /// </summary>
     internal static void DeleteDirectory(string path, bool recursive)
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("directory.delete");
         int retries = TransientMaxRetries;
         while (true)
         {
@@ -344,6 +351,8 @@ internal static class FileOpenRetry
 
     private static void DelayBeforeRetry()
     {
+        using var measurement = Diagnostics.FileSystemMeasurement.Start("retry");
+        measurement?.SetTag("delay_ms", TransientRetryDelayMs);
         Diagnostics.FileSystemDiagnostics.RecordRetry(TransientRetryDelayMs);
         Thread.Sleep(TransientRetryDelayMs);
     }
@@ -375,9 +384,14 @@ internal static class FileOpenRetry
 
         protected override void Dispose(bool disposing)
         {
+            long bytes = disposing && Diagnostics.FileSystemMeasurement.Source.HasListeners() &&
+                Volatile.Read(ref _registered) == 0 ? Length : 0;
             base.Dispose(disposing);
             if (disposing && Interlocked.Exchange(ref _registered, 1) == 0)
+            {
+                Diagnostics.FileSystemMeasurement.Record("file.written", bytes);
                 DirtyFileTracker.MarkWritten(_path);
+            }
         }
     }
 }
