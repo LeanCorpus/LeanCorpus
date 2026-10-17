@@ -223,6 +223,10 @@
       href: .generated/contributors/devops-projects.md
     - name: DevOps and tests
       href: .generated/contributors/devops-and-tests.md
+    - name: Backup and restore measurements
+      href: articles/testing/backup-restore-measurement.md
+    - name: Backup and restore measurement results
+      href: articles/testing/backup-restore-results.md
     - name: Server proof of concept
       href: .generated/contributors/server-proof-of-concept.md
     - name: Architecture internals

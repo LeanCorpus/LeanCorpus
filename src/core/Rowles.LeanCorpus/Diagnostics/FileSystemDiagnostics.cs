@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 
 namespace Rowles.LeanCorpus.Diagnostics;
 
@@ -67,7 +67,11 @@ public static class FileSystemDiagnostics
         return new DetailedMeasurementScope();
     }
 
-    internal static void RecordFileCreated() => Interlocked.Increment(ref s_filesCreated);
+    internal static void RecordFileCreated()
+    {
+        FileSystemMeasurement.Record("file.created");
+        Interlocked.Increment(ref s_filesCreated);
+    }
 
     internal static void RecordRetry(int delayMilliseconds)
     {
@@ -129,18 +133,21 @@ public static class FileSystemDiagnostics
 
     internal static void RecordIndexInputOpen()
     {
+        FileSystemMeasurement.Record("input.open");
         if (Volatile.Read(ref s_detailedMeasurementScopes) != 0)
             Interlocked.Increment(ref s_indexInputOpenCount);
     }
 
     internal static void RecordMemoryMappedFileCreation()
     {
+        FileSystemMeasurement.Record("mmap.file");
         if (Volatile.Read(ref s_detailedMeasurementScopes) != 0)
             Interlocked.Increment(ref s_memoryMappedFileCreationCount);
     }
 
     internal static void RecordMemoryMappedViewCreation()
     {
+        FileSystemMeasurement.Record("mmap.view");
         if (Volatile.Read(ref s_detailedMeasurementScopes) != 0)
             Interlocked.Increment(ref s_memoryMappedViewCreationCount);
     }

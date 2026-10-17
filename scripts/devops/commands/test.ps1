@@ -23,6 +23,10 @@ function Invoke-DevOpsTest {
 
     $uiEventPath = [string]$env:LEANCORPUS_DEVOPS_UI_EVENTS_FILE
     try {
+        if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'backup-restore-matrix') {
+            $matrixArguments = if ($Arguments.Count -gt 1) { $Arguments[1..($Arguments.Count - 1)] } else { @() }
+            return Invoke-BackupRestoreMatrix -Arguments $matrixArguments
+        }
         $parsed = ConvertFrom-DevOpsArguments $Arguments
         $repoRoot = Get-RepoRoot
         $testSuites = Get-TestSuiteRegistry

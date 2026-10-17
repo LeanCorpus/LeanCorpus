@@ -1,4 +1,4 @@
-using FsCheck;
+﻿using FsCheck;
 using FsCheck.Experimental;
 using FsCheck.Fluent;
 
@@ -15,6 +15,7 @@ internal sealed class BackupAddOperation(ModelDocument document) : BackupRestore
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.Add(document);
         return Succeeds();
     }
@@ -28,6 +29,7 @@ internal sealed class BackupAddBatchOperation(IReadOnlyList<ModelDocument> docum
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.AddBatch(documents);
         return Succeeds();
     }
@@ -43,6 +45,7 @@ internal sealed class BackupDeleteOperation(string id) : BackupRestoreOperation
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.Delete(id);
         return Succeeds();
     }
@@ -59,6 +62,7 @@ internal sealed class BackupUpdateOperation(ModelDocument replacement) : BackupR
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.Update(replacement);
         return Succeeds();
     }
@@ -72,6 +76,7 @@ internal sealed class BackupCommitOperation : BackupRestoreOperation
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.Commit();
         actual.AssertSourceSearch(new SearchSpec(SearchKind.MatchAll), model.History.Latest.Documents);
         return Succeeds();
@@ -86,6 +91,7 @@ internal sealed class BackupSourceSearchOperation(SearchSpec search) : BackupRes
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.AssertSourceSearch(search, model.History.Latest.Documents);
         return Succeeds();
     }
@@ -99,6 +105,7 @@ internal sealed class FullBackupOperation(int backupId) : BackupRestoreOperation
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         var expected = model.GetBackup(backupId);
         var result = actual.CreateFullBackup(backupId, expected.Snapshot.Generation);
         Assert.Equal(IndexBackupKind.Full, result.Manifest.Kind);
@@ -125,6 +132,7 @@ internal sealed class IncrementalBackupOperation(int backupId, int parentId) : B
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         var expected = model.GetBackup(backupId);
         var result = actual.CreateIncrementalBackup(
             backupId,
@@ -149,6 +157,7 @@ internal sealed class ValidateBackupOperation(int backupId) : BackupRestoreOpera
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         var expected = model.GetBackup(backupId);
         Assert.Equal(expected.Snapshot.Generation, actual.ValidateBackup(expected).CommitGeneration);
         return Succeeds();
@@ -170,6 +179,7 @@ internal sealed class ValidateStandaloneIncrementalOperation(int backupId) : Bac
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.ValidateStandaloneIncremental(model.GetBackup(backupId));
         return Succeeds();
     }
@@ -186,6 +196,7 @@ internal sealed class RestoreBackupOperation(int backupId, int restoreId) : Back
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         var expected = model.GetBackup(backupId);
         var result = actual.Restore(expected, restoreId);
         actual.AssertRestored(result, expected.Snapshot);
@@ -204,6 +215,7 @@ internal sealed class CorruptBackupOperation(int backupId, int restoreId, bool r
 
     public override Property Check(BackupRestoreHarness actual, BackupRestoreModel model)
     {
+        using var measurement = BackupRestoreMeasurement.Operation(ToString());
         actual.CorruptAndAssertRestoreFails(model.GetBackup(backupId), restoreId, removeFile);
         return Succeeds();
     }
